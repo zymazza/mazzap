@@ -1,0 +1,52 @@
+{
+  "pipeline": [
+    {
+      "type": "readers.las",
+      "filename": "/home/zy/Mazzap/Raw Data Inputs/lidar_input.laz",
+      "tag": "reader"
+    },
+    {
+      "type": "filters.outlier",
+      "method": "statistical",
+      "mean_k": 16,
+      "multiplier": 2.5,
+      "tag": "outlier"
+    },
+    {
+      "type": "filters.range",
+      "limits": "Classification![7:7]",
+      "tag": "drop_outliers"
+    },
+    {
+      "type": "filters.smrf",
+      "slope": 0.2,
+      "window": 16,
+      "threshold": 0.45,
+      "scalar": 1.25,
+      "tag": "smrf"
+    },
+    {
+      "type": "filters.hag_delaunay",
+      "allow_extrapolation": true,
+      "tag": "hag"
+    },
+    {
+      "type": "filters.expression",
+      "expression": "Classification != 2 && HeightAboveGround >= 0.2 && HeightAboveGround <= 2 && Classification != 6 && Classification != 7 && Classification != 9 && Classification != 18",
+      "tag": "candidate"
+    },
+    {
+      "type": "writers.gdal",
+      "filename": "/home/zy/Mazzap/Processed Data/vegetation/shrubs_density.tif",
+      "gdaldriver": "GTiff",
+      "resolution": 1,
+      "output_type": "count",
+      "data_type": "uint16",
+      "nodata": 0,
+      "inputs": [
+        "candidate"
+      ],
+      "tag": "write_density"
+    }
+  ]
+}

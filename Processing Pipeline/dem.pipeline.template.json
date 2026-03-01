@@ -1,0 +1,40 @@
+{
+  "pipeline": [
+    {
+      "type": "readers.las",
+      "filename": "__INPUT__"
+    },
+    {
+      "type": "filters.elm"
+    },
+    {
+      "type": "filters.range",
+      "limits": "Classification![7:7]"
+    },
+    {
+      "type": "filters.assign",
+      "value": "Classification = 1"
+    },
+    {
+      "type": "filters.smrf",
+      "slope": 0.2,
+      "window": 16.0,
+      "threshold": 0.45,
+      "scalar": 1.25
+    },
+    {
+      "type": "filters.range",
+      "limits": "Classification[2:2]"
+    },
+    {
+      "type": "writers.gdal",
+      "filename": "__OUTPUT__",
+      "gdaldriver": "GTiff",
+      "resolution": 1.0,
+      "output_type": "mean",
+      "window_size": 8,
+      "data_type": "float32",
+      "nodata": -9999
+    }
+  ]
+}

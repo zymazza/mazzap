@@ -1,0 +1,72 @@
+{
+  "pipeline": [
+    {
+      "type": "readers.las",
+      "filename": "__INPUT__",
+      "tag": "reader"
+    },
+    {
+      "type": "filters.outlier",
+      "method": "statistical",
+      "mean_k": 16,
+      "multiplier": 2.5,
+      "tag": "outlier"
+    },
+    {
+      "type": "filters.range",
+      "limits": "Classification![7:7]",
+      "tag": "drop_outliers"
+    },
+    {
+      "type": "filters.smrf",
+      "slope": 0.2,
+      "window": 16.0,
+      "threshold": 0.45,
+      "scalar": 1.25,
+      "tag": "smrf"
+    },
+    {
+      "type": "filters.hag_delaunay",
+      "allow_extrapolation": true,
+      "tag": "hag"
+    },
+    {
+      "type": "filters.expression",
+      "expression": "__SHRUB_EXPRESSION__",
+      "tag": "candidate"
+    },
+    {
+      "type": "filters.voxelcenternearestneighbor",
+      "cell": 0.5,
+      "inputs": [
+        "candidate"
+      ],
+      "tag": "decimated"
+    },
+    {
+      "type": "writers.las",
+      "filename": "__SHRUBS_POINTS__",
+      "compression": "laszip",
+      "minor_version": 4,
+      "extra_dims": "all",
+      "forward": "all",
+      "inputs": [
+        "decimated"
+      ],
+      "tag": "write_points"
+    },
+    {
+      "type": "writers.gdal",
+      "filename": "__SHRUBS_DENSITY__",
+      "gdaldriver": "GTiff",
+      "resolution": 1.0,
+      "output_type": "count",
+      "data_type": "uint16",
+      "nodata": 0,
+      "inputs": [
+        "candidate"
+      ],
+      "tag": "write_density"
+    }
+  ]
+}

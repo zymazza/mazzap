@@ -1,0 +1,41 @@
+{
+  "name": "mazzap",
+  "version": "1.0.0",
+  "description": "Homesteading Digital Twin Platform",
+  "main": "index.js",
+  "scripts": {
+    "dem": "node generateDEM.js",
+    "start": "node index.js",
+    "viewer": "node index.js",
+    "generate:dem": "node generateDEM.js",
+    "buildings": "node generateBuildings.js",
+    "building-asset": "node generateBuildingAsset.js",
+    "vegetation": "node \"Processing Pipeline/generateVegetation.js\"",
+    "trees": "node \"Processing Pipeline/generateTrees.js\"",
+    "hydrology": "node generateHydrology.js",
+    "all": "npm run dem && npm run vegetation && npm run trees && npm run buildings",
+    "test": "test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zymazza/mazzap.git"
+  },
+  "keywords": [
+    "map",
+    "GIS",
+    "digital",
+    "twin",
+    "sensor",
+    "actuator"
+  ],
+  "author": "Zy Mazza",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/zymazza/mazzap/issues"
+  },
+  "homepage": "https://github.com/zymazza/mazzap#readme",
+  "dependencies": {
+    "codex": "^0.2.3",
+    "three": "^0.163.0"
+  }
+}

@@ -1,0 +1,92 @@
+{
+  "pipeline": [
+    {
+      "type": "readers.las",
+      "filename": "__INPUT__",
+      "tag": "reader"
+    },
+    {
+      "type": "filters.outlier",
+      "method": "statistical",
+      "mean_k": 16,
+      "multiplier": 2.5,
+      "tag": "outlier"
+    },
+    {
+      "type": "filters.range",
+      "limits": "Classification![7:7]",
+      "tag": "drop_outliers"
+    },
+    {
+      "type": "filters.assign",
+      "value": "Classification = 1",
+      "tag": "reset_classes"
+    },
+    {
+      "type": "filters.smrf",
+      "slope": 0.2,
+      "window": 16.0,
+      "threshold": 0.45,
+      "scalar": 1.25,
+      "tag": "smrf"
+    },
+    {
+      "type": "filters.hag_delaunay",
+      "allow_extrapolation": true,
+      "tag": "hag"
+    },
+    {
+      "type": "filters.expression",
+      "expression": "__TREE_EXPRESSION__",
+      "tag": "tree_candidate"
+    },
+    {
+      "type": "filters.voxelcenternearestneighbor",
+      "cell": 1.0,
+      "inputs": [
+        "tree_candidate"
+      ],
+      "tag": "decimated"
+    },
+    {
+      "type": "writers.las",
+      "filename": "__TREE_POINTS_LAS__",
+      "minor_version": 4,
+      "dataformat_id": 6,
+      "compression": false,
+      "extra_dims": "HeightAboveGround=float32",
+      "forward": "all",
+      "inputs": [
+        "decimated"
+      ],
+      "tag": "write_points"
+    },
+    {
+      "type": "writers.gdal",
+      "filename": "__TREE_CHM__",
+      "gdaldriver": "GTiff",
+      "dimension": "HeightAboveGround",
+      "resolution": 1.0,
+      "output_type": "max",
+      "data_type": "float32",
+      "nodata": -9999,
+      "inputs": [
+        "tree_candidate"
+      ],
+      "tag": "write_chm"
+    },
+    {
+      "type": "writers.gdal",
+      "filename": "__TREE_DENSITY__",
+      "gdaldriver": "GTiff",
+      "resolution": 1.0,
+      "output_type": "count",
+      "data_type": "uint16",
+      "nodata": 0,
+      "inputs": [
+        "tree_candidate"
+      ],
+      "tag": "write_density"
+    }
+  ]
+}

@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mazzap DEM Viewer</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topNav">
+    <button id="menuToggle" class="iconButton" type="button" aria-label="Toggle controls menu" aria-expanded="false">
+      &#9776;
+    </button>
+    <h1 class="brand">Mazzap DEM Viewer</h1>
+    <div class="searchWrap">
+      <input id="searchInput" type="search" placeholder="Search (coming soon)">
+    </div>
+  </header>
+
+  <div class="appShell">
+    <aside id="sideMenu" class="sideMenu" aria-hidden="true">
+      <div class="menuSection">
+        <h2>Layers</h2>
+        <label class="toggleRow" for="showShrubs">
+          <input id="showShrubs" type="checkbox" checked>
+          <span>Show Shrubs</span>
+        </label>
+        <label class="toggleRow" for="showTrees">
+          <input id="showTrees" type="checkbox" checked>
+          <span>Show Trees</span>
+        </label>
+        <label class="toggleRow" for="showBuildingAssets">
+          <input id="showBuildingAssets" type="checkbox" checked>
+          <span>Show Building Assets</span>
+        </label>
+        <label class="toggleRow" for="showHydrology">
+          <input id="showHydrology" type="checkbox" checked>
+          <span>Show Hydrology</span>
+        </label>
+      </div>
+
+      <div class="menuSection">
+        <h2>Hydrology</h2>
+        <div class="controlRow">
+          <label for="hydrologyWidth">Stream Width</label>
+          <span id="hydrologyWidthValue">4.0m</span>
+        </div>
+        <input id="hydrologyWidth" type="range" min="0.5" max="30" step="0.1" value="4">
+
+        <div class="controlRow">
+          <label for="hydrologyDepth">Stream Depth</label>
+          <span id="hydrologyDepthValue">1.0m</span>
+        </div>
+        <input id="hydrologyDepth" type="range" min="0" max="10" step="0.1" value="1">
+
+        <div class="controlRow">
+          <label for="hydrologyFlowSpeed">Flow Speed</label>
+          <span id="hydrologyFlowSpeedValue">1.0x</span>
+        </div>
+        <input id="hydrologyFlowSpeed" type="range" min="0" max="4" step="0.1" value="1">
+        <button id="snapHydrologyToTerrain" type="button">Snap Hydrology To Terrain</button>
+      </div>
+
+      <div class="menuSection">
+        <h2>Density</h2>
+        <div class="controlRow">
+          <label for="shrubDensity">Shrub Density</label>
+          <span id="shrubDensityValue">50%</span>
+        </div>
+        <input id="shrubDensity" type="range" min="0" max="100" step="1" value="50">
+
+        <div class="controlRow">
+          <label for="treeDensity">Tree Density</label>
+          <span id="treeDensityValue">50%</span>
+        </div>
+        <input id="treeDensity" type="range" min="0" max="100" step="1" value="50">
+      </div>
+
+      <div class="menuSection">
+        <h2>Terrain</h2>
+        <div class="controlRow">
+          <label for="verticalScale">Vertical Scale</label>
+          <span id="verticalScaleValue">1.0x</span>
+        </div>
+        <input id="verticalScale" type="range" min="0.1" max="8" step="0.1" value="1">
+        <button id="resetView" type="button">Reset View</button>
+      </div>
+
+      <div class="menuSection" id="buildingsSection">
+        <div class="sectionHeader">
+          <h2>Buildings</h2>
+          <button id="toggleBuildingsSection" class="sectionToggleButton" type="button" aria-expanded="true">Collapse</button>
+        </div>
+        <div id="buildingsSectionBody">
+          <p id="buildingSelectionLabel" class="buildingSelectionLabel">No footprint selected</p>
+          <div class="controlRow">
+            <label for="buildingNameInput">Footprint Name</label>
+          </div>
+          <input id="buildingNameInput" type="text" maxlength="120" placeholder="e.g. Barn_Main_A">
+          <div class="buttonRow">
+            <button id="saveBuildingName" type="button">Save Name</button>
+            <button id="clearBuildingName" type="button">Clear</button>
+          </div>
+          <h3 class="subheading">Named Footprints</h3>
+          <div id="buildingNameList" class="buildingNameList"></div>
+        </div>
+      </div>
+
+      <div class="menuSection">
+        <h2>Status</h2>
+        <p id="status">Preparing DEM surface from <code>/data/dem.tif</code>...</p>
+      </div>
+
+      <div class="sidebarFooter">
+        <button id="openUploadModal" type="button">Upload Data Source</button>
+        <button id="openManageDataModal" type="button">Manage Data Sources</button>
+      </div>
+    </aside>
+
+    <main id="viewerRoot"></main>
+    <div id="coordReadout" class="coordReadout">X -- | Y -- | Z --</div>
+  </div>
+
+  <div id="uploadModal" class="uploadModal" hidden>
+    <div class="uploadModalDialog" role="dialog" aria-modal="true" aria-labelledby="uploadModalTitle">
+      <div class="uploadModalHeader">
+        <h2 id="uploadModalTitle">Upload Data Source</h2>
+        <button id="closeUploadModal" class="iconButton" type="button" aria-label="Close upload dialog">&times;</button>
+      </div>
+      <p class="uploadHelpText">
+        Drag and drop files/folders, then choose a type per item: LiDAR, Footprints, Hydrology, or Photogrammetry.
+      </p>
+      <p class="uploadHelpText">
+        Hydrology supports shapefile components such as <code>.shp</code>, <code>.shx</code>, <code>.dbf</code>, and <code>.prj</code>.
+      </p>
+      <p class="uploadHelpText">
+        LiDAR is renamed to <code>lidar_input.*</code>. Footprints are renamed to <code>Footprints.gdb</code>. Photogrammetry keeps original names.
+      </p>
+      <p class="uploadHelpText">
+        Uploading LiDAR and/or Footprints auto-runs processing for DEM, shrubs, trees, and building footprints; hydrology uploads auto-clip streams to the DEM scene.
+      </p>
+      <div id="uploadDropZone" class="uploadDropZone">
+        Drop files here
+      </div>
+      <div class="uploadButtonRow">
+        <button id="selectUploadFiles" type="button">Select Files</button>
+        <button id="selectUploadFolder" type="button">Select Folder</button>
+        <button id="clearUploadQueue" type="button">Clear Queue</button>
+      </div>
+      <input id="uploadFilesInput" type="file" multiple hidden>
+      <input id="uploadFolderInput" type="file" webkitdirectory directory multiple hidden>
+      <div id="uploadQueueList" class="uploadQueueList"></div>
+      <p id="uploadStatus" class="uploadStatusText"></p>
+      <div class="uploadButtonRow">
+        <button id="submitUploadButton" type="button">Upload Selected</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="uploadProgressModal" class="uploadProgressModal" hidden>
+    <div class="uploadProgressDialog" role="dialog" aria-modal="true" aria-labelledby="uploadProgressTitle">
+      <h2 id="uploadProgressTitle">Preparing Upload</h2>
+      <div class="uploadProgressTrack" aria-hidden="true">
+        <div id="uploadProgressFill" class="uploadProgressFill"></div>
+      </div>
+      <p id="uploadProgressPercent" class="uploadProgressPercent">0%</p>
+      <p id="uploadProgressExplanation" class="uploadProgressExplanation">Waiting to begin.</p>
+      <p id="uploadProgressDetail" class="uploadProgressDetail"></p>
+      <div class="uploadButtonRow">
+        <button id="closeUploadProgress" type="button" disabled>Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="manageDataModal" class="manageDataModal" hidden>
+    <div class="manageDataDialog" role="dialog" aria-modal="true" aria-labelledby="manageDataTitle">
+      <div class="uploadModalHeader">
+        <h2 id="manageDataTitle">Manage Data Sources</h2>
+        <button id="closeManageDataModal" class="iconButton" type="button" aria-label="Close data management dialog">&times;</button>
+      </div>
+      <p class="uploadHelpText">Delete individual source files/folders, or clear all raw + processed data to restart the project.</p>
+      <div class="uploadButtonRow">
+        <button id="refreshDataSources" type="button">Refresh List</button>
+        <button id="clearAllData" type="button">Clear Data</button>
+      </div>
+      <div id="manageDataSourcesList" class="manageDataSourcesList"></div>
+      <p id="manageDataStatus" class="uploadStatusText"></p>
+    </div>
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "/node_modules/three/build/three.module.js"
+      }
+    }
+  </script>
+  <script type="module" src="/viewer.js"></script>
+</body>
+</html>

@@ -1,0 +1,615 @@
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  font-family: "Segoe UI", Tahoma, sans-serif;
+  color: #f2f4f8;
+  background: #0b1220;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+:root {
+  --nav-height: 46px;
+  --menu-width: 308px;
+}
+
+.topNav {
+  height: var(--nav-height);
+  box-sizing: border-box;
+  padding: 0 10px;
+  border-bottom: 1px solid #22314d;
+  background: linear-gradient(90deg, #10213f, #0d1a30);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.iconButton {
+  width: 30px;
+  height: 30px;
+  border: 1px solid #37507f;
+  border-radius: 6px;
+  background: #162847;
+  color: #edf3ff;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0;
+}
+
+.iconButton:hover {
+  background: #1b335d;
+}
+
+.brand {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.searchWrap {
+  margin-left: auto;
+  width: min(360px, 52vw);
+}
+
+.searchWrap input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 30px;
+  border-radius: 6px;
+  border: 1px solid #2e456f;
+  background: #0f203b;
+  color: #e8f0ff;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.searchWrap input::placeholder {
+  color: #9fb3d8;
+}
+
+.appShell {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sideMenu {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  left: 0;
+  width: min(var(--menu-width), 88vw);
+  height: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  border-right: 1px solid #22314d;
+  background: linear-gradient(180deg, rgba(13, 25, 46, 0.96), rgba(9, 17, 32, 0.96));
+  overflow-y: auto;
+  transform: translateX(calc(-100% - 2px));
+  transition: transform 0.18s ease-out;
+}
+
+.sideMenu > .sidebarFooter {
+  margin-top: 6px;
+  padding-bottom: 4px;
+}
+
+.sideMenu > .sidebarFooter button {
+  width: 100%;
+}
+
+body.menu-open .sideMenu {
+  transform: translateX(0);
+}
+
+.menuSection {
+  margin-bottom: 14px;
+  padding: 10px;
+  border: 1px solid #22314d;
+  border-radius: 8px;
+  background: rgba(18, 34, 63, 0.5);
+}
+
+.menuSection h2 {
+  margin: 0 0 8px 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #c3d4f4;
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.sectionHeader h2 {
+  margin: 0;
+}
+
+.sectionToggleButton {
+  width: auto;
+  margin-top: 0;
+  padding: 5px 9px;
+  font-size: 11px;
+  border-radius: 5px;
+}
+
+#buildingsSectionBody.isCollapsed {
+  display: none;
+}
+
+.toggleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.toggleRow:last-child {
+  margin-bottom: 0;
+}
+
+.controlRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+.controlRow:first-of-type {
+  margin-top: 0;
+}
+
+.sideMenu input[type="range"] {
+  width: 100%;
+  margin-top: 6px;
+  margin-bottom: 6px;
+}
+
+.sideMenu input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 6px;
+  border: 1px solid #2e456f;
+  background: #0f203b;
+  color: #e8f0ff;
+  padding: 7px 8px;
+  font-size: 13px;
+}
+
+.sideMenu button {
+  margin-top: 8px;
+  width: 100%;
+  border: 1px solid #37507f;
+  background: #162847;
+  color: #edf3ff;
+  border-radius: 6px;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+
+.sideMenu button:hover {
+  background: #1b335d;
+}
+
+.buttonRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.buildingSelectionLabel {
+  margin: 0 0 8px 0;
+  font-size: 12px;
+  color: #c9d7f5;
+}
+
+.subheading {
+  margin: 10px 0 6px 0;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #9fb3d8;
+}
+
+.buildingNameList {
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1px solid #243a60;
+  border-radius: 6px;
+  background: rgba(9, 17, 32, 0.55);
+  padding: 4px;
+}
+
+.buildingNameItem {
+  width: 100%;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #d8e7ff;
+  font-size: 12px;
+  text-align: left;
+  padding: 6px 7px;
+  cursor: pointer;
+}
+
+.buildingNameItem:hover {
+  background: rgba(44, 80, 130, 0.45);
+}
+
+.buildingNameItem.active {
+  background: rgba(82, 156, 255, 0.35);
+  color: #f1f7ff;
+}
+
+.buildingNameEmpty {
+  margin: 0;
+  font-size: 12px;
+  color: #9eb2d7;
+  padding: 6px 7px;
+}
+
+#status {
+  margin: 0;
+  font-size: 13px;
+  color: #c9d7f5;
+}
+
+#viewerRoot {
+  flex: 1;
+  height: 100%;
+  position: absolute;
+  inset: 0;
+}
+
+.coordReadout {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 4;
+  border: 1px solid #2a4068;
+  border-radius: 6px;
+  background: rgba(10, 20, 38, 0.86);
+  color: #d6e5ff;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: Consolas, "Liberation Mono", Menlo, monospace;
+  letter-spacing: 0.01em;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+canvas {
+  display: block;
+}
+
+.uploadModal {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: rgba(5, 11, 20, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  box-sizing: border-box;
+}
+
+.uploadModal[hidden] {
+  display: none;
+}
+
+.uploadModalDialog {
+  width: min(740px, 96vw);
+  max-height: 92vh;
+  overflow: auto;
+  border: 1px solid #2d466f;
+  border-radius: 10px;
+  background: #10213f;
+  padding: 12px;
+  box-sizing: border-box;
+}
+
+.uploadModalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.uploadModalHeader h2 {
+  margin: 0;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #c3d4f4;
+}
+
+.uploadModalHeader .iconButton {
+  width: 30px;
+  height: 30px;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.uploadHelpText {
+  margin: 8px 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #c9d7f5;
+}
+
+.uploadDropZone {
+  margin-top: 8px;
+  border: 1px dashed #4c74af;
+  border-radius: 8px;
+  padding: 16px;
+  text-align: center;
+  color: #dce8ff;
+  background: rgba(15, 30, 56, 0.55);
+}
+
+.uploadDropZone.isDragOver {
+  border-color: #78a9ff;
+  background: rgba(28, 58, 104, 0.6);
+}
+
+.uploadButtonRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.uploadButtonRow button {
+  width: auto;
+  margin-top: 0;
+}
+
+.uploadQueueList {
+  margin-top: 10px;
+  border: 1px solid #2b436b;
+  border-radius: 8px;
+  padding: 6px;
+  background: rgba(9, 17, 32, 0.5);
+  max-height: 280px;
+  overflow: auto;
+}
+
+.uploadQueueEmpty {
+  margin: 4px;
+  font-size: 12px;
+  color: #9eb2d7;
+}
+
+.uploadQueueItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 140px auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid #243a60;
+  border-radius: 6px;
+  padding: 6px;
+  margin-bottom: 6px;
+  background: rgba(14, 27, 50, 0.6);
+}
+
+.uploadQueueItem:last-child {
+  margin-bottom: 0;
+}
+
+.uploadFileLabel {
+  min-width: 0;
+}
+
+.uploadFileName {
+  font-size: 12px;
+  color: #dce8ff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uploadFileMeta {
+  font-size: 11px;
+  color: #9fb8de;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uploadQueueTypeSelect {
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 6px;
+  border: 1px solid #2e456f;
+  background: #0f203b;
+  color: #e8f0ff;
+  padding: 6px 7px;
+  font-size: 12px;
+}
+
+.uploadQueueRemoveButton {
+  width: auto;
+  margin-top: 0;
+  padding: 6px 9px;
+}
+
+.uploadStatusText {
+  margin: 8px 0 0 0;
+  min-height: 16px;
+  font-size: 12px;
+  color: #bcd4f7;
+}
+
+.uploadProgressModal {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(5, 11, 20, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  box-sizing: border-box;
+}
+
+.uploadProgressModal[hidden] {
+  display: none;
+}
+
+.uploadProgressDialog {
+  width: min(540px, 94vw);
+  border: 1px solid #2d466f;
+  border-radius: 10px;
+  background: #10213f;
+  padding: 14px;
+  box-sizing: border-box;
+}
+
+.uploadProgressDialog h2 {
+  margin: 0 0 10px 0;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #c3d4f4;
+}
+
+.uploadProgressTrack {
+  width: 100%;
+  height: 14px;
+  border: 1px solid #2e456f;
+  border-radius: 999px;
+  background: rgba(12, 22, 42, 0.85);
+  overflow: hidden;
+}
+
+.uploadProgressFill {
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, #5d9eff, #82f0ff);
+  transition: width 0.2s ease;
+}
+
+.uploadProgressPercent {
+  margin: 8px 0 4px 0;
+  font-size: 12px;
+  color: #dce8ff;
+}
+
+.uploadProgressExplanation {
+  margin: 0;
+  font-size: 12px;
+  color: #c9d7f5;
+  line-height: 1.4;
+}
+
+.uploadProgressDetail {
+  margin: 6px 0 0 0;
+  font-size: 12px;
+  color: #9fb8de;
+  line-height: 1.35;
+  min-height: 16px;
+}
+
+.manageDataModal {
+  position: fixed;
+  inset: 0;
+  z-index: 26;
+  background: rgba(5, 11, 20, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  box-sizing: border-box;
+}
+
+.manageDataModal[hidden] {
+  display: none;
+}
+
+.manageDataDialog {
+  width: min(760px, 96vw);
+  max-height: 92vh;
+  overflow: auto;
+  border: 1px solid #2d466f;
+  border-radius: 10px;
+  background: #10213f;
+  padding: 12px;
+  box-sizing: border-box;
+}
+
+.manageDataSourcesList {
+  margin-top: 10px;
+  border: 1px solid #2b436b;
+  border-radius: 8px;
+  padding: 6px;
+  background: rgba(9, 17, 32, 0.5);
+  max-height: 340px;
+  overflow: auto;
+}
+
+.manageDataEmpty {
+  margin: 4px;
+  font-size: 12px;
+  color: #9eb2d7;
+}
+
+.manageDataItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid #243a60;
+  border-radius: 6px;
+  padding: 6px;
+  margin-bottom: 6px;
+  background: rgba(14, 27, 50, 0.6);
+}
+
+.manageDataItem:last-child {
+  margin-bottom: 0;
+}
+
+.manageDataName {
+  font-size: 12px;
+  color: #dce8ff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.manageDataMeta {
+  margin-top: 3px;
+  font-size: 11px;
+  color: #9fb8de;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.manageDataDeleteButton {
+  width: auto;
+  margin-top: 0;
+  padding: 6px 9px;
+}
