@@ -132,25 +132,41 @@ body.menu-open .sideMenu {
 
 .sectionHeader {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 6px;
   margin-bottom: 8px;
 }
 
 .sectionHeader h2 {
   margin: 0;
+  flex: 1;
+  min-width: 0;
 }
 
-.sectionToggleButton {
+.sideMenu .sectionHeader .sectionToggleButton {
   width: auto;
-  margin-top: 0;
-  padding: 5px 9px;
-  font-size: 11px;
-  border-radius: 5px;
+  min-width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  margin: 0;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #c3d4f4;
+  font-size: 16px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
-#buildingsSectionBody.isCollapsed {
+.sideMenu .sectionHeader .sectionToggleButton:hover {
+  color: #e8f0ff;
+}
+
+.menuSectionBody.isCollapsed {
   display: none;
 }
 
@@ -296,6 +312,88 @@ body.menu-open .sideMenu {
   letter-spacing: 0.01em;
   pointer-events: none;
   white-space: nowrap;
+}
+
+.soilLegend {
+  position: absolute;
+  z-index: 6;
+  right: 10px;
+  top: 56px;
+  width: min(260px, 34vw);
+  max-height: 58vh;
+  overflow: auto;
+  border: 1px solid #2a4068;
+  border-radius: 8px;
+  background: rgba(10, 20, 38, 0.9);
+  color: #d6e5ff;
+  padding: 8px;
+  box-sizing: border-box;
+}
+
+.soilLegend[hidden] {
+  display: none;
+}
+
+.soilLegend h3 {
+  margin: 0 0 8px 0;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #c3d4f4;
+}
+
+.soilLegendItems {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.soilLegendItem {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.soilLegendItem.isActive {
+  background: rgba(66, 110, 184, 0.35);
+  border-radius: 4px;
+}
+
+.soilLegendSwatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  border: 1px solid rgba(220, 232, 255, 0.35);
+}
+
+.soilLegendLabel {
+  font-size: 12px;
+  color: #d6e5ff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.soilLegendCount {
+  font-size: 11px;
+  color: #9fb8de;
+}
+
+.soilLegendButton {
+  all: unset;
+  cursor: pointer;
+  display: contents;
+}
+
+.soilLegendDetails {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #2a4068;
+  font-size: 11px;
+  color: #bcd4f7;
+  line-height: 1.35;
+  white-space: pre-wrap;
 }
 
 canvas {

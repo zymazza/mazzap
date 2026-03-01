@@ -13,6 +13,7 @@
     "vegetation": "node \"Processing Pipeline/generateVegetation.js\"",
     "trees": "node \"Processing Pipeline/generateTrees.js\"",
     "hydrology": "node generateHydrology.js",
+    "soils": "node generateSoils.js",
     "all": "npm run dem && npm run vegetation && npm run trees && npm run buildings",
     "test": "test"
   },

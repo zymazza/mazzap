@@ -18,6 +18,8 @@ const treeDensityValue = document.getElementById("treeDensityValue");
 const showShrubsInput = document.getElementById("showShrubs");
 const showTreesInput = document.getElementById("showTrees");
 const showBuildingAssetsInput = document.getElementById("showBuildingAssets");
+const showBuildingFootprintsInput = document.getElementById("showBuildingFootprints");
+const showSoilDataInput = document.getElementById("showSoilData");
 const showHydrologyInput = document.getElementById("showHydrology");
 const hydrologyWidthInput = document.getElementById("hydrologyWidth");
 const hydrologyWidthValue = document.getElementById("hydrologyWidthValue");
@@ -27,8 +29,18 @@ const hydrologyFlowSpeedInput = document.getElementById("hydrologyFlowSpeed");
 const hydrologyFlowSpeedValue = document.getElementById("hydrologyFlowSpeedValue");
 const snapHydrologyToTerrainButton = document.getElementById("snapHydrologyToTerrain");
 const resetViewButton = document.getElementById("resetView");
+const toggleLayersSectionButton = document.getElementById("toggleLayersSection");
+const layersSectionBody = document.getElementById("layersSectionBody");
+const toggleHydrologySectionButton = document.getElementById("toggleHydrologySection");
+const hydrologySectionBody = document.getElementById("hydrologySectionBody");
+const toggleDensitySectionButton = document.getElementById("toggleDensitySection");
+const densitySectionBody = document.getElementById("densitySectionBody");
+const toggleTerrainSectionButton = document.getElementById("toggleTerrainSection");
+const terrainSectionBody = document.getElementById("terrainSectionBody");
 const toggleBuildingsSectionButton = document.getElementById("toggleBuildingsSection");
 const buildingsSectionBody = document.getElementById("buildingsSectionBody");
+const toggleStatusSectionButton = document.getElementById("toggleStatusSection");
+const statusSectionBody = document.getElementById("statusSectionBody");
 const buildingSelectionLabel = document.getElementById("buildingSelectionLabel");
 const buildingNameInput = document.getElementById("buildingNameInput");
 const saveBuildingNameButton = document.getElementById("saveBuildingName");
@@ -60,6 +72,9 @@ const refreshDataSourcesButton = document.getElementById("refreshDataSources");
 const clearAllDataButton = document.getElementById("clearAllData");
 const manageDataSourcesListEl = document.getElementById("manageDataSourcesList");
 const manageDataStatusEl = document.getElementById("manageDataStatus");
+const soilLegendEl = document.getElementById("soilLegend");
+const soilLegendItemsEl = document.getElementById("soilLegendItems");
+const soilLegendDetailsEl = document.getElementById("soilLegendDetails");
 let processBuildingAssetButton = null;
 let loadBuildingAssetButton = null;
 let buildingAssetStatusEl = null;
@@ -114,8 +129,14 @@ let treeTemplatesByCategory = {
 };
 let treeInstances = [];
 let treeAnchorsAll = [];
+let soilFeaturesGeoJson = null;
+let soilLegendData = [];
+let soilPolygonsLocal = [];
+let soilMeshes = [];
+let soilGroup = null;
 let hydrologyFeaturesGeoJson = null;
 let hydrologyPolylinesWorld = [];
+let hydrologyPolylinesLocal = [];
 let hydrologyMeshes = [];
 let hydrologyGroup = null;
 let hydrologyFlowTexture = null;
@@ -140,6 +161,7 @@ let demStatusText = "";
 let shrubsStatusText = "";
 let treesStatusText = "";
 let buildingsStatusText = "";
+let soilsStatusText = "";
 let hydrologyStatusText = "";
 let uploadQueueItems = [];
 let uploadInProgress = false;
@@ -151,6 +173,9 @@ let uploadProgressState = {
 };
 let manageDataSources = [];
 let manageDataBusy = false;
+let soilSelectedClassFilter = null;
+let soilSelectedPolygon = null;
+let terrainBaseColors = null;
 
 const cameraState = {
   radius: 1200,
@@ -189,16 +214,21 @@ const BUILDING_EDGE_CLEARANCE_METERS = 5;
 const BUILDING_PUSH_EPSILON = 0.05;
 const BUILDING_BASE_COLOR = 0x66e6ff;
 const BUILDING_SELECTED_COLOR = 0xffcc4d;
+const HYDROLOGY_SURFACE_OFFSET_METERS = 0.08;
+const HYDROLOGY_DEPTH_SLIDER_MIDPOINT = 5;
+const HYDROLOGY_EDGE_CLEARANCE_METERS = 1;
+const HYDROLOGY_PUSH_EPSILON = 0.02;
 const BUILDING_NAME_STORAGE_KEY = "mazzap.buildingNames.v1";
 const BUILDING_POSE_STORAGE_KEY = "mazzap.buildingAssetPose.v1";
-const BUILDINGS_SECTION_COLLAPSED_STORAGE_KEY = "mazzap.buildingsSectionCollapsed.v1";
+const SECTION_COLLAPSED_STORAGE_PREFIX = "mazzap.sectionCollapsed.v1.";
 const BUILDING_UV_NORMALIZE_SPAN_THRESHOLD = 10;
 const BUILDING_ASSET_UNLIT_DEBUG = true;
 const BUILDING_RENDER_PATH_LABEL = "raw-gltf";
-const DATA_SOURCE_TYPE_OPTIONS = ["lidar", "footprints", "hydrology", "photogrammetry"];
+const DATA_SOURCE_TYPE_OPTIONS = ["lidar", "footprints", "soils", "hydrology", "photogrammetry"];
 const DATA_SOURCE_TYPE_LABELS = {
   lidar: "LiDAR",
   footprints: "Footprints",
+  soils: "Soils (SSURGO)",
   photogrammetry: "Photogrammetry",
   hydrology: "Hydrology"
 };
@@ -250,6 +280,14 @@ function isBuildingAssetsVisible() {
   return Boolean(showBuildingAssetsInput?.checked);
 }
 
+function isBuildingFootprintsVisible() {
+  return Boolean(showBuildingFootprintsInput?.checked);
+}
+
+function isSoilsVisible() {
+  return Boolean(showSoilDataInput?.checked);
+}
+
 function isHydrologyVisible() {
   return Boolean(showHydrologyInput?.checked);
 }
@@ -261,6 +299,26 @@ function applyBuildingAssetsVisibility() {
   buildingAssetRootGroup.visible = isBuildingAssetsVisible();
 }
 
+function applyBuildingFootprintsVisibility() {
+  if (!buildingLinesGroup) {
+    return;
+  }
+  buildingLinesGroup.visible = isBuildingFootprintsVisible();
+}
+
+function applySoilsVisibility() {
+  if (soilGroup) {
+    soilGroup.visible = isSoilsVisible();
+  }
+
+  applySoilsToTerrainColors();
+
+  if (soilLegendEl) {
+    const hasLegendItems = Array.isArray(soilLegendData) && soilLegendData.length > 0;
+    soilLegendEl.hidden = !(isSoilsVisible() && hasLegendItems);
+  }
+}
+
 function applyHydrologyVisibility() {
   if (!hydrologyGroup) {
     return;
@@ -268,28 +326,51 @@ function applyHydrologyVisibility() {
   hydrologyGroup.visible = isHydrologyVisible();
 }
 
-function setBuildingsSectionCollapsed(collapsed) {
-  if (buildingsSectionBody) {
-    buildingsSectionBody.classList.toggle("isCollapsed", Boolean(collapsed));
-  }
-  if (toggleBuildingsSectionButton) {
-    toggleBuildingsSectionButton.textContent = collapsed ? "Expand" : "Collapse";
-    toggleBuildingsSectionButton.setAttribute("aria-expanded", collapsed ? "false" : "true");
-  }
+function getSectionCollapsedStorageKey(sectionId) {
+  return `${SECTION_COLLAPSED_STORAGE_PREFIX}${sectionId}`;
+}
+
+function loadSectionCollapsedFromStorage(sectionId) {
+  const key = getSectionCollapsedStorageKey(sectionId);
   try {
-    localStorage.setItem(BUILDINGS_SECTION_COLLAPSED_STORAGE_KEY, collapsed ? "1" : "0");
+    const raw = localStorage.getItem(key);
+    return raw === "1";
+  } catch (error) {
+    return false;
+  }
+}
+
+function setSectionCollapsed(sectionId, bodyEl, toggleEl, collapsed, persist = true) {
+  if (!bodyEl || !toggleEl) {
+    return;
+  }
+
+  const isCollapsed = Boolean(collapsed);
+  bodyEl.classList.toggle("isCollapsed", isCollapsed);
+  toggleEl.textContent = isCollapsed ? "+" : "-";
+  toggleEl.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+
+  if (!persist) {
+    return;
+  }
+
+  try {
+    localStorage.setItem(getSectionCollapsedStorageKey(sectionId), isCollapsed ? "1" : "0");
   } catch (error) {
     // Ignore storage write failures.
   }
 }
 
-function loadBuildingsSectionCollapsedFromStorage() {
-  try {
-    const raw = localStorage.getItem(BUILDINGS_SECTION_COLLAPSED_STORAGE_KEY);
-    return raw === "1";
-  } catch (error) {
-    return false;
+function initializeSectionCollapse(sectionId, bodyEl, toggleEl) {
+  if (!bodyEl || !toggleEl) {
+    return;
   }
+
+  setSectionCollapsed(sectionId, bodyEl, toggleEl, loadSectionCollapsedFromStorage(sectionId), false);
+  toggleEl.addEventListener("click", () => {
+    const currentlyCollapsed = bodyEl.classList.contains("isCollapsed");
+    setSectionCollapsed(sectionId, bodyEl, toggleEl, !currentlyCollapsed, true);
+  });
 }
 
 function refreshStatus() {
@@ -305,6 +386,9 @@ function refreshStatus() {
   }
   if (buildingsStatusText) {
     parts.push(buildingsStatusText);
+  }
+  if (soilsStatusText) {
+    parts.push(soilsStatusText);
   }
   if (hydrologyStatusText) {
     parts.push(hydrologyStatusText);
@@ -435,6 +519,17 @@ function inferDataSourceTypeForUpload(file, relativePath) {
   const target = String(relativePath || file?.name || "").toLowerCase();
   if (/\.copc\.laz$/i.test(target) || /\.(las|laz)$/i.test(target)) {
     return "lidar";
+  }
+  if (
+    target.includes("ssurgo") ||
+    target.includes("/tabular/") ||
+    target.includes("/thematic/") ||
+    target.includes("/spatial/") ||
+    target.includes("soildb_") ||
+    target.includes("soil_metadata") ||
+    target.endsWith(".mdb")
+  ) {
+    return "soils";
   }
   if (
     target.includes(".gdb/") ||
@@ -577,6 +672,23 @@ async function refreshDataProductsInViewer() {
   } catch (error) {
     demStatusText = `DEM unavailable (${error.message})`;
     refreshStatus();
+  }
+
+  try {
+    await loadSoils();
+  } catch (error) {
+    resetSoilsData();
+    soilsStatusText = `soils unavailable (${error.message})`;
+    refreshStatus();
+  }
+
+  try {
+    await loadSoils();
+  } catch (error) {
+    resetSoilsData();
+    soilsStatusText = `soils unavailable (${error.message})`;
+    refreshStatus();
+    console.error(error);
   }
 
   try {
@@ -926,7 +1038,7 @@ async function submitUploadQueue() {
   const queuedItems = uploadQueueItems.slice();
   const uploadedTypes = Array.from(new Set(queuedItems.map((item) => String(item.sourceType || "").toLowerCase())));
   const shouldAutoProcess =
-    uploadedTypes.includes("lidar") || uploadedTypes.includes("footprints") || uploadedTypes.includes("hydrology");
+    uploadedTypes.includes("lidar") || uploadedTypes.includes("footprints") || uploadedTypes.includes("hydrology") || uploadedTypes.includes("soils");
 
   const firstIndexByType = new Map();
   queuedItems.forEach((item, index) => {
@@ -1093,7 +1205,7 @@ async function submitUploadQueue() {
             ? `Running ${processSteps.length} processing step${processSteps.length === 1 ? "" : "s"}.`
             : "No processing steps required for current uploads.",
           detail: processSteps.length > 0
-            ? "This generates DEM, vegetation, trees, and/or footprints based on available inputs."
+            ? "This generates DEM, soils, hydrology, vegetation, trees, and/or footprints based on available inputs."
             : "",
           completedUnits,
           totalUnits,
@@ -1146,6 +1258,24 @@ async function submitUploadQueue() {
               });
             } catch (error) {
               demStatusText = `DEM unavailable (${error.message})`;
+              refreshStatus();
+            }
+          }
+
+          if (stepId === "soils") {
+            try {
+              await loadSoils();
+              updateUploadProgressUi({
+                title: "Soils Ready",
+                explanation: "SSURGO soil polygons and legend loaded in viewer.",
+                detail: "Continuing remaining processing steps.",
+                completedUnits,
+                totalUnits,
+                done: false,
+                isError: false
+              });
+            } catch (error) {
+              soilsStatusText = `soils unavailable (${error.message})`;
               refreshStatus();
             }
           }
@@ -1792,6 +1922,31 @@ function getHoveredRealCoordinates() {
   };
 }
 
+function getTerrainLocalHitAtPointer(event) {
+  if (!terrainMesh) {
+    return null;
+  }
+
+  const rect = renderer.domElement.getBoundingClientRect();
+  const px = (event.clientX - rect.left) / Math.max(rect.width, 1);
+  const py = (event.clientY - rect.top) / Math.max(rect.height, 1);
+  if (px < 0 || px > 1 || py < 0 || py > 1) {
+    return null;
+  }
+
+  const ndc = new THREE.Vector2(px * 2 - 1, -(py * 2 - 1));
+  raycaster.setFromCamera(ndc, camera);
+  const hit = raycaster.intersectObject(terrainMesh, false)[0];
+  if (!hit || !hit.point) {
+    return null;
+  }
+
+  return {
+    x: Number(hit.point.x),
+    y: Number(hit.point.y)
+  };
+}
+
 async function copyTextToClipboard(text) {
   if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
     await navigator.clipboard.writeText(text);
@@ -2017,7 +2172,7 @@ function clearSelectedBuildingName() {
 }
 
 function pickBuildingAtPointer(event) {
-  if (!buildingLinesGroup) {
+  if (!buildingLinesGroup || !isBuildingFootprintsVisible()) {
     return null;
   }
 
@@ -2043,6 +2198,28 @@ function pickBuildingAtPointer(event) {
     }
   }
   return null;
+}
+
+function pickSoilPolygonAtPointer(event) {
+  if (!isSoilsVisible() || !Array.isArray(soilPolygonsLocal) || soilPolygonsLocal.length === 0) {
+    return null;
+  }
+
+  const localPoint = getTerrainLocalHitAtPointer(event);
+  if (!localPoint) {
+    return null;
+  }
+
+  const polygon = findSoilPolygonAtLocal(localPoint.x, localPoint.y);
+  if (!polygon) {
+    return null;
+  }
+
+  if (soilSelectedClassFilter && polygon.classLabel !== soilSelectedClassFilter) {
+    return null;
+  }
+
+  return polygon;
 }
 
 function computeRingBBox(ring) {
@@ -2218,6 +2395,82 @@ function enforceBuildingEdgeSeparation(x, y, requiredDistance) {
   return { x: px, y: py, pushed: moved };
 }
 
+function findHydrologySeparationViolation(x, y, requiredDistance) {
+  if (!Array.isArray(hydrologyPolylinesLocal) || hydrologyPolylinesLocal.length === 0) {
+    return null;
+  }
+
+  let worst = null;
+  for (const line of hydrologyPolylinesLocal) {
+    if (!Array.isArray(line) || line.length < 2) {
+      continue;
+    }
+
+    for (let i = 0; i < line.length - 1; i += 1) {
+      const a = line[i];
+      const b = line[i + 1];
+      const candidate = squaredDistanceToSegment(x, y, a[0], a[1], b[0], b[1]);
+      const dist = Math.sqrt(Math.max(0, candidate.distSq));
+      const violation = requiredDistance - dist;
+      if (violation <= 0) {
+        continue;
+      }
+
+      let dirX = x - candidate.closestX;
+      let dirY = y - candidate.closestY;
+      let dirLen = Math.hypot(dirX, dirY);
+
+      if (dirLen < 1e-6) {
+        const segX = b[0] - a[0];
+        const segY = b[1] - a[1];
+        const segLen = Math.hypot(segX, segY);
+        if (segLen > 1e-6) {
+          dirX = -segY / segLen;
+          dirY = segX / segLen;
+          dirLen = 1;
+        } else {
+          dirX = 1;
+          dirY = 0;
+          dirLen = 1;
+        }
+      }
+
+      dirX /= dirLen;
+      dirY /= dirLen;
+
+      if (!worst || violation > worst.violation) {
+        worst = { violation, dirX, dirY };
+      }
+    }
+  }
+
+  return worst;
+}
+
+function enforceHydrologySeparation(x, y, requiredDistance) {
+  if (!Array.isArray(hydrologyPolylinesLocal) || hydrologyPolylinesLocal.length === 0) {
+    return { x, y, pushed: false };
+  }
+
+  let px = x;
+  let py = y;
+  let moved = false;
+
+  for (let i = 0; i < 12; i += 1) {
+    const violation = findHydrologySeparationViolation(px, py, requiredDistance);
+    if (!violation) {
+      break;
+    }
+
+    const moveBy = violation.violation + HYDROLOGY_PUSH_EPSILON;
+    px += violation.dirX * moveBy;
+    py += violation.dirY * moveBy;
+    moved = true;
+  }
+
+  return { x: px, y: py, pushed: moved };
+}
+
 function computeTemplateFootprintRadius(template) {
   const bbox = new THREE.Box3().setFromObject(template);
   if (!Number.isFinite(bbox.min.x) || !Number.isFinite(bbox.max.x) ||
@@ -2323,6 +2576,487 @@ function sampleTerrainHeightAtLocal(localX, localY) {
   return Number.isFinite(z) ? z : 0;
 }
 
+function ensureSoilGroup() {
+  if (!soilGroup) {
+    soilGroup = new THREE.Group();
+    soilGroup.name = "soil-overlay";
+    scene.add(soilGroup);
+    soilGroup.visible = isSoilsVisible();
+  }
+  return soilGroup;
+}
+
+function clearSoilMeshes() {
+  if (!soilGroup) {
+    soilMeshes = [];
+    return;
+  }
+
+  for (const mesh of soilMeshes) {
+    soilGroup.remove(mesh);
+    if (mesh.geometry) {
+      mesh.geometry.dispose();
+    }
+    if (mesh.material) {
+      mesh.material.dispose();
+    }
+  }
+  soilMeshes = [];
+}
+
+function resetSoilsData() {
+  soilFeaturesGeoJson = null;
+  soilLegendData = [];
+  soilPolygonsLocal = [];
+  soilSelectedClassFilter = null;
+  soilSelectedPolygon = null;
+  clearSoilMeshes();
+  applySoilsToTerrainColors();
+  updateSoilLegendDetails();
+  applySoilsVisibility();
+}
+
+function toLocalRingFromWorldCoords(ringCoords) {
+  if (!Array.isArray(ringCoords) || ringCoords.length < 3 || !demMeta) {
+    return null;
+  }
+
+  const out = [];
+  for (const coord of ringCoords) {
+    if (!Array.isArray(coord) || coord.length < 2) {
+      continue;
+    }
+    const x = Number(coord[0]);
+    const y = Number(coord[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      continue;
+    }
+    out.push([x - demMeta.centerX, y - demMeta.centerY]);
+  }
+
+  if (out.length >= 2) {
+    const first = out[0];
+    const last = out[out.length - 1];
+    if (Math.abs(first[0] - last[0]) < 1e-9 && Math.abs(first[1] - last[1]) < 1e-9) {
+      out.pop();
+    }
+  }
+
+  return out.length >= 3 ? out : null;
+}
+
+function isPointInsideSoilPolygon(x, y, polygon) {
+  if (!polygon || !polygon.bbox) {
+    return false;
+  }
+  const b = polygon.bbox;
+  if (x < b.minX || x > b.maxX || y < b.minY || y > b.maxY) {
+    return false;
+  }
+  if (!isPointInRing(x, y, polygon.outer)) {
+    return false;
+  }
+  for (const hole of polygon.holes || []) {
+    if (isPointInRing(x, y, hole)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function findSoilPolygonAtLocal(localX, localY) {
+  if (!Array.isArray(soilPolygonsLocal) || soilPolygonsLocal.length === 0) {
+    return null;
+  }
+  for (let i = soilPolygonsLocal.length - 1; i >= 0; i -= 1) {
+    const polygon = soilPolygonsLocal[i];
+    if (isPointInsideSoilPolygon(localX, localY, polygon)) {
+      return polygon;
+    }
+  }
+  return null;
+}
+
+function updateSoilLegendDetails(polygon = soilSelectedPolygon) {
+  if (!soilLegendDetailsEl) {
+    return;
+  }
+
+  if (!polygon) {
+    if (soilSelectedClassFilter) {
+      const selectedLegend = soilLegendData.find((item) => item.label === soilSelectedClassFilter);
+      if (selectedLegend) {
+        soilLegendDetailsEl.textContent = `Class filter: ${selectedLegend.label}\nPolygons: ${Number(selectedLegend.count || 0).toLocaleString()}`;
+        return;
+      }
+    }
+    soilLegendDetailsEl.textContent = "Click a soil polygon to view attributes.";
+    return;
+  }
+
+  const props = polygon.properties || {};
+  const getValue = (...keys) => {
+    for (const key of keys) {
+      const value = props[key];
+      if (value !== null && value !== undefined && String(value).trim() !== "") {
+        return String(value);
+      }
+    }
+    return null;
+  };
+
+  const lines = [];
+  const missing = [];
+  const addField = (label, ...keys) => {
+    const value = getValue(...keys);
+    if (value) {
+      lines.push(`${label}: ${value}`);
+    } else {
+      missing.push(label);
+    }
+  };
+
+  addField("Class", "soil_class");
+  addField("Map Unit Key", "soil_mukey", "MUKEY");
+  addField("Map Unit Symbol", "soil_musym", "MUSYM");
+  addField("Map Unit Name", "soil_muname", "MUNAME");
+  addField("Description", "soil_mutext", "MUTEXT");
+  addField("Hydrologic Group", "soil_hydgrpdcd", "HYDGRPDCD");
+  addField("Drainage Class", "soil_drclassdcd", "DRCLASSDCD");
+  addField("Flood Frequency", "soil_flodfreqdcd", "FLODFREQDCD");
+  addField("Area Symbol", "AREASYMBOL");
+  addField("Spatial Version", "SPATIALVER", "SPATIALVERSION");
+
+  if (lines.length === 0) {
+    lines.push("No attributes available for this polygon.");
+  }
+  if (missing.length > 0) {
+    lines.push(`Missing attributes: ${missing.join(", ")}`);
+  }
+  soilLegendDetailsEl.textContent = lines.join("\n");
+}
+
+function rebuildSoilPolygonsLocal() {
+  if (!soilFeaturesGeoJson || !demMeta) {
+    soilPolygonsLocal = [];
+    return;
+  }
+
+  const features = Array.isArray(soilFeaturesGeoJson.features) ? soilFeaturesGeoJson.features : [];
+  const out = [];
+
+  for (const feature of features) {
+    const geometry = feature?.geometry;
+    const props = feature?.properties || {};
+    const polygons = [];
+    collectSoilPolygons(geometry, polygons);
+
+    for (const polygonCoords of polygons) {
+      const outer = toLocalRingFromWorldCoords(polygonCoords[0]);
+      if (!outer) {
+        continue;
+      }
+      const holes = [];
+      for (let i = 1; i < polygonCoords.length; i += 1) {
+        const hole = toLocalRingFromWorldCoords(polygonCoords[i]);
+        if (hole) {
+          holes.push(hole);
+        }
+      }
+      out.push({
+        outer,
+        holes,
+        bbox: computeRingBBox(outer),
+        color: String(props.soil_color || "#8c8c8c"),
+        classLabel: String(props.soil_class || "Unknown"),
+        properties: props
+      });
+    }
+  }
+
+  soilPolygonsLocal = out;
+}
+
+function applySoilsToTerrainColors() {
+  if (!terrainGeometry || !terrainBaseColors) {
+    return;
+  }
+
+  const colorAttr = terrainGeometry.getAttribute("color");
+  if (!colorAttr || !colorAttr.array) {
+    return;
+  }
+
+  const colors = colorAttr.array;
+  colors.set(terrainBaseColors);
+
+  if (!isSoilsVisible() || !Array.isArray(soilPolygonsLocal) || soilPolygonsLocal.length === 0) {
+    colorAttr.needsUpdate = true;
+    return;
+  }
+
+  for (const polygon of soilPolygonsLocal) {
+    if (soilSelectedClassFilter && polygon.classLabel !== soilSelectedClassFilter) {
+      continue;
+    }
+
+    const b = polygon.bbox;
+    const colMin = clamp(Math.floor((b.minX + terrainWidthMeters / 2) / demGridXStep), 0, demGridWidth - 1);
+    const colMax = clamp(Math.ceil((b.maxX + terrainWidthMeters / 2) / demGridXStep), 0, demGridWidth - 1);
+    const rowMin = clamp(Math.floor((terrainHeightMeters / 2 - b.maxY) / demGridYStep), 0, demGridHeight - 1);
+    const rowMax = clamp(Math.ceil((terrainHeightMeters / 2 - b.minY) / demGridYStep), 0, demGridHeight - 1);
+
+    const tint = new THREE.Color(polygon.color || "#8c8c8c");
+    if (soilSelectedPolygon === polygon) {
+      tint.lerp(new THREE.Color("#ffffff"), 0.35);
+    }
+    for (let row = rowMin; row <= rowMax; row += 1) {
+      const y = terrainHeightMeters / 2 - row * demGridYStep;
+      for (let col = colMin; col <= colMax; col += 1) {
+        const x = -terrainWidthMeters / 2 + col * demGridXStep;
+        if (!isPointInsideSoilPolygon(x, y, polygon)) {
+          continue;
+        }
+        const index = (row * demGridWidth + col) * 3;
+        colors[index] = tint.r;
+        colors[index + 1] = tint.g;
+        colors[index + 2] = tint.b;
+      }
+    }
+  }
+
+  colorAttr.needsUpdate = true;
+}
+
+function buildSoilPolygonMesh(polygonCoords, color, verticalScale) {
+  if (!Array.isArray(polygonCoords) || polygonCoords.length === 0 || !demMeta) {
+    return null;
+  }
+
+  const outer = toLocalRingFromWorldCoords(polygonCoords[0]);
+  if (!outer) {
+    return null;
+  }
+
+  const shape = new THREE.Shape(outer.map((pair) => new THREE.Vector2(pair[0], pair[1])));
+  for (let i = 1; i < polygonCoords.length; i += 1) {
+    const hole = toLocalRingFromWorldCoords(polygonCoords[i]);
+    if (!hole) {
+      continue;
+    }
+    const holePath = new THREE.Path(hole.map((pair) => new THREE.Vector2(pair[0], pair[1])));
+    shape.holes.push(holePath);
+  }
+
+  const geometry = new THREE.ShapeGeometry(shape);
+  const positions = geometry.getAttribute("position");
+  const scale = Math.max(0.01, Number(verticalScale || 1));
+  for (let i = 0; i < positions.count; i += 1) {
+    const x = positions.getX(i);
+    const y = positions.getY(i);
+    const z = sampleTerrainHeightAtLocal(x, y) * scale + 0.03;
+    positions.setXYZ(i, x, y, z);
+  }
+  positions.needsUpdate = true;
+  geometry.computeBoundingSphere();
+
+  const material = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(String(color || "#8c8c8c")),
+    transparent: true,
+    opacity: 0.42,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.renderOrder = 1;
+  return mesh;
+}
+
+function collectSoilPolygons(geometry, out) {
+  if (!geometry || !geometry.type || !Array.isArray(geometry.coordinates)) {
+    return;
+  }
+  if (geometry.type === "Polygon") {
+    out.push(geometry.coordinates);
+    return;
+  }
+  if (geometry.type === "MultiPolygon") {
+    for (const polygon of geometry.coordinates) {
+      if (Array.isArray(polygon)) {
+        out.push(polygon);
+      }
+    }
+  }
+}
+
+function buildSoilLegendFromFeatures(geojson) {
+  const features = Array.isArray(geojson?.features) ? geojson.features : [];
+  const map = new Map();
+  for (const feature of features) {
+    const props = feature?.properties || {};
+    const label = String(props.soil_class || "Unknown").trim() || "Unknown";
+    const color = String(props.soil_color || "#8c8c8c").trim() || "#8c8c8c";
+    const existing = map.get(label) || { label, color, count: 0 };
+    existing.count += 1;
+    map.set(label, existing);
+  }
+
+  return Array.from(map.values()).sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+}
+
+function renderSoilLegend() {
+  if (!soilLegendItemsEl) {
+    return;
+  }
+  soilLegendItemsEl.innerHTML = "";
+
+  const selectedClassFromPolygon = String(soilSelectedPolygon?.classLabel || "");
+
+  for (const item of soilLegendData) {
+    const row = document.createElement("div");
+    row.className = "soilLegendItem";
+    if ((soilSelectedClassFilter && soilSelectedClassFilter === item.label) ||
+        (!soilSelectedClassFilter && selectedClassFromPolygon && selectedClassFromPolygon === item.label)) {
+      row.classList.add("isActive");
+    }
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "soilLegendButton";
+    button.title = `Filter by ${item.label}`;
+    button.addEventListener("click", () => {
+      soilSelectedClassFilter = soilSelectedClassFilter === item.label ? null : item.label;
+      soilSelectedPolygon = null;
+      applySoilsToTerrainColors();
+      renderSoilLegend();
+      updateSoilLegendDetails();
+    });
+
+    const swatch = document.createElement("span");
+    swatch.className = "soilLegendSwatch";
+    swatch.style.backgroundColor = String(item.color || "#8c8c8c");
+
+    const label = document.createElement("span");
+    label.className = "soilLegendLabel";
+    label.textContent = String(item.label || "Unknown");
+
+    const count = document.createElement("span");
+    count.className = "soilLegendCount";
+    count.textContent = Number(item.count || 0).toLocaleString();
+
+    button.appendChild(swatch);
+    button.appendChild(label);
+    button.appendChild(count);
+    row.appendChild(button);
+    soilLegendItemsEl.appendChild(row);
+  }
+
+  updateSoilLegendDetails();
+  applySoilsVisibility();
+}
+
+function renderSoilOverlay() {
+  clearSoilMeshes();
+  if (!demMeta || !soilFeaturesGeoJson) {
+    return;
+  }
+
+  const features = Array.isArray(soilFeaturesGeoJson.features) ? soilFeaturesGeoJson.features : [];
+  if (features.length === 0) {
+    soilPolygonsLocal = [];
+    applySoilsToTerrainColors();
+    soilsStatusText = "soils: no polygons";
+    refreshStatus();
+    renderSoilLegend();
+    return;
+  }
+
+  rebuildSoilPolygonsLocal();
+  const polygonCount = soilPolygonsLocal.length;
+
+  applySoilsVisibility();
+  soilsStatusText = `soils: ${polygonCount.toLocaleString()} polygon${polygonCount === 1 ? "" : "s"}`;
+  refreshStatus();
+  renderSoilLegend();
+}
+
+async function loadSoils() {
+  if (!demMeta) {
+    soilsStatusText = "soils unavailable (DEM is required)";
+    refreshStatus();
+    resetSoilsData();
+    return;
+  }
+
+  soilsStatusText = "Loading soils...";
+  refreshStatus();
+
+  let status;
+  try {
+    status = await fetchJson("/api/soils/status");
+  } catch (error) {
+    status = null;
+  }
+
+  let soilsData = null;
+  let legendData = null;
+
+  if (status && status.available && status.preferredPath) {
+    try {
+      soilsData = await fetchJson(String(status.preferredPath));
+    } catch (error) {
+      const fallback = String(status.fallbackPath || "");
+      if (fallback) {
+        soilsData = await fetchJson(fallback);
+      } else {
+        throw error;
+      }
+    }
+
+    if (status.legendPath) {
+      try {
+        const legendPayload = await fetchJson(String(status.legendPath));
+        legendData = Array.isArray(legendPayload?.classes) ? legendPayload.classes : null;
+      } catch (error) {
+        legendData = null;
+      }
+    }
+  } else {
+    const fallbackCandidates = [
+      "/data/soils/soils_clipped_local.geojson",
+      "/data/soils/soils_clipped.geojson"
+    ];
+    let lastError = null;
+    for (const candidate of fallbackCandidates) {
+      try {
+        soilsData = await fetchJson(candidate);
+        break;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (!soilsData) {
+      resetSoilsData();
+      if (lastError && /404/.test(String(lastError.message || ""))) {
+        soilsStatusText = "soils: no data";
+      } else if (lastError) {
+        throw lastError;
+      } else {
+        soilsStatusText = "soils: no data";
+      }
+      refreshStatus();
+      return;
+    }
+  }
+
+  soilFeaturesGeoJson = soilsData;
+  soilLegendData = Array.isArray(legendData) && legendData.length > 0
+    ? legendData
+    : buildSoilLegendFromFeatures(soilsData);
+  renderSoilOverlay();
+}
+
 function ensureHydrologyGroup() {
   if (!hydrologyGroup) {
     hydrologyGroup = new THREE.Group();
@@ -2331,6 +3065,22 @@ function ensureHydrologyGroup() {
     hydrologyGroup.visible = isHydrologyVisible();
   }
   return hydrologyGroup;
+}
+
+function getHydrologyDepthMeters() {
+  const rawDepth = Number(hydrologyDepthInput?.value || HYDROLOGY_DEPTH_SLIDER_MIDPOINT);
+  if (!Number.isFinite(rawDepth)) {
+    return 0;
+  }
+  return rawDepth - HYDROLOGY_DEPTH_SLIDER_MIDPOINT;
+}
+
+function getHydrologyWidthMeters() {
+  const rawWidth = Number(hydrologyWidthInput?.value || 4);
+  if (!Number.isFinite(rawWidth) || rawWidth <= 0) {
+    return 4;
+  }
+  return rawWidth;
 }
 
 function createHydrologyFlowTexture() {
@@ -2402,6 +3152,7 @@ function clearHydrologyMeshes() {
 function resetHydrologyData() {
   hydrologyFeaturesGeoJson = null;
   hydrologyPolylinesWorld = [];
+  hydrologyPolylinesLocal = [];
   clearHydrologyMeshes();
   applyHydrologyVisibility();
 }
@@ -2471,13 +3222,26 @@ function parseHydrologyPolylinesWorld(geojson) {
   return lines;
 }
 
+function rebuildHydrologyPolylinesLocal() {
+  if (!demMeta || !Array.isArray(hydrologyPolylinesWorld) || hydrologyPolylinesWorld.length === 0) {
+    hydrologyPolylinesLocal = [];
+    return;
+  }
+
+  hydrologyPolylinesLocal = hydrologyPolylinesWorld
+    .map((line) => line
+      .map((point) => [point.x - demMeta.centerX, point.y - demMeta.centerY])
+      .filter((pair) => Number.isFinite(pair[0]) && Number.isFinite(pair[1])))
+    .filter((line) => Array.isArray(line) && line.length >= 2);
+}
+
 function buildHydrologyStripGeometry(worldPoints, widthMeters, depthMeters, verticalScale) {
   if (!Array.isArray(worldPoints) || worldPoints.length < 2 || !demMeta) {
     return null;
   }
 
   const halfWidth = Math.max(0.05, Number(widthMeters) * 0.5);
-  const depth = Math.max(0, Number(depthMeters));
+  const depth = Number(depthMeters);
   const scale = Math.max(0.01, Number(verticalScale));
   const leftRight = [];
   const uvPairs = [];
@@ -2505,7 +3269,7 @@ function buildHydrologyStripGeometry(worldPoints, widthMeters, depthMeters, vert
     const localX = current.x - demMeta.centerX;
     const localY = current.y - demMeta.centerY;
     const terrainZ = sampleTerrainHeightAtLocal(localX, localY) * scale;
-    const streamZ = terrainZ - depth * scale + 0.02;
+    const streamZ = terrainZ - depth * scale + HYDROLOGY_SURFACE_OFFSET_METERS;
 
     const left = {
       x: localX + nx * halfWidth,
@@ -2569,7 +3333,7 @@ function renderHydrologyOverlay() {
   }
 
   const width = Number(hydrologyWidthInput?.value || 4);
-  const depth = Number(hydrologyDepthInput?.value || 1);
+  const depth = getHydrologyDepthMeters();
   const scale = Number(verticalScaleInput?.value || 1);
   const material = ensureHydrologyMaterial();
   const group = ensureHydrologyGroup();
@@ -2654,6 +3418,7 @@ async function loadHydrology() {
 
     hydrologyFeaturesGeoJson = loaded;
     hydrologyPolylinesWorld = parseHydrologyPolylinesWorld(loaded);
+    rebuildHydrologyPolylinesLocal();
     renderHydrologyOverlay();
     return;
   }
@@ -2673,7 +3438,15 @@ async function loadHydrology() {
 
   hydrologyFeaturesGeoJson = data;
   hydrologyPolylinesWorld = parseHydrologyPolylinesWorld(data);
+  rebuildHydrologyPolylinesLocal();
   renderHydrologyOverlay();
+
+  if (shrubAnchorsAll.length > 0 && shrubTemplates.length > 0) {
+    renderShrubAssetInstances();
+  }
+  if (treeAnchorsAll.length > 0 && treeTemplatesByCategory.all.length > 0) {
+    renderTreeAssetInstances();
+  }
 }
 
 function toViewerLocalFromUtm(x, y) {
@@ -2915,6 +3688,7 @@ function renderBuildingsOverlay() {
 
   buildingLinesGroup.scale.z = Number(verticalScaleInput.value || 1);
   scene.add(buildingLinesGroup);
+  applyBuildingFootprintsVisibility();
   updateBuildingRecordStyles();
   updateBuildingEditorUI();
   buildingsStatusText = `buildings: ${featureCount.toLocaleString()} footprints`;
@@ -3002,6 +3776,8 @@ function buildTerrainMesh(gridData) {
     colors[i * 3 + 2] = color.b;
   }
 
+  terrainBaseColors = new Float32Array(colors);
+
   terrainGeometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   terrainGeometry.computeVertexNormals();
 
@@ -3019,7 +3795,11 @@ function buildTerrainMesh(gridData) {
   applyShrubVerticalScale(scale);
   applyTreeVerticalScale(scale);
   applyBuildingsVerticalScale(scale);
+  if (soilFeaturesGeoJson) {
+    renderSoilOverlay();
+  }
   if (hydrologyPolylinesWorld.length > 0) {
+    rebuildHydrologyPolylinesLocal();
     renderHydrologyOverlay();
   }
   resetView(scale);
@@ -4056,7 +4836,9 @@ function renderShrubAssetInstances() {
   }
 
   const vScale = Number(verticalScaleInput.value || 1);
-  let pushedCount = 0;
+  let pushedByBuildingsCount = 0;
+  let pushedByHydrologyCount = 0;
+  const hydrologyHalfWidth = getHydrologyWidthMeters() * 0.5;
 
   for (const anchor of anchors) {
     const variant = shrubTemplates[Math.floor(Math.random() * shrubTemplates.length)];
@@ -4064,11 +4846,18 @@ function renderShrubAssetInstances() {
     const randomScale = Math.exp(randomNormal(0, 0.18));
     const scale = clamp(anchor.baseScale * randomScale, 0.5, 3.0) * BUSH_RENDER_SCALE_MULTIPLIER;
     const scaledRadius = Math.max(0.1, Number(variant.footprintRadius || 0.5) * scale);
-    const requiredDistance = BUILDING_EDGE_CLEARANCE_METERS + scaledRadius;
-    const adjusted = enforceBuildingEdgeSeparation(anchor.x, anchor.y, requiredDistance);
-    if (adjusted.pushed) {
-      pushedCount += 1;
+    const requiredBuildingDistance = BUILDING_EDGE_CLEARANCE_METERS + scaledRadius;
+    const afterBuilding = enforceBuildingEdgeSeparation(anchor.x, anchor.y, requiredBuildingDistance);
+    if (afterBuilding.pushed) {
+      pushedByBuildingsCount += 1;
     }
+
+    const requiredHydrologyDistance = hydrologyHalfWidth + HYDROLOGY_EDGE_CLEARANCE_METERS + scaledRadius;
+    const adjusted = enforceHydrologySeparation(afterBuilding.x, afterBuilding.y, requiredHydrologyDistance);
+    if (adjusted.pushed) {
+      pushedByHydrologyCount += 1;
+    }
+
     const adjustedBaseZ = sampleTerrainHeightAtLocal(adjusted.x, adjusted.y);
     instance.userData.baseScale = scale;
     instance.userData.baseZ = adjustedBaseZ;
@@ -4084,7 +4873,7 @@ function renderShrubAssetInstances() {
   shrubsStatusText =
     `shrubs: ${anchors.length.toLocaleString()} asset instances` +
     ` (${Math.round(getShrubDensityPercent())}%)` +
-    ` (${shrubTemplates.length} variants, pushed ${pushedCount.toLocaleString()})`;
+    ` (${shrubTemplates.length} variants, pushed bld ${pushedByBuildingsCount.toLocaleString()}, stream ${pushedByHydrologyCount.toLocaleString()})`;
   refreshStatus();
 }
 
@@ -4198,7 +4987,9 @@ function renderTreeAssetInstances() {
   let tallCount = 0;
   let shortCount = 0;
   let midCount = 0;
-  let pushedCount = 0;
+  let pushedByBuildingsCount = 0;
+  let pushedByHydrologyCount = 0;
+  const hydrologyHalfWidth = getHydrologyWidthMeters() * 0.5;
 
   for (const anchor of anchors) {
     const variant = pickTreeVariantForHeight(anchor.height);
@@ -4206,11 +4997,18 @@ function renderTreeAssetInstances() {
     const lowerName = variant.name.toLowerCase();
     const scale = anchor.height;
     const scaledRadius = Math.max(0.1, Number(variant.footprintRadius || 0.5) * scale);
-    const requiredDistance = BUILDING_EDGE_CLEARANCE_METERS + scaledRadius;
-    const adjusted = enforceBuildingEdgeSeparation(anchor.x, anchor.y, requiredDistance);
-    if (adjusted.pushed) {
-      pushedCount += 1;
+    const requiredBuildingDistance = BUILDING_EDGE_CLEARANCE_METERS + scaledRadius;
+    const afterBuilding = enforceBuildingEdgeSeparation(anchor.x, anchor.y, requiredBuildingDistance);
+    if (afterBuilding.pushed) {
+      pushedByBuildingsCount += 1;
     }
+
+    const requiredHydrologyDistance = hydrologyHalfWidth + HYDROLOGY_EDGE_CLEARANCE_METERS + scaledRadius;
+    const adjusted = enforceHydrologySeparation(afterBuilding.x, afterBuilding.y, requiredHydrologyDistance);
+    if (adjusted.pushed) {
+      pushedByHydrologyCount += 1;
+    }
+
     const adjustedBaseZ = sampleTerrainHeightAtLocal(adjusted.x, adjusted.y);
 
     if (lowerName.includes("tall")) {
@@ -4234,7 +5032,7 @@ function renderTreeAssetInstances() {
   treesStatusText =
     `trees: ${anchors.length.toLocaleString()} asset instances` +
     ` (${Math.round(getTreeDensityPercent())}%)` +
-    ` (tall ${tallCount.toLocaleString()}, short ${shortCount.toLocaleString()}, mid ${midCount.toLocaleString()}, pushed ${pushedCount.toLocaleString()})`;
+    ` (tall ${tallCount.toLocaleString()}, short ${shortCount.toLocaleString()}, mid ${midCount.toLocaleString()}, pushed bld ${pushedByBuildingsCount.toLocaleString()}, stream ${pushedByHydrologyCount.toLocaleString()})`;
   refreshStatus();
 }
 
@@ -4373,6 +5171,17 @@ renderer.domElement.addEventListener("pointerup", (event) => {
   if (shouldPickBuilding) {
     const pickedId = pickBuildingAtPointer(event);
     selectBuilding(pickedId);
+
+    if (isSoilsVisible()) {
+      const pickedPolygon = pickedId ? null : pickSoilPolygonAtPointer(event);
+      const selectionChanged = pickedPolygon !== soilSelectedPolygon;
+      soilSelectedPolygon = pickedPolygon;
+      if (selectionChanged) {
+        renderSoilLegend();
+      } else {
+        updateSoilLegendDetails();
+      }
+    }
   }
 });
 
@@ -4447,7 +5256,11 @@ verticalScaleInput.addEventListener("input", () => {
   applyShrubVerticalScale(scale);
   applyTreeVerticalScale(scale);
   applyBuildingsVerticalScale(scale);
+  if (soilFeaturesGeoJson) {
+    renderSoilOverlay();
+  }
   if (hydrologyPolylinesWorld.length > 0) {
+    rebuildHydrologyPolylinesLocal();
     renderHydrologyOverlay();
   }
 });
@@ -4490,6 +5303,23 @@ showBuildingAssetsInput?.addEventListener("change", () => {
   applyBuildingAssetsVisibility();
 });
 
+showBuildingFootprintsInput?.addEventListener("change", () => {
+  applyBuildingFootprintsVisibility();
+});
+
+showSoilDataInput?.addEventListener("change", () => {
+  applySoilsVisibility();
+  if (!isSoilsVisible()) {
+    soilsStatusText = "soils: hidden";
+    refreshStatus();
+  } else if (soilFeaturesGeoJson) {
+    renderSoilOverlay();
+  } else {
+    soilsStatusText = "soils: loading...";
+    refreshStatus();
+  }
+});
+
 showHydrologyInput?.addEventListener("change", () => {
   applyHydrologyVisibility();
   if (!isHydrologyVisible()) {
@@ -4508,11 +5338,17 @@ hydrologyWidthInput?.addEventListener("input", () => {
   hydrologyWidthValue.textContent = `${width.toFixed(1)}m`;
   if (hydrologyPolylinesWorld.length > 0) {
     renderHydrologyOverlay();
+    if (shrubAnchorsAll.length > 0 && shrubTemplates.length > 0) {
+      renderShrubAssetInstances();
+    }
+    if (treeAnchorsAll.length > 0 && treeTemplatesByCategory.all.length > 0) {
+      renderTreeAssetInstances();
+    }
   }
 });
 
 hydrologyDepthInput?.addEventListener("input", () => {
-  const depth = Number(hydrologyDepthInput.value);
+  const depth = getHydrologyDepthMeters();
   hydrologyDepthValue.textContent = `${depth.toFixed(1)}m`;
   if (hydrologyPolylinesWorld.length > 0) {
     renderHydrologyOverlay();
@@ -4531,6 +5367,12 @@ snapHydrologyToTerrainButton?.addEventListener("click", () => {
     return;
   }
   renderHydrologyOverlay();
+  if (shrubAnchorsAll.length > 0 && shrubTemplates.length > 0) {
+    renderShrubAssetInstances();
+  }
+  if (treeAnchorsAll.length > 0 && treeTemplatesByCategory.all.length > 0) {
+    renderTreeAssetInstances();
+  }
   hydrologyStatusText = "hydrology: snapped to terrain";
   refreshStatus();
 });
@@ -4679,11 +5521,6 @@ submitUploadButton?.addEventListener("click", async () => {
   await submitUploadQueue();
 });
 
-toggleBuildingsSectionButton?.addEventListener("click", () => {
-  const isCollapsed = buildingsSectionBody?.classList.contains("isCollapsed");
-  setBuildingsSectionCollapsed(!isCollapsed);
-});
-
 resetViewButton.addEventListener("click", () => {
   resetView(Number(verticalScaleInput.value));
 });
@@ -4793,6 +5630,15 @@ async function initialize() {
   }
 
   try {
+    await loadSoils();
+  } catch (error) {
+    resetSoilsData();
+    soilsStatusText = `soils unavailable (${error.message})`;
+    refreshStatus();
+    console.error(error);
+  }
+
+  try {
     await loadHydrology();
   } catch (error) {
     resetHydrologyData();
@@ -4837,14 +5683,21 @@ verticalScaleValue.textContent = `${Number(verticalScaleInput.value).toFixed(1)}
 shrubDensityValue.textContent = `${Math.round(getShrubDensityPercent())}%`;
 treeDensityValue.textContent = `${Math.round(getTreeDensityPercent())}%`;
 hydrologyWidthValue.textContent = `${Number(hydrologyWidthInput.value).toFixed(1)}m`;
-hydrologyDepthValue.textContent = `${Number(hydrologyDepthInput.value).toFixed(1)}m`;
+hydrologyDepthValue.textContent = `${getHydrologyDepthMeters().toFixed(1)}m`;
 hydrologyFlowSpeedValue.textContent = `${Number(hydrologyFlowSpeedInput.value).toFixed(1)}x`;
 buildingNameMap = loadBuildingNamesFromStorage();
 buildingPoseMap = loadBuildingPosesFromStorage();
 createBuildingAssetControls();
 updateBuildingEditorUI();
-setBuildingsSectionCollapsed(loadBuildingsSectionCollapsedFromStorage());
+initializeSectionCollapse("layers", layersSectionBody, toggleLayersSectionButton);
+initializeSectionCollapse("hydrology", hydrologySectionBody, toggleHydrologySectionButton);
+initializeSectionCollapse("density", densitySectionBody, toggleDensitySectionButton);
+initializeSectionCollapse("terrain", terrainSectionBody, toggleTerrainSectionButton);
+initializeSectionCollapse("buildings", buildingsSectionBody, toggleBuildingsSectionButton);
+initializeSectionCollapse("status", statusSectionBody, toggleStatusSectionButton);
 applyBuildingAssetsVisibility();
+applyBuildingFootprintsVisibility();
+applySoilsVisibility();
 applyHydrologyVisibility();
 setMenuOpen(false);
 setUploadModalOpen(false);

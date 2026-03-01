@@ -592,10 +592,62 @@ What was added:
      - flow speed
      - `Snap Hydrology To Terrain` button
 
+Vegetation separation rule:
+- Shrubs and trees now enforce strict separation from streams in placement pass.
+- Required distance uses: `stream_half_width + 1.0m + vegetation_radius`.
+- Vegetation is iteratively pushed away from hydrology centerlines similar to building-edge avoidance.
+
 Stability follow-ups applied:
 - Hydrology load now checks `/api/hydrology/status` before requesting GeoJSON outputs to avoid noisy 404s when no hydrology outputs exist yet.
 - Hydrology pipeline CRS detection now avoids invalid EPSG unit-code picks (for example `EPSG:9001`) by preferring `gdalsrsinfo -o epsg` and safer fallback parsing.
 - Hydrology clipping now passes `--config SHAPE_RESTORE_SHX YES` to `ogr2ogr` to recover missing `.shx` sidecars where possible.
+
+### SSURGO / Soils pipeline + viewer layer (latest)
+
+Date: 2026-03-01
+
+What was added:
+1. New upload type:
+   - `Soils (SSURGO)` in the data-source upload dropdown.
+
+2. SSURGO source staging:
+   - Soils uploads are normalized under `Raw Data Inputs/SSURGO/`.
+   - Intended contract is full Web Soil Survey export folder content (not a single shapefile only).
+
+3. New soils processing pipeline:
+   - `Processing Pipeline/generateSoils.js`
+   - Wrapper: `generateSoils.js`
+   - Script command: `npm run soils`
+
+4. Pipeline behavior:
+   - Locates SSURGO `spatial/` map unit polygon shapefile (`soilmu_a*`/`smu_a*` preference).
+   - Reprojects geometry to DEM CRS and clips to DEM extent.
+   - Reads SSURGO tabular side (and attempts `.mdb` lookup when available) to enrich map unit records by `mukey`.
+   - Derives a simplified thematic class per polygon (hydrologic group/drainage/mapunit fallback) plus display color.
+
+5. Soils outputs:
+   - `Processed Data/soils/soils_clipped.gpkg`
+   - `Processed Data/soils/soils_clipped.geojson`
+   - `Processed Data/soils/soils_clipped_local.geojson`
+   - `Processed Data/soils/soil_legend.json`
+   - `Processed Data/soils/soil_meta.json`
+
+6. Soils API availability endpoint:
+   - `GET /api/soils/status`
+
+7. Viewer integration:
+   - New `Show Soil Data` layer toggle.
+   - Terrain-draped soil polygon overlay rendered over DEM.
+   - Right-side soil legend panel driven by generated legend classes/colors.
+
+SSURGO upload requirements (current):
+- Recommended: upload full SSURGO export folder contents including:
+  - `spatial/`
+  - `tabular/`
+  - optional `soildb_US_2003.mdb`
+  - metadata files
+- Minimum geometry requirement for visible soil overlay:
+  - map unit polygon shapefile in `spatial/`.
 
 ### Current pipeline contracts (authoritative)
 

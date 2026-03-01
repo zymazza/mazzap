@@ -19,6 +19,7 @@ const GENERATE_BUILDINGS_SCRIPT = path.join(ROOT_DIR, "generateBuildings.js");
 const GENERATE_VEGETATION_SCRIPT = path.join(ROOT_DIR, "Processing Pipeline", "generateVegetation.js");
 const GENERATE_TREES_SCRIPT = path.join(ROOT_DIR, "Processing Pipeline", "generateTrees.js");
 const GENERATE_HYDROLOGY_SCRIPT = path.join(ROOT_DIR, "Processing Pipeline", "generateHydrology.js");
+const GENERATE_SOILS_SCRIPT = path.join(ROOT_DIR, "generateSoils.js");
 const ASSETS_DIR_CANDIDATES = [
   path.join(ROOT_DIR, "assets"),
   path.join(ROOT_DIR, "Assets")
@@ -33,7 +34,7 @@ const PROCESSED_DIR_CANDIDATES = [
   path.join(ROOT_DIR, "Processed_Data")
 ];
 const MAX_MULTIPART_UPLOAD_BYTES = 1024 * 1024 * 1024;
-const DATA_SOURCE_TYPE_SET = new Set(["lidar", "footprints", "photogrammetry", "hydrology"]);
+const DATA_SOURCE_TYPE_SET = new Set(["lidar", "footprints", "photogrammetry", "hydrology", "soils"]);
 const DATA_SOURCE_PROCESS_STEP_CONFIG = {
   dem: {
     id: "dem",
@@ -64,6 +65,12 @@ const DATA_SOURCE_PROCESS_STEP_CONFIG = {
     title: "Generate Hydrology",
     explanation: "Clip and prepare hydrology features for terrain-aligned stream rendering.",
     scriptPath: GENERATE_HYDROLOGY_SCRIPT
+  },
+  soils: {
+    id: "soils",
+    title: "Generate Soils",
+    explanation: "Parse SSURGO export, join geometry with tabular attributes, and clip to DEM extent.",
+    scriptPath: GENERATE_SOILS_SCRIPT
   }
 };
 
@@ -386,6 +393,28 @@ function hasHydrologyInput() {
   return findShapefilesRecursively(hydrologyDir).length > 0;
 }
 
+function hasSoilsInput() {
+  const rawInputsDir = resolveRawDataInputsDir(true);
+  if (!rawInputsDir) {
+    return false;
+  }
+
+  const soilsRoot = path.join(rawInputsDir, "SSURGO");
+  const spatialDir = path.join(soilsRoot, "spatial");
+  if (findShapefilesRecursively(spatialDir).length > 0) {
+    return true;
+  }
+
+  if (!fs.existsSync(soilsRoot) || !fs.statSync(soilsRoot).isDirectory()) {
+    return false;
+  }
+
+  const nestedCandidates = fs.readdirSync(soilsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(soilsRoot, entry.name, "spatial"));
+  return nestedCandidates.some((candidate) => findShapefilesRecursively(candidate).length > 0);
+}
+
 function hasDemOutput() {
   const demPath = path.join(resolveProcessedDir(), "dem.tif");
   return fs.existsSync(demPath) && fs.statSync(demPath).isFile();
@@ -500,6 +529,33 @@ function resolveUploadDestination({
     };
   }
 
+  if (normalizedType === "soils") {
+    const soilsRoot = path.join(rawInputsDir, "SSURGO");
+    if (replaceExisting) {
+      fs.rmSync(soilsRoot, { recursive: true, force: true });
+    }
+    ensureDir(soilsRoot);
+
+    const relativeParts = safeRelativePath.split("/").filter(Boolean);
+    const first = String(relativeParts[0] || "").toLowerCase();
+    const hasCanonicalTopLevel = first === "spatial" || first === "tabular" || first === "thematic";
+    const innerPath = hasCanonicalTopLevel
+      ? relativeParts.join("/")
+      : (relativeParts.length > 1 ? relativeParts.slice(1).join("/") : relativeParts[0]);
+    if (!innerPath) {
+      throw new Error(`Unable to derive destination path for soils upload: ${safeOriginalName}`);
+    }
+
+    const targetPath = path.join(soilsRoot, innerPath);
+    return {
+      rawInputsDir,
+      targetPath,
+      sourceType: normalizedType,
+      relativePath: safeRelativePath,
+      originalName: safeOriginalName
+    };
+  }
+
   const targetPath = path.join(rawInputsDir, safeOriginalName);
   return {
     rawInputsDir,
@@ -552,6 +608,7 @@ function buildAutoProcessPlan(uploadedTypesInput) {
   const hasLidar = Boolean(lidarPath);
   const hasFootprints = hasFootprintsInput();
   const hasHydrology = hasHydrologyInput();
+  const hasSoils = hasSoilsInput();
   const demExists = hasDemOutput();
 
   const shouldRunLidarProducts = hasLidar && (uploadedTypes.size === 0 || uploadedTypes.has("lidar"));
@@ -566,6 +623,9 @@ function buildAutoProcessPlan(uploadedTypesInput) {
   const shouldRunHydrology = hasHydrology && (demExists || shouldRunDem) && (
     uploadedTypes.size === 0 || uploadedTypes.has("lidar") || uploadedTypes.has("hydrology")
   );
+  const shouldRunSoils = hasSoils && (demExists || shouldRunDem) && (
+    uploadedTypes.size === 0 || uploadedTypes.has("lidar") || uploadedTypes.has("soils")
+  );
 
   const steps = [];
   if (shouldRunDem) {
@@ -573,6 +633,9 @@ function buildAutoProcessPlan(uploadedTypesInput) {
   }
   if (shouldRunHydrology) {
     steps.push(DATA_SOURCE_PROCESS_STEP_CONFIG.hydrology);
+  }
+  if (shouldRunSoils) {
+    steps.push(DATA_SOURCE_PROCESS_STEP_CONFIG.soils);
   }
   if (shouldRunLidarProducts) {
     steps.push(DATA_SOURCE_PROCESS_STEP_CONFIG.vegetation);
@@ -586,6 +649,7 @@ function buildAutoProcessPlan(uploadedTypesInput) {
     hasLidar,
     hasFootprints,
     hasHydrology,
+    hasSoils,
     lidarPath: lidarPath ? path.relative(ROOT_DIR, lidarPath) : null,
     uploadedTypes: Array.from(uploadedTypes),
     steps: steps.map((step) => ({
@@ -631,6 +695,7 @@ function runPipelinesFromAvailableInputs(uploadedTypesInput) {
     hasLidar: plan.hasLidar,
     hasFootprints: plan.hasFootprints,
     hasHydrology: plan.hasHydrology,
+    hasSoils: plan.hasSoils,
     lidarPath: plan.lidarPath,
     executedCount: runs.length,
     runs
@@ -1378,6 +1443,9 @@ function classifyRawSourceType(name, isDirectory) {
   if (/^lidar_input(\.|$)/i.test(lower)) {
     return "lidar";
   }
+  if (lower === "ssurgo" || lower.endsWith(".mdb") || lower.startsWith("soil_metadata")) {
+    return "soils";
+  }
   if (lower === "footprints.gdb" || (isDirectory && lower.endsWith(".gdb"))) {
     return "footprints";
   }
@@ -1530,6 +1598,39 @@ function getHydrologyOutputStatus() {
   };
 }
 
+function getSoilsOutputStatus() {
+  const processedDir = resolveProcessedDir();
+  const soilsDir = path.join(processedDir, "soils");
+  const localGeoJson = path.join(soilsDir, "soils_clipped_local.geojson");
+  const geoJson = path.join(soilsDir, "soils_clipped.geojson");
+  const legend = path.join(soilsDir, "soil_legend.json");
+
+  if (fs.existsSync(localGeoJson) && fs.statSync(localGeoJson).isFile()) {
+    return {
+      available: true,
+      preferredPath: "/data/soils/soils_clipped_local.geojson",
+      fallbackPath: "/data/soils/soils_clipped.geojson",
+      legendPath: fs.existsSync(legend) ? "/data/soils/soil_legend.json" : null
+    };
+  }
+
+  if (fs.existsSync(geoJson) && fs.statSync(geoJson).isFile()) {
+    return {
+      available: true,
+      preferredPath: "/data/soils/soils_clipped.geojson",
+      fallbackPath: null,
+      legendPath: fs.existsSync(legend) ? "/data/soils/soil_legend.json" : null
+    };
+  }
+
+  return {
+    available: false,
+    preferredPath: null,
+    fallbackPath: null,
+    legendPath: null
+  };
+}
+
 const server = http.createServer((req, res) => {
   const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   const { pathname } = requestUrl;
@@ -1547,6 +1648,21 @@ const server = http.createServer((req, res) => {
 
     try {
       const status = getHydrologyOutputStatus();
+      sendJson(res, 200, { ok: true, ...status });
+    } catch (error) {
+      sendJson(res, 500, { error: error.message });
+    }
+    return;
+  }
+
+  if (pathname === "/api/soils/status") {
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed. Use GET." });
+      return;
+    }
+
+    try {
+      const status = getSoilsOutputStatus();
       sendJson(res, 200, { ok: true, ...status });
     } catch (error) {
       sendJson(res, 500, { error: error.message });
@@ -1662,6 +1778,7 @@ const server = http.createServer((req, res) => {
           hasLidar: result.hasLidar,
           hasFootprints: result.hasFootprints,
           hasHydrology: result.hasHydrology,
+          hasSoils: result.hasSoils,
           lidarPath: result.lidarPath,
           executedCount: result.executedCount,
           runs: result.runs
@@ -1688,6 +1805,7 @@ const server = http.createServer((req, res) => {
           hasLidar: plan.hasLidar,
           hasFootprints: plan.hasFootprints,
           hasHydrology: plan.hasHydrology,
+          hasSoils: plan.hasSoils,
           lidarPath: plan.lidarPath,
           uploadedTypes: plan.uploadedTypes,
           stepCount: plan.steps.length,
@@ -1773,6 +1891,7 @@ const server = http.createServer((req, res) => {
         let lidarPrepared = false;
         let footprintsPrepared = false;
         let hydrologyPrepared = false;
+        let soilsPrepared = false;
         const saved = [];
 
         for (const index of sortedIndexes) {
@@ -1827,6 +1946,23 @@ const server = http.createServer((req, res) => {
               throw new Error(`Unable to derive destination path for hydrology file: ${originalName}`);
             }
             targetPath = path.join(hydrologyRoot, innerPath);
+          } else if (sourceType === "soils") {
+            const soilsRoot = path.join(rawInputsDir, "SSURGO");
+            if (!soilsPrepared) {
+              fs.rmSync(soilsRoot, { recursive: true, force: true });
+              ensureDir(soilsRoot);
+              soilsPrepared = true;
+            }
+            const parts = relativePath.split("/").filter(Boolean);
+            const first = String(parts[0] || "").toLowerCase();
+            const hasCanonicalTopLevel = first === "spatial" || first === "tabular" || first === "thematic";
+            const innerPath = hasCanonicalTopLevel
+              ? parts.join("/")
+              : (parts.length > 1 ? parts.slice(1).join("/") : parts[0]);
+            if (!innerPath) {
+              throw new Error(`Unable to derive destination path for soils file: ${originalName}`);
+            }
+            targetPath = path.join(soilsRoot, innerPath);
           } else {
             targetPath = path.join(rawInputsDir, originalName);
           }
