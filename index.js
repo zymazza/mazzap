@@ -188,6 +188,39 @@ function ensureDir(dirPath) {
   return dirPath;
 }
 
+function ensureProjectDataDirectories() {
+  const rawInputsDir = ensureDir(resolveRawDataInputsDir(true) || RAW_DATA_INPUTS_DIR_CANDIDATES[0]);
+  const processedDir = ensureDir(resolveProcessedDir());
+
+  const rawSubdirs = [
+    "Hydrology",
+    "SSURGO",
+    path.join("SSURGO", "spatial"),
+    path.join("SSURGO", "tabular"),
+    path.join("SSURGO", "thematic")
+  ];
+  for (const subdir of rawSubdirs) {
+    ensureDir(path.join(rawInputsDir, subdir));
+  }
+
+  const processedSubdirs = [
+    "vegetation",
+    "trees",
+    "buildings",
+    path.join("buildings", "assets"),
+    "hydrology",
+    "soils"
+  ];
+  for (const subdir of processedSubdirs) {
+    ensureDir(path.join(processedDir, subdir));
+  }
+
+  return {
+    rawInputsDir,
+    processedDir
+  };
+}
+
 function sanitizeUploadPathSegment(segmentRaw) {
   const cleaned = String(segmentRaw || "")
     .replace(/[\u0000-\u001f<>:"|?*]/g, "_")
@@ -2143,9 +2176,13 @@ const server = http.createServer((req, res) => {
   streamFile(req, res, targetFile);
 });
 
+const bootstrappedDataDirs = ensureProjectDataDirectories();
+
 server.listen(PORT, HOST, () => {
   console.log(`Viewer server listening at http://${HOST}:${PORT}`);
   console.log("Open / to load the 3D DEM viewer.");
+  console.log(`Raw data root: ${path.relative(ROOT_DIR, bootstrappedDataDirs.rawInputsDir)}`);
+  console.log(`Processed data root: ${path.relative(ROOT_DIR, bootstrappedDataDirs.processedDir)}`);
 });
 
 server.on("error", (error) => {

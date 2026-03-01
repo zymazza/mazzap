@@ -796,3 +796,37 @@ Behavior details:
 
 Important hydrology note:
 - Uploading only `.dbf`/`.prj` without `.shp` is insufficient to render streams (no geometry source).
+
+### Startup data-directory bootstrap (latest)
+
+Date: 2026-03-01
+
+Why this was added:
+- `Raw Data Inputs/` and `Processed Data/` are now git-ignored.
+- Fresh clones/new environments need these folders recreated automatically on startup.
+
+Implemented in `index.js`:
+1. Added `ensureProjectDataDirectories()` and execute it at server startup (before `server.listen`).
+
+2. Startup now guarantees these roots exist:
+- `Raw Data Inputs/`
+- `Processed Data/`
+
+3. Startup now guarantees these raw-input subfolders exist:
+- `Raw Data Inputs/Hydrology/`
+- `Raw Data Inputs/SSURGO/`
+- `Raw Data Inputs/SSURGO/spatial/`
+- `Raw Data Inputs/SSURGO/tabular/`
+- `Raw Data Inputs/SSURGO/thematic/`
+
+4. Startup now guarantees these processed-output subfolders exist:
+- `Processed Data/vegetation/`
+- `Processed Data/trees/`
+- `Processed Data/buildings/`
+- `Processed Data/buildings/assets/`
+- `Processed Data/hydrology/`
+- `Processed Data/soils/`
+
+Notes:
+- We intentionally do **not** pre-create `Raw Data Inputs/Footprints.gdb` so footprint auto-detection does not return a false positive on empty projects.
+- Server startup logs now print resolved raw + processed root paths for quick verification.
