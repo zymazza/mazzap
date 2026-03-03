@@ -1,5 +1,11 @@
 # Mazzap
 
+
+
+https://github.com/user-attachments/assets/b7c7e96d-213f-423f-afd4-b2c54338f5a2
+
+
+
 Mazzap is a local-first digital twin viewer and processing workflow for terrain + vegetation + buildings + hydrology.
 
 It provides:
