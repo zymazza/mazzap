@@ -27,6 +27,8 @@ public/assets/tree-library
 .openai_key
 .survey_token
 .live_token
+.env
+.env.*
 *.log
 .DS_Store
 __pycache__

@@ -3453,6 +3453,14 @@ const server = http.createServer((req, res) => {
     return send(res, 403, 'Forbidden');
   }
 
+  // Never serve dotfiles or dot-directories. A twin's optional .live_token
+  // secret lives inside DATA_DIR (which is web-served at /data/), so without
+  // this guard a GET /data/.live_token would hand out the live-API credential;
+  // the same rule protects any future secret dropped into the served bundle.
+  if (path.relative(baseDir, filePath).split(path.sep).some((seg) => seg.startsWith('.'))) {
+    return send(res, 404, `Not found: ${pathname}`);
+  }
+
   fs.stat(filePath, (err, stat) => {
     if (err || !stat.isFile()) {
       return send(res, 404, `Not found: ${pathname}`);

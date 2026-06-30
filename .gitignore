@@ -8,6 +8,9 @@ node_modules/
 .survey_token
 # Optional shared secret for live telemetry endpoints (also allowed under data/).
 .live_token
+# Local environment overrides (the chat docs mention OPENAI_API_KEY in a .env; never commit)
+.env
+.env.*
 .DS_Store
 __pycache__/
 *.py[cod]
