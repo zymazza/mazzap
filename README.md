@@ -88,7 +88,9 @@ docker compose run --rm -e TWIN_DATA_DIR=/app/twins/mine/data \
 ```
 
 `./data` and `./twins` are bind-mounted, so anything the pipeline builds inside
-the container lands on the host and stays private/gitignored. The image includes
+the container lands on the host and stays private/gitignored. Those files are
+written as `root` by default; to own them as your host user, prefix the commands
+with `VEIL_UID=$(id -u) VEIL_GID=$(id -g)`. The image includes
 the live Meshtastic bridge dependencies in `/opt/veil-live`; the
 `live-hardware` profile additionally mounts host D-Bus and `/dev` with elevated
 device access so Bluetooth and USB serial gateways can be discovered. Use the

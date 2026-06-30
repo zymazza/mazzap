@@ -43,6 +43,11 @@ x-veil-base: &veil-base
 services:
   veil:
     <<: *veil-base
+    # Run as the host user so twins built in the container (written into the
+    # bind-mounted ./data and ./twins) are owned by you, not root. Defaults to
+    # root (0:0) for backward compatibility; set VEIL_UID/VEIL_GID to your own:
+    #   VEIL_UID=$(id -u) VEIL_GID=$(id -g) docker compose run --rm veil npm run demo
+    user: "${VEIL_UID:-0}:${VEIL_GID:-0}"
     ports:
       - "4173:4173"
   veil-live:

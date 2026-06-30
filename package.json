@@ -32,7 +32,7 @@
     "rebuild-store": "python3 scripts/rebuild_store.py",
     "canopy-history": "python3 scripts/canopy_density.py",
     "build-test-fixture": "python3 scripts/build_test_fixture.py",
-    "test": "python3 scripts/twin_query_test.py",
+    "test": "TWIN_DATA_DIR=tests/fixtures/mini-twin/data python3 scripts/twin_query_test.py",
     "test:demo": "TWIN_DATA_DIR=twins/demo/data python3 scripts/twin_query_test.py"
   },
   "author": "Zy Mazza",

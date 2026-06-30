@@ -21,7 +21,6 @@ packs/*/cache
 
 # Heavy/generated asset libraries.
 /Trees_library
-public/assets/tree-library
 
 # Secrets and local noise.
 .openai_key
