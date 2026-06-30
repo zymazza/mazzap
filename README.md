@@ -49,9 +49,10 @@ optional **regional pack**, never hardcoded in the engine.
   **`us-national`** pack types them evergreen/deciduous and names their
   community from LANDFIRE — no regional setup (see "Vegetation" under
   [docs/make-a-twin.md](docs/make-a-twin.md)).
-- **"Ask the land" chat** — an in-viewer panel that talks to an LLM wired to the
-  twin's read-only query tools (the MCP server), scoped to the whole twin, a
-  polygon you draw, or a point you pick. See [docs/mcp.md](docs/mcp.md).
+- **G.A.I.A. (Geospatial Agroecological Intelligent Agent)** — an in-viewer chat
+  panel that talks to an LLM wired to the twin's read-only query tools (the MCP
+  server), scoped to the whole twin, a polygon you draw, or a point you pick.
+  See [docs/mcp.md](docs/mcp.md).
 - **QField survey companion** — generate a QField project from the active twin,
   collect trails / stream centerlines / photo points / observations in the
   field, then upload the zipped project folder back through the viewer. Uploads
@@ -94,7 +95,7 @@ device access so Bluetooth and USB serial gateways can be discovered. Use the
 plain `veil` service when you only need the viewer, data pipeline, chat, or
 network/TCP telemetry. PDAL is optional and is not installed by this image; if
 the `pdal` command is absent, LiDAR-derived DSM/DTM generation is skipped as
-described in `requirements.txt`. For the **"Ask the land"** chat panel, pass
+described in `requirements.txt`. For the **G.A.I.A.** chat panel, pass
 `OPENAI_API_KEY` (env var or a `.env` file) — see the chat section below. For an
 editable dev environment with the same pinned toolchain, open the repo in a
 **Dev Container** (`.devcontainer/`) in VS Code or any devcontainer-aware
