@@ -1,0 +1,66 @@
+{
+  "name": "nato",
+  "title": "NATO regional adapter pack",
+  "description": "A per-country acquisition and interpretation pack for NATO member states. The engine stays region-agnostic; this pack chooses country-specific source adapters, shared forest leaf-type sources, vegetation knowledge, and layer styling. The Netherlands adapter is implemented with AHN LiDAR elevation, PDOK aerial imagery, and Copernicus HRL Dominant Leaf Type for tree typing; registered countries without a national adapter build through explicit global/continental fallback sources.",
+  "coverage": "NATO member states; national Tier-A path for the Netherlands (NLD/NL), global fallback for registered members without national adapters, and EEA/CLMS continental enrichment where available.",
+  "hooks": {
+    "vegetation": "vegetation.py",
+    "layers": "layers.py"
+  },
+  "fetch_scripts": [
+    "fetch_nato.py"
+  ],
+  "members": [
+    {"alpha2": "AL", "alpha3": "ALB", "name": "Albania", "tier": "C", "adapter": null},
+    {"alpha2": "BE", "alpha3": "BEL", "name": "Belgium", "tier": "A", "adapter": null},
+    {"alpha2": "BG", "alpha3": "BGR", "name": "Bulgaria", "tier": "C", "adapter": null},
+    {"alpha2": "CA", "alpha3": "CAN", "name": "Canada", "tier": "B", "adapter": null},
+    {"alpha2": "HR", "alpha3": "HRV", "name": "Croatia", "tier": "B", "adapter": null},
+    {"alpha2": "CZ", "alpha3": "CZE", "name": "Czechia", "tier": "A", "adapter": null},
+    {"alpha2": "DK", "alpha3": "DNK", "name": "Denmark", "tier": "A", "adapter": null},
+    {"alpha2": "EE", "alpha3": "EST", "name": "Estonia", "tier": "A", "adapter": null},
+    {"alpha2": "FI", "alpha3": "FIN", "name": "Finland", "tier": "A", "adapter": null},
+    {"alpha2": "FR", "alpha3": "FRA", "name": "France", "tier": "A", "adapter": null},
+    {"alpha2": "DE", "alpha3": "DEU", "name": "Germany", "tier": "B", "adapter": null},
+    {"alpha2": "GR", "alpha3": "GRC", "name": "Greece", "tier": "C", "adapter": null},
+    {"alpha2": "HU", "alpha3": "HUN", "name": "Hungary", "tier": "C", "adapter": null},
+    {"alpha2": "IS", "alpha3": "ISL", "name": "Iceland", "tier": "B", "adapter": null},
+    {"alpha2": "IT", "alpha3": "ITA", "name": "Italy", "tier": "B", "adapter": null},
+    {"alpha2": "LV", "alpha3": "LVA", "name": "Latvia", "tier": "A", "adapter": null},
+    {"alpha2": "LT", "alpha3": "LTU", "name": "Lithuania", "tier": "B", "adapter": null},
+    {"alpha2": "LU", "alpha3": "LUX", "name": "Luxembourg", "tier": "A", "adapter": null},
+    {"alpha2": "ME", "alpha3": "MNE", "name": "Montenegro", "tier": "C", "adapter": null},
+    {"alpha2": "NL", "alpha3": "NLD", "name": "Netherlands", "tier": "A", "adapter": "adapters.nl:NetherlandsAdapter"},
+    {"alpha2": "MK", "alpha3": "MKD", "name": "North Macedonia", "tier": "C", "adapter": null},
+    {"alpha2": "NO", "alpha3": "NOR", "name": "Norway", "tier": "A", "adapter": null},
+    {"alpha2": "PL", "alpha3": "POL", "name": "Poland", "tier": "A", "adapter": null},
+    {"alpha2": "PT", "alpha3": "PRT", "name": "Portugal", "tier": "B", "adapter": null},
+    {"alpha2": "RO", "alpha3": "ROU", "name": "Romania", "tier": "B", "adapter": null},
+    {"alpha2": "SK", "alpha3": "SVK", "name": "Slovakia", "tier": "A", "adapter": null},
+    {"alpha2": "SI", "alpha3": "SVN", "name": "Slovenia", "tier": "B", "adapter": null},
+    {"alpha2": "ES", "alpha3": "ESP", "name": "Spain", "tier": "A", "adapter": null},
+    {"alpha2": "SE", "alpha3": "SWE", "name": "Sweden", "tier": "A", "adapter": null},
+    {"alpha2": "TR", "alpha3": "TUR", "name": "Turkey", "tier": "C", "adapter": null},
+    {"alpha2": "GB", "alpha3": "GBR", "name": "United Kingdom", "tier": "B", "adapter": null},
+    {"alpha2": "US", "alpha3": "USA", "name": "United States", "tier": "S", "adapter": "external:packs/us-national"}
+  ],
+  "tiers": {
+    "S": ["USA"],
+    "A": ["BEL", "CZE", "DNK", "EST", "FIN", "FRA", "LVA", "LUX", "NLD", "NOR", "POL", "SVK", "ESP", "SWE"],
+    "B": ["ALB", "CAN", "HRV", "DEU", "ISL", "ITA", "LTU", "PRT", "ROU", "SVN", "GBR"],
+    "C": ["BGR", "GRC", "HUN", "MNE", "MKD", "TUR"]
+  },
+  "adapter_registry": {
+    "NL": "packs/nato/adapters/nl.py",
+    "NLD": "packs/nato/adapters/nl.py",
+    "US": "packs/us-national",
+    "USA": "packs/us-national"
+  },
+  "bundled": {
+    "adapters/nl.py": "Netherlands AHN + PDOK acquisition adapter",
+    "adapters/eea.py": "Shared Copernicus HRL Dominant Leaf Type plus CLC+/Natura context fetchers",
+    "adapters/global.py": "Global fallback: Copernicus GLO-30 terrain, ETH canopy, Sentinel-2 imagery, CGLS/WorldCover typing",
+    "vegetation.py": "NATO vegetation typing hook with leaf-type grid support",
+    "layers.py": "NATO atlas styling hook"
+  }
+}
