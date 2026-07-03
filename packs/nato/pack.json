@@ -1,8 +1,8 @@
 {
   "name": "nato",
   "title": "NATO regional adapter pack",
-  "description": "A per-country acquisition and interpretation pack for NATO member states. The engine stays region-agnostic; this pack chooses country-specific source adapters, shared forest leaf-type sources, vegetation knowledge, and layer styling. The Netherlands adapter is implemented with AHN LiDAR elevation and PDOK aerial imagery; the Norway adapter is implemented with Kartverket NHM DTM/DOM elevation and Sentinel-2 RGB+NIR imagery because Norge i bilder WMS/WMTS requires token or Norway Digital access from this environment; the Spain adapter is implemented with IGN/CNIG PNOA-LiDAR MDT terrain, ETH canopy fallback for CHM, PNOA RGB WMS, and Sentinel-2 NIR. These EEA countries use Copernicus HRL Dominant Leaf Type for tree typing; registered countries without a national adapter build through explicit global/continental fallback sources.",
-  "coverage": "NATO member states; national Tier-A paths for the Netherlands (NLD/NL), Norway (NOR/NO), and Spain (ESP/ES), global fallback for registered members without national adapters, and EEA/CLMS continental enrichment where available.",
+  "description": "A per-country acquisition and interpretation pack for NATO member states. The engine stays region-agnostic; this pack chooses country-specific source adapters, shared forest leaf-type sources, vegetation knowledge, and layer styling. The Netherlands adapter is implemented with AHN LiDAR elevation and PDOK aerial imagery; the Norway adapter is implemented with Kartverket NHM DTM/DOM elevation and Sentinel-2 RGB+NIR imagery because Norge i bilder WMS/WMTS requires token or Norway Digital access from this environment; the Spain adapter is implemented with IGN/CNIG PNOA-LiDAR MDT terrain, ETH canopy fallback for CHM, PNOA RGB WMS, and Sentinel-2 NIR. Belgium uses Flanders DHMV II DTM/DSM and Flanders RGB orthophoto with Sentinel-2 NIR; Czechia uses CUZK DMR 5G/DMP 1G and ORTOFOTO with Sentinel-2 NIR; Denmark is currently fallback pending Dataforsyningen/Klimadatastyrelsen DHM token access; France uses IGN Geoplateforme MNT/MNS plus BD ORTHO RGB/IRC. These EEA countries use Copernicus HRL Dominant Leaf Type for tree typing; registered countries without a national adapter build through explicit global/continental fallback sources.",
+  "coverage": "NATO member states; national Tier-A paths for Belgium (BEL/BE), Czechia (CZE/CZ), France (FRA/FR), the Netherlands (NLD/NL), Norway (NOR/NO), and Spain (ESP/ES), Denmark (DNK/DK) fallback pending DHM token access, global fallback for registered members without national adapters, and EEA/CLMS continental enrichment where available.",
   "hooks": {
     "vegetation": "vegetation.py",
     "layers": "layers.py"
@@ -12,15 +12,15 @@
   ],
   "members": [
     {"alpha2": "AL", "alpha3": "ALB", "name": "Albania", "tier": "C", "adapter": null},
-    {"alpha2": "BE", "alpha3": "BEL", "name": "Belgium", "tier": "A", "adapter": null},
+    {"alpha2": "BE", "alpha3": "BEL", "name": "Belgium", "tier": "A", "adapter": "adapters.be:BelgiumAdapter"},
     {"alpha2": "BG", "alpha3": "BGR", "name": "Bulgaria", "tier": "C", "adapter": null},
     {"alpha2": "CA", "alpha3": "CAN", "name": "Canada", "tier": "B", "adapter": null},
     {"alpha2": "HR", "alpha3": "HRV", "name": "Croatia", "tier": "B", "adapter": null},
-    {"alpha2": "CZ", "alpha3": "CZE", "name": "Czechia", "tier": "A", "adapter": null},
-    {"alpha2": "DK", "alpha3": "DNK", "name": "Denmark", "tier": "A", "adapter": null},
+    {"alpha2": "CZ", "alpha3": "CZE", "name": "Czechia", "tier": "A", "adapter": "adapters.cz:CzechiaAdapter"},
+    {"alpha2": "DK", "alpha3": "DNK", "name": "Denmark", "tier": "A", "adapter": "adapters.dk:DenmarkAdapter"},
     {"alpha2": "EE", "alpha3": "EST", "name": "Estonia", "tier": "A", "adapter": null},
     {"alpha2": "FI", "alpha3": "FIN", "name": "Finland", "tier": "A", "adapter": null},
-    {"alpha2": "FR", "alpha3": "FRA", "name": "France", "tier": "A", "adapter": null},
+    {"alpha2": "FR", "alpha3": "FRA", "name": "France", "tier": "A", "adapter": "adapters.fr:FranceAdapter"},
     {"alpha2": "DE", "alpha3": "DEU", "name": "Germany", "tier": "B", "adapter": null},
     {"alpha2": "GR", "alpha3": "GRC", "name": "Greece", "tier": "C", "adapter": null},
     {"alpha2": "HU", "alpha3": "HUN", "name": "Hungary", "tier": "C", "adapter": null},
@@ -51,6 +51,14 @@
     "C": ["BGR", "GRC", "HUN", "MNE", "MKD", "TUR"]
   },
   "adapter_registry": {
+    "BE": "packs/nato/adapters/be.py",
+    "BEL": "packs/nato/adapters/be.py",
+    "CZ": "packs/nato/adapters/cz.py",
+    "CZE": "packs/nato/adapters/cz.py",
+    "DK": "packs/nato/adapters/dk.py",
+    "DNK": "packs/nato/adapters/dk.py",
+    "FR": "packs/nato/adapters/fr.py",
+    "FRA": "packs/nato/adapters/fr.py",
     "NL": "packs/nato/adapters/nl.py",
     "NLD": "packs/nato/adapters/nl.py",
     "NO": "packs/nato/adapters/no.py",
@@ -61,6 +69,11 @@
     "USA": "packs/us-national"
   },
   "bundled": {
+    "adapters/be.py": "Belgium Flanders DHMV II DTM/DSM acquisition adapter with Flanders RGB and Sentinel-2 NIR",
+    "adapters/cz.py": "Czechia CUZK DMR 5G/DMP 1G acquisition adapter with ORTOFOTO RGB and Sentinel-2 NIR",
+    "adapters/dk.py": "Denmark fallback adapter pending Dataforsyningen/Klimadatastyrelsen DHM token access",
+    "adapters/fr.py": "France IGN Geoplateforme MNT/MNS and BD ORTHO RGB/IRC acquisition adapter",
+    "adapters/_shared.py": "Shared helper functions for NATO national acquisition adapters",
     "adapters/nl.py": "Netherlands AHN + PDOK acquisition adapter",
     "adapters/no.py": "Norway Kartverket NHM DTM/DOM acquisition adapter with Sentinel-2 RGB+NIR imagery fallback",
     "adapters/es.py": "Spain IGN/CNIG MDT acquisition adapter with ETH canopy CHM fallback, PNOA RGB, and Sentinel-2 NIR",

@@ -44,6 +44,7 @@ import twin_store  # noqa: E402
 
 gdal.UseExceptions()
 global_leaf = importlib.import_module("adapters.global")
+IMPLEMENTED_NATIONAL = {"NL", "NO", "ES", "BE", "CZ", "DK", "FR"}
 
 
 def run(cmd, env=None):
@@ -426,9 +427,9 @@ def main():
         )
     else:
         adapter = country_adapter
-        if getattr(adapter, "alpha2", None) not in {"NL", "NO", "ES"}:
+        if getattr(adapter, "alpha2", None) not in IMPLEMENTED_NATIONAL:
             raise SystemExit(
-                f"{args.country} is registered, but only the Netherlands, Norway, and Spain national adapters "
+                f"{args.country} is registered, but only {', '.join(sorted(IMPLEMENTED_NATIONAL))} national adapters "
                 "are implemented now. Use --tier global or --tier continental for fallback."
             )
 

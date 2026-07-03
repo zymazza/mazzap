@@ -15,6 +15,19 @@ Implemented now:
   ETH Global Canopy Height CHM fallback because no open national MDS/DSM WCS was
   reachable, PNOA RGB WMS plus Sentinel-2 NIR, and Copernicus HRL Dominant Leaf
   Type for conifer/broadleaf typing.
+- Belgium (`BE`/`BEL`) national Tier-A path for Flanders: Digitaal Vlaanderen
+  DHMV II DTM/DSM 1 m terrain/CHM, Flanders current RGB orthophoto WMS,
+  Sentinel-2 NIR, and Copernicus HRL Dominant Leaf Type typing.
+- Czechia (`CZ`/`CZE`) national Tier-A path: CUZK DMR 5G terrain, DMP 1G
+  surface, CUZK ORTOFOTO RGB, Sentinel-2 NIR, and Copernicus HRL Dominant Leaf
+  Type typing.
+- Denmark (`DK`/`DNK`) working fallback adapter pending Dataforsyningen /
+  Klimadatastyrelsen DHM token access: Copernicus GLO-30 terrain,
+  forest-masked ETH canopy, Sentinel-2 RGB+NIR, and Copernicus HRL Dominant
+  Leaf Type typing.
+- France (`FR`/`FRA`) national Tier-A path: IGN Géoplateforme WMS-R RGE ALTI
+  high-resolution MNT terrain, high-resolution MNS surface, BD ORTHO RGB,
+  ORTHO IRC NIR, and Copernicus HRL Dominant Leaf Type typing.
 - Global Tier-C fallback for registered countries without a national adapter:
   Copernicus GLO-30 terrain, ETH Global Canopy Height, Sentinel-2 RGB+NIR, and
   global/continental forest typing.
@@ -79,6 +92,64 @@ Serve it:
 
 ```bash
 TWIN_DATA_DIR=twins/es-valsain/data PORT=4194 HOST=127.0.0.1 node server.js
+```
+
+## Build The Belgium Demo
+
+The Sonian Forest / Zoniënwoud demo uses the Flanders DHMV II EPSG:31370
+coverage southeast of Brussels.
+
+```bash
+python3 packs/nato/fetch_nato.py \
+  --country BE \
+  --aoi 4.418,50.767,4.423,50.771 \
+  --data-dir twins/be-sonian/data \
+  --resolution 1 \
+  --name "Sonian Forest, Belgium" \
+  --force
+```
+
+## Build The Czechia Demo
+
+The Šumava demo uses mixed spruce forest in CUZK EPSG:5514 coverage.
+
+```bash
+python3 packs/nato/fetch_nato.py \
+  --country CZ \
+  --aoi 13.520,49.010,13.526,49.014 \
+  --data-dir twins/cz-sumava-spruce/data \
+  --resolution 2 \
+  --name "Sumava National Park, Czechia" \
+  --force
+```
+
+## Build The Denmark Demo
+
+The Gribskov demo currently uses the fallback stack because anonymous Danish
+DHM WCS/WMS access was not reachable without Dataforsyningen credentials.
+
+```bash
+python3 packs/nato/fetch_nato.py \
+  --country DK \
+  --aoi 12.295,56.000,12.303,56.004 \
+  --data-dir twins/dk-gribskov/data \
+  --resolution 10 \
+  --name "Gribskov, Denmark" \
+  --force
+```
+
+## Build The France Demo
+
+The Fontainebleau demo uses IGN Géoplateforme EPSG:2154 coverage.
+
+```bash
+python3 packs/nato/fetch_nato.py \
+  --country FR \
+  --aoi 2.666,48.398,2.672,48.402 \
+  --data-dir twins/fr-fontainebleau/data \
+  --resolution 1 \
+  --name "Fontainebleau Forest, France" \
+  --force
 ```
 
 ## Build A Global / Continental Fallback Twin
@@ -340,6 +411,118 @@ Attribution:
   CC-BY 4.0.
 - Canopy forest mask fallback: ESA WorldCover 2021 v200, European Space Agency
   / VITO, open data.
+- Dominant Leaf Type: Copernicus HRL Dominant Leaf Type 2018
+  (European Environment Agency / Copernicus Land Monitoring Service).
+
+## Belgium Sources
+
+Elevation:
+
+- Flanders DHMV WCS: `https://geo.api.vlaanderen.be/DHMV/wcs`
+- Coverages: `DHMVII_DTM_1m` and `DHMVII_DSM_1m`
+- CRS: `EPSG:31370` (Belgian Lambert 72)
+- WCS version: `2.0.1`, `GetCoverage` with `coverageId=<coverage>`,
+  `subset=x(...)`, `subset=y(...)`, and `format=image/tiff`.
+- Terrain uses void-filled DHMV II DTM. CHM uses filled DHMV II DSM minus DTM.
+
+Imagery:
+
+- Flanders current RGB orthophoto WMS:
+  `https://geo.api.vlaanderen.be/OMWRGBMRVL/wms`
+- RGB layer: `Ortho`
+- No current open Flanders CIR/infrared endpoint was found in the public
+  service probes, so Sentinel-2 L2A supplies NIR.
+
+Attribution:
+
+- Elevation: Digitaal Vlaanderen / Agentschap Informatie Vlaanderen DHMV II.
+- Imagery RGB: Digitaal Vlaanderen Flanders orthophoto service.
+- Imagery NIR: modified Copernicus Sentinel data via Element84 Earth Search.
+- Dominant Leaf Type: Copernicus HRL Dominant Leaf Type 2018
+  (European Environment Agency / Copernicus Land Monitoring Service).
+
+## Czechia Sources
+
+Elevation:
+
+- CUZK DMR 5G terrain ImageServer:
+  `https://ags.cuzk.cz/arcgis2/rest/services/dmr5g/ImageServer`
+- CUZK DMP 1G surface ImageServer:
+  `https://ags.cuzk.cz/arcgis2/rest/services/dmp1g/ImageServer`
+- CRS: `EPSG:5514` (S-JTSK / Krovak East North)
+- Native pixel size exposed by the services: 2 m.
+- Terrain uses void-filled DMR 5G. CHM uses filled DMP 1G minus DMR 5G.
+
+Imagery:
+
+- CUZK ORTOFOTO MapServer:
+  `https://ags.cuzk.cz/arcgis1/rest/services/ORTOFOTO/MapServer`
+- No open CUZK CIR/infrared service was found in the public ArcGIS catalog, so
+  Sentinel-2 L2A supplies NIR.
+
+Attribution:
+
+- Elevation: Czech Office for Surveying, Mapping and Cadastre (CUZK) DMR 5G
+  and DMP 1G services.
+- Imagery RGB: Czech Office for Surveying, Mapping and Cadastre (CUZK)
+  ORTOFOTO service.
+- Imagery NIR: modified Copernicus Sentinel data via Element84 Earth Search.
+- Dominant Leaf Type: Copernicus HRL Dominant Leaf Type 2018
+  (European Environment Agency / Copernicus Land Monitoring Service).
+
+## Denmark Sources
+
+National status:
+
+- Checked DHM routes:
+  `https://api.dataforsyningen.dk/dhm?service=WCS&request=GetCapabilities`,
+  `https://api.dataforsyningen.dk/dhm?service=WMS&request=GetCapabilities`,
+  `https://services.datafordeler.dk/DHM/DHM/1.0.0/WCS?SERVICE=WCS&REQUEST=GetCapabilities`,
+  and `https://services.datafordeler.dk/DHM/DHM/1.0.0/WMS?SERVICE=WMS&REQUEST=GetCapabilities`.
+- These did not expose anonymous DHM/Terræn or DHM/Overflade coverage from this
+  environment, so Denmark is currently fallback pending a Dataforsyningen /
+  Klimadatastyrelsen token.
+
+Fallback used:
+
+- Terrain: Copernicus DEM GLO-30.
+- Canopy / CHM: forest-masked ETH Global Canopy Height 2020.
+- Imagery: Sentinel-2 L2A RGB+NIR.
+- Forest leaf type: Copernicus HRL Dominant Leaf Type 2018 via EEA Discomap.
+
+Attribution:
+
+- National DHM checked but not used: Klimadatastyrelsen / Dataforsyningen.
+- Terrain fallback: Copernicus DEM GLO-30, European Space Agency / DLR.
+- Imagery: modified Copernicus Sentinel data via Element84 Earth Search.
+- Canopy fallback: ETH Global Canopy Height 2020, Lang, Schindler and Wegner,
+  CC-BY 4.0.
+- Dominant Leaf Type: Copernicus HRL Dominant Leaf Type 2018
+  (European Environment Agency / Copernicus Land Monitoring Service).
+
+## France Sources
+
+Elevation:
+
+- IGN Géoplateforme WMS-R:
+  `https://data.geopf.fr/wms-r/wms`
+- DTM layer: `ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES`
+- DSM/MNS layer: `ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES.MNS`
+- CRS: `EPSG:2154` (Lambert-93)
+- The WMS-R service advertises GeoTIFF output and returns Float32 elevation
+  rasters. Terrain uses void-filled MNT; CHM uses filled MNS minus MNT.
+
+Imagery:
+
+- RGB layer: `ORTHOIMAGERY.ORTHOPHOTOS`
+- NIR/IRC layer: `ORTHOIMAGERY.ORTHOPHOTOS.IRC`
+- Band order assembled by the adapter: `R,G,B,NIR`, with NIR copied from the
+  first ORTHO IRC band.
+
+Attribution:
+
+- Elevation: IGN France Géoplateforme RGE ALTI / MNS WMS-R layers.
+- Imagery: IGN France Géoplateforme BD ORTHO RGB and ORTHO IRC WMS-R layers.
 - Dominant Leaf Type: Copernicus HRL Dominant Leaf Type 2018
   (European Environment Agency / Copernicus Land Monitoring Service).
 
