@@ -2,7 +2,7 @@
 
 
 
-file:///home/zy/dev/veil/demo-video/v2/clips/FILM.mp4
+![Mazzap v2 demo](docs/assets/veil-demo.gif)
 
 
 
