@@ -2,7 +2,7 @@
 
 
 
-https://github.com/zymazza/mazzap/raw/master/docs/assets/veil-demo.mp4
+<video src="https://raw.githubusercontent.com/zymazza/mazzap/master/docs/assets/veil-demo.mp4" controls width="100%"></video>
 
 
 
