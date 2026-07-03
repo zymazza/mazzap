@@ -106,6 +106,14 @@ editor.
 Prefer a local toolchain? Everything below works the same with `npm` and
 `python3` directly.
 
+## Hosted mode
+
+For a public website where each visitor gets an isolated session twin and brings
+their own OpenAI key, run with `VEIL_HOSTED=1` and
+`OPENAI_REQUIRE_USER_KEY=1`. Hosted mode scopes `/data`, chat/MCP tools,
+annotations, simulations, and sidebar geospatial uploads to a signed browser
+session. Setup details and production caveats are in [docs/hosted.md](docs/hosted.md).
+
 ## Build your own twin
 
 **The repo ships only code** (plus one ~600-byte demo AOI). You either fetch

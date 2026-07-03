@@ -23,6 +23,23 @@ const DATA_DIR = path.resolve(ROOT, process.env.TWIN_DATA_DIR || 'data');
 const PORT = Number(process.env.PORT) || 4173;
 const HOST = process.env.HOST || '127.0.0.1';
 
+// Hosted mode keeps the local-first defaults intact, but lets one public Node
+// process issue anonymous session cookies and provision an isolated data dir for
+// each visitor. A template may be supplied, but hosted product deployments can
+// also start from an empty data dir and let the visitor build a twin via /init.
+const HOSTED_MODE = process.env.VEIL_HOSTED === '1';
+const HOSTED_ROOT = path.resolve(ROOT, process.env.VEIL_HOSTED_ROOT || 'hosted');
+const HOSTED_TEMPLATE_DATA_DIR = process.env.VEIL_HOSTED_TEMPLATE_DATA_DIR
+  ? path.resolve(ROOT, process.env.VEIL_HOSTED_TEMPLATE_DATA_DIR)
+  : null;
+const HOSTED_COOKIE = 'veil_session';
+const HOSTED_TWIN_ID = 'default';
+const HOSTED_SECRET = process.env.VEIL_SESSION_SECRET
+  || (HOSTED_MODE ? crypto.randomBytes(32).toString('hex') : 'local-dev-secret');
+if (HOSTED_MODE && !process.env.VEIL_SESSION_SECRET) {
+  console.warn('VEIL_HOSTED=1 without VEIL_SESSION_SECRET: hosted sessions will be invalidated on restart.');
+}
+
 // ---------------------------------------------------------------- chat API
 // POST /api/chat lets the viewer's chat panel ask an LLM about the land.
 // The LLM's tools ARE the twin MCP server: we spawn scripts/mcp_server.py
@@ -79,8 +96,8 @@ function openaiKey() {
   }
 }
 
-// -- minimal MCP stdio client (one persistent python child) ---------------
-let mcp = null; // { proc, pending: Map<id,{resolve,reject}>, nextId, tools, init: Promise }
+// -- minimal MCP stdio client (one persistent python child per twin) -------
+const mcpClients = new Map(); // dataDir -> { proc, pending, nextId, tools, init }
 
 // The chat MCP server and hydrology simulation need the geospatial stack
 // (pyproj/GDAL/numpy). A bare `python3` — especially under the Hermes/GUI
@@ -103,13 +120,13 @@ function resolveMcpPython() {
 const MCP_PYTHON = resolveMcpPython();
 const HYDRO_PYTHON = (process.env.VEIL_HYDRO_PYTHON || '').trim() || MCP_PYTHON;
 
-function mcpSpawn() {
+function mcpSpawn(dataDir = DATA_DIR) {
   const proc = spawn(MCP_PYTHON, [path.join(ROOT, 'scripts', 'mcp_server.py')], {
-    env: { ...process.env, TWIN_DATA_DIR: DATA_DIR },
+    env: { ...process.env, TWIN_DATA_DIR: dataDir },
     cwd: ROOT,
     stdio: ['pipe', 'pipe', 'inherit'],
   });
-  const state = { proc, pending: new Map(), nextId: 1, tools: null, buf: '' };
+  const state = { proc, pending: new Map(), nextId: 1, tools: null, buf: '', dataDir };
   proc.stdout.setEncoding('utf8');
   proc.stdout.on('data', (chunk) => {
     state.buf += chunk;
@@ -130,7 +147,7 @@ function mcpSpawn() {
   proc.on('close', () => {
     state.pending.forEach((w) => w.reject(new Error('MCP server exited')));
     state.pending.clear();
-    if (mcp === state) mcp = null; // respawned lazily on next chat
+    if (mcpClients.get(dataDir) === state) mcpClients.delete(dataDir); // respawn lazily
   });
   proc.on('error', (err) => {
     // spawn failure (e.g. a bad/missing interpreter) or a runtime process
@@ -139,7 +156,7 @@ function mcpSpawn() {
     // an uncaughtException that takes down the whole static server.
     state.pending.forEach((w) => w.reject(err instanceof Error ? err : new Error(String(err))));
     state.pending.clear();
-    if (mcp === state) mcp = null;
+    if (mcpClients.get(dataDir) === state) mcpClients.delete(dataDir);
   });
   // A write to a dead child's stdin emits EPIPE on the writable stream; swallow
   // it so it never crashes the process (waiters are already failed above).
@@ -181,13 +198,21 @@ function mcpSpawn() {
 }
 
 async function mcpReady() {
-  if (!mcp) mcp = mcpSpawn();
-  await mcp.init;
-  return mcp;
+  return mcpReadyFor(DATA_DIR);
 }
 
-async function mcpCall(name, args) {
-  const client = await mcpReady();
+async function mcpReadyFor(dataDir = DATA_DIR) {
+  let client = mcpClients.get(dataDir);
+  if (!client) {
+    client = mcpSpawn(dataDir);
+    mcpClients.set(dataDir, client);
+  }
+  await client.init;
+  return client;
+}
+
+async function mcpCall(name, args, dataDir = DATA_DIR) {
+  const client = await mcpReadyFor(dataDir);
   const result = await client.request('tools/call', { name, arguments: args || {} });
   const text = (result.content || [])
     .filter((c) => c.type === 'text')
@@ -623,7 +648,7 @@ function layerRefsFromToolActivity(args, result) {
   return Array.from(out.values()).slice(0, 8);
 }
 
-async function runOpenAI({ history, toolDefs, instructions, apiKey, onProgress = null, signal = null }) {
+async function runOpenAI({ history, toolDefs, instructions, apiKey, dataDir = DATA_DIR, onProgress = null, signal = null }) {
   const tools = toolDefs.map((t) => ({
     type: 'function', name: t.name, description: t.description, parameters: t.parameters,
   }));
@@ -663,7 +688,7 @@ async function runOpenAI({ history, toolDefs, instructions, apiKey, onProgress =
         result = ecologyPreflightToolResult();
       } else {
         try {
-          result = await mcpCall(call.name, args);
+          result = await mcpCall(call.name, args, dataDir);
         } catch (err) {
           result = JSON.stringify({ error: String(err.message || err) });
         }
@@ -706,7 +731,7 @@ async function runOpenAI({ history, toolDefs, instructions, apiKey, onProgress =
   return { reply, trace };
 }
 
-async function runOllama({ history, toolDefs, instructions, onProgress = null, signal = null }) {
+async function runOllama({ history, toolDefs, instructions, dataDir = DATA_DIR, onProgress = null, signal = null }) {
   const tools = toolDefs.map((t) => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.parameters },
@@ -799,7 +824,7 @@ async function runOllama({ history, toolDefs, instructions, onProgress = null, s
         result = ecologyPreflightToolResult();
       } else {
         try {
-          result = await mcpCall(fn.name, args);
+          result = await mcpCall(fn.name, args, dataDir);
         } catch (err) {
           result = JSON.stringify({ error: String(err.message || err) });
         }
@@ -918,6 +943,7 @@ async function handleChat(req, res) {
       if (!res.writableEnded) abort.abort();
     });
     try {
+      const dataDir = requestDataDir(req, res);
       if (bodyErr) {
         const tooLarge = /too large/i.test(String(bodyErr.message || ''));
         return finishJson(tooLarge ? 413 : 400, {
@@ -948,7 +974,7 @@ async function handleChat(req, res) {
       }
 
       startJsonResponse();
-      const client = await mcpReady();
+      const client = await mcpReadyFor(dataDir);
       const toolDefs = client.tools.map((t) => ({
         name: t.name, description: t.description, parameters: t.inputSchema,
       }));
@@ -960,8 +986,8 @@ async function handleChat(req, res) {
       ].filter(Boolean).join('\n\n');
 
       const { reply, trace } = CHAT_PROVIDER === 'ollama'
-        ? await runOllama({ history, toolDefs, instructions, onProgress: writeStreamEvent, signal: abort.signal })
-        : await runOpenAI({ history, toolDefs, instructions, apiKey, onProgress: writeStreamEvent, signal: abort.signal });
+        ? await runOllama({ history, toolDefs, instructions, dataDir, onProgress: writeStreamEvent, signal: abort.signal })
+        : await runOpenAI({ history, toolDefs, instructions, apiKey, dataDir, onProgress: writeStreamEvent, signal: abort.signal });
 
       finishJson(200, { reply, trace, model: CHAT_MODEL, provider: CHAT_PROVIDER });
     } catch (err) {
@@ -1012,6 +1038,104 @@ function send(res, status, body, headers = {}) {
   res.end(body);
 }
 
+// -------------------------------------------------------------- hosted mode
+function hmac(text) {
+  return crypto.createHmac('sha256', HOSTED_SECRET).update(text).digest('base64url');
+}
+
+function parseCookies(header) {
+  const out = {};
+  String(header || '').split(';').forEach((part) => {
+    const idx = part.indexOf('=');
+    if (idx < 0) return;
+    const key = part.slice(0, idx).trim();
+    if (!key) return;
+    out[key] = decodeURIComponent(part.slice(idx + 1).trim());
+  });
+  return out;
+}
+
+function signSessionId(id) {
+  return `${id}.${hmac(id)}`;
+}
+
+function verifySessionCookie(value) {
+  const text = String(value || '');
+  const idx = text.lastIndexOf('.');
+  if (idx <= 0) return null;
+  const id = text.slice(0, idx);
+  const sig = text.slice(idx + 1);
+  if (!/^[a-zA-Z0-9_-]{24,80}$/.test(id)) return null;
+  const expected = hmac(id);
+  const left = Buffer.from(sig);
+  const right = Buffer.from(expected);
+  if (left.length !== right.length || !crypto.timingSafeEqual(left, right)) return null;
+  return id;
+}
+
+function hostedCookieHeader(req, sessionId) {
+  const secure = process.env.VEIL_COOKIE_SECURE === '1'
+    || String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
+  return [
+    `${HOSTED_COOKIE}=${encodeURIComponent(signSessionId(sessionId))}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    secure ? 'Secure' : '',
+    'Max-Age=31536000',
+  ].filter(Boolean).join('; ');
+}
+
+function hostedUserId(req, res) {
+  const cookies = parseCookies(req.headers.cookie);
+  let id = verifySessionCookie(cookies[HOSTED_COOKIE]);
+  if (!id) {
+    id = crypto.randomBytes(24).toString('base64url');
+    res.setHeader('Set-Cookie', hostedCookieHeader(req, id));
+  }
+  return id;
+}
+
+function copyHostedTemplate(dest) {
+  if (!HOSTED_TEMPLATE_DATA_DIR || !fs.existsSync(HOSTED_TEMPLATE_DATA_DIR)) return false;
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.cpSync(HOSTED_TEMPLATE_DATA_DIR, dest, {
+    recursive: true,
+    filter: (src) => {
+      const name = path.basename(src);
+      return !name.startsWith('.') && name !== 'live';
+    },
+  });
+  return true;
+}
+
+function requestDataDir(req, res) {
+  if (!HOSTED_MODE) return DATA_DIR;
+  const userId = hostedUserId(req, res);
+  const dir = path.join(HOSTED_ROOT, 'users', userId, 'twins', HOSTED_TWIN_ID, 'data');
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+    copyHostedTemplate(dir);
+  }
+  return dir;
+}
+
+function twinBuilt(dataDir) {
+  return fs.existsSync(path.join(dataDir, 'georef.json'))
+    && fs.existsSync(path.join(dataDir, 'terrain', 'grid.json'));
+}
+
+function hostedStatusPayload(req, res) {
+  const dataDir = requestDataDir(req, res);
+  return {
+    hosted: HOSTED_MODE,
+    twin_id: HOSTED_TWIN_ID,
+    data_dir: HOSTED_MODE ? path.relative(ROOT, dataDir) : path.relative(ROOT, DATA_DIR),
+    template: HOSTED_MODE && HOSTED_TEMPLATE_DATA_DIR ? path.relative(ROOT, HOSTED_TEMPLATE_DATA_DIR) : null,
+    built: twinBuilt(dataDir),
+  };
+}
+
 // ---------------------------------------------------------------- init API
 // npm run init starts this server with VEIL_INIT=1 and serves /init.html. The
 // setup page posts a drawn WGS84 polygon plus a display name here; the server
@@ -1028,25 +1152,53 @@ const initJob = {
   finished_at: null,
   exit_code: null,
 };
+const hostedInitJobs = new Map();
 
-function initJobSnapshot() {
+function createInitJob() {
   return {
-    status: initJob.status,
-    running: initJob.running,
-    logs: initJob.logs,
-    name: initJob.name,
-    started_at: initJob.started_at,
-    finished_at: initJob.finished_at,
-    exit_code: initJob.exit_code,
+    status: 'idle',
+    running: false,
+    logs: [],
+    name: null,
+    started_at: null,
+    finished_at: null,
+    exit_code: null,
   };
 }
 
-function appendInitLog(chunk) {
+function initJobFor(req, res) {
+  if (!HOSTED_MODE) return initJob;
+  const dataDir = requestDataDir(req, res);
+  let job = hostedInitJobs.get(dataDir);
+  if (!job) {
+    job = createInitJob();
+    hostedInitJobs.set(dataDir, job);
+  }
+  return job;
+}
+
+function initModeEnabled() {
+  return HOSTED_MODE || process.env.VEIL_INIT === '1';
+}
+
+function initJobSnapshot(job = initJob) {
+  return {
+    status: job.status,
+    running: job.running,
+    logs: job.logs,
+    name: job.name,
+    started_at: job.started_at,
+    finished_at: job.finished_at,
+    exit_code: job.exit_code,
+  };
+}
+
+function appendInitLog(job, chunk) {
   const text = String(chunk || '');
   if (!text) return;
-  initJob.logs.push(...text.replace(/\r/g, '').split('\n').filter(Boolean));
-  if (initJob.logs.length > 500) {
-    initJob.logs.splice(0, initJob.logs.length - 500);
+  job.logs.push(...text.replace(/\r/g, '').split('\n').filter(Boolean));
+  if (job.logs.length > 500) {
+    job.logs.splice(0, job.logs.length - 500);
   }
 }
 
@@ -1145,7 +1297,7 @@ function normalizeCensusAddressMatches(payload) {
 }
 
 async function handleInitAddressSearch(req, res, searchParams) {
-  if (process.env.VEIL_INIT !== '1') {
+  if (!initModeEnabled()) {
     return send(res, 404, JSON.stringify({ ok: false, error: 'init mode is not enabled' }),
       { 'Content-Type': 'application/json' });
   }
@@ -1201,12 +1353,12 @@ async function handleInitAddressSearch(req, res, searchParams) {
   }
 }
 
-function handleInitStatus(_req, res) {
-  send(res, 200, JSON.stringify(initJobSnapshot()), { 'Content-Type': 'application/json' });
+function handleInitStatus(req, res) {
+  send(res, 200, JSON.stringify(initJobSnapshot(initJobFor(req, res))), { 'Content-Type': 'application/json' });
 }
 
 function handleInitLayerScan(req, res) {
-  if (process.env.VEIL_INIT !== '1') {
+  if (!initModeEnabled()) {
     return send(res, 404, JSON.stringify({ ok: false, error: 'init mode is not enabled' }),
       { 'Content-Type': 'application/json' });
   }
@@ -1222,7 +1374,8 @@ function handleInitLayerScan(req, res) {
       return send(res, 400, JSON.stringify({ ok: false, error: e.message }),
         { 'Content-Type': 'application/json' });
     }
-    const scanDir = path.join(DATA_DIR, 'init');
+    const dataDir = requestDataDir(req, res);
+    const scanDir = path.join(dataDir, 'init');
     fs.mkdirSync(scanDir, { recursive: true });
     const scanPath = path.join(scanDir, `scan-aoi-${Date.now()}.geojson`);
     writeJsonFileAtomic(scanPath, initAoiFeatureCollection('Layer scan AOI', coordinates));
@@ -1233,7 +1386,7 @@ function handleInitLayerScan(req, res) {
       '--aoi', scanPath,
     ], {
       cwd: ROOT,
-      env: { ...process.env, TWIN_DATA_DIR: DATA_DIR, TWIN_PACK: 'us-national' },
+      env: { ...process.env, TWIN_DATA_DIR: dataDir, TWIN_PACK: 'us-national' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -1281,7 +1434,7 @@ function handleInitLayerScan(req, res) {
 // chunked) so the setup UI can show each national layer being checked as it
 // resolves. The buffered endpoint above stays as the fallback.
 function handleInitLayerScanStream(req, res) {
-  if (process.env.VEIL_INIT !== '1') {
+  if (!initModeEnabled()) {
     return send(res, 404, JSON.stringify({ ok: false, error: 'init mode is not enabled' }),
       { 'Content-Type': 'application/json' });
   }
@@ -1297,7 +1450,8 @@ function handleInitLayerScanStream(req, res) {
       return send(res, 400, JSON.stringify({ ok: false, error: e.message }),
         { 'Content-Type': 'application/json' });
     }
-    const scanDir = path.join(DATA_DIR, 'init');
+    const dataDir = requestDataDir(req, res);
+    const scanDir = path.join(dataDir, 'init');
     fs.mkdirSync(scanDir, { recursive: true });
     const scanPath = path.join(scanDir, `scan-aoi-${Date.now()}.geojson`);
     writeJsonFileAtomic(scanPath, initAoiFeatureCollection('Layer scan AOI', coordinates));
@@ -1309,7 +1463,7 @@ function handleInitLayerScanStream(req, res) {
       '--progress',
     ], {
       cwd: ROOT,
-      env: { ...process.env, TWIN_DATA_DIR: DATA_DIR, TWIN_PACK: 'us-national' },
+      env: { ...process.env, TWIN_DATA_DIR: dataDir, TWIN_PACK: 'us-national' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -1354,12 +1508,14 @@ function handleInitLayerScanStream(req, res) {
 }
 
 function handleInitAoi(req, res) {
-  if (process.env.VEIL_INIT !== '1') {
+  if (!initModeEnabled()) {
     return send(res, 404, JSON.stringify({ ok: false, error: 'init mode is not enabled' }),
       { 'Content-Type': 'application/json' });
   }
-  if (initJob.running) {
-    return send(res, 409, JSON.stringify({ ok: false, error: 'an init build is already running', job: initJobSnapshot() }),
+  const job = initJobFor(req, res);
+  const dataDir = requestDataDir(req, res);
+  if (job.running) {
+    return send(res, 409, JSON.stringify({ ok: false, error: 'an init build is already running', job: initJobSnapshot(job) }),
       { 'Content-Type': 'application/json' });
   }
   readBodyJson(req, INIT_MAX_BODY, (err, body) => {
@@ -1376,11 +1532,11 @@ function handleInitAoi(req, res) {
     }
     const name = cleanTwinName(body.name);
     const nationalLayers = normalizeNationalLayerIds(body.national_layers);
-    const initDir = path.join(DATA_DIR, 'init');
+    const initDir = path.join(dataDir, 'init');
     const aoiPath = path.join(initDir, 'aoi.geojson');
     writeJsonFileAtomic(aoiPath, initAoiFeatureCollection(name, coordinates));
 
-    Object.assign(initJob, {
+    Object.assign(job, {
       status: 'running',
       running: true,
       logs: [`Starting ${name}`].concat(
@@ -1394,7 +1550,7 @@ function handleInitAoi(req, res) {
     const args = [
       path.join(ROOT, 'scripts', 'build_from_aoi.py'),
       '--aoi', aoiPath,
-      '--data-dir', DATA_DIR,
+      '--data-dir', dataDir,
       '--name', name,
       '--force',
     ];
@@ -1403,26 +1559,26 @@ function handleInitAoi(req, res) {
     }
     const child = spawn(MCP_PYTHON, args, {
       cwd: ROOT,
-      env: { ...process.env, TWIN_DATA_DIR: DATA_DIR, TWIN_PACK: 'us-national' },
+      env: { ...process.env, TWIN_DATA_DIR: dataDir, TWIN_PACK: 'us-national' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    child.stdout.on('data', appendInitLog);
-    child.stderr.on('data', appendInitLog);
+    child.stdout.on('data', (chunk) => appendInitLog(job, chunk));
+    child.stderr.on('data', (chunk) => appendInitLog(job, chunk));
     child.on('error', (e) => {
-      initJob.status = 'error';
-      initJob.running = false;
-      initJob.finished_at = new Date().toISOString();
-      appendInitLog(`could not start build: ${e.message}`);
+      job.status = 'error';
+      job.running = false;
+      job.finished_at = new Date().toISOString();
+      appendInitLog(job, `could not start build: ${e.message}`);
     });
     child.on('close', (code) => {
-      initJob.exit_code = code;
-      initJob.running = false;
-      initJob.finished_at = new Date().toISOString();
-      initJob.status = code === 0 ? 'done' : 'error';
-      appendInitLog(code === 0 ? 'Build complete' : `Build exited ${code}`);
+      job.exit_code = code;
+      job.running = false;
+      job.finished_at = new Date().toISOString();
+      job.status = code === 0 ? 'done' : 'error';
+      appendInitLog(job, code === 0 ? 'Build complete' : `Build exited ${code}`);
     });
 
-    send(res, 202, JSON.stringify({ ok: true, job: initJobSnapshot() }),
+    send(res, 202, JSON.stringify({ ok: true, job: initJobSnapshot(job) }),
       { 'Content-Type': 'application/json' });
   });
 }
@@ -1844,6 +2000,66 @@ function readBodyJson(req, maxBytes, callback) {
     } catch (_err) {
       callback(new Error('invalid JSON body'));
     }
+  });
+}
+
+function readBodyBuffer(req, maxBytes, callback) {
+  const chunks = [];
+  let bytes = 0;
+  let tooLarge = false;
+  req.on('data', (chunk) => {
+    bytes += chunk.length;
+    if (bytes > maxBytes) {
+      tooLarge = true;
+      req.destroy();
+      return;
+    }
+    chunks.push(chunk);
+  });
+  req.on('error', () => callback(new Error(tooLarge ? 'body too large' : 'request interrupted')));
+  req.on('end', () => {
+    if (tooLarge) return callback(new Error('body too large'));
+    callback(null, Buffer.concat(chunks));
+  });
+}
+
+function parseMultipart(req, maxBytes, callback) {
+  const type = String(req.headers['content-type'] || '');
+  const match = type.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  if (!match) return callback(new Error('expected multipart/form-data'));
+  const boundary = match[1] || match[2];
+  readBodyBuffer(req, maxBytes, (err, body) => {
+    if (err) return callback(err);
+    const delimiter = Buffer.from(`--${boundary}`);
+    const fields = {};
+    const files = [];
+    let offset = 0;
+    while (offset < body.length) {
+      const start = body.indexOf(delimiter, offset);
+      if (start < 0) break;
+      let partStart = start + delimiter.length;
+      if (body.slice(partStart, partStart + 2).toString() === '--') break;
+      if (body.slice(partStart, partStart + 2).toString() === '\r\n') partStart += 2;
+      const headerEnd = body.indexOf(Buffer.from('\r\n\r\n'), partStart);
+      if (headerEnd < 0) break;
+      const headers = body.slice(partStart, headerEnd).toString('utf8');
+      let dataEnd = body.indexOf(delimiter, headerEnd + 4);
+      if (dataEnd < 0) dataEnd = body.length;
+      let data = body.slice(headerEnd + 4, dataEnd);
+      if (data.length >= 2 && data.slice(data.length - 2).toString() === '\r\n') {
+        data = data.slice(0, data.length - 2);
+      }
+      const disp = headers.match(/content-disposition:\s*form-data;([^\r\n]+)/i);
+      const name = disp && (disp[1].match(/name="([^"]+)"/i) || [])[1];
+      const filename = disp && (disp[1].match(/filename="([^"]*)"/i) || [])[1];
+      if (name && filename) {
+        files.push({ field: name, filename, data });
+      } else if (name) {
+        fields[name] = data.toString('utf8');
+      }
+      offset = dataEnd;
+    }
+    callback(null, { fields, files });
   });
 }
 
@@ -3015,6 +3231,129 @@ function handleLiveExport(req, res, query) {
   });
 }
 
+// ------------------------------------------------------------- layer upload
+// Hosted users can add their own GeoTIFF/vector data from the browser. All
+// dropped files are saved into one upload directory so shapefile sidecars
+// (.shx/.dbf/.prj) remain adjacent, then scripts/add_layer.py performs the
+// existing GDAL/OGR reprojection, AOI/terrain-footprint clipping, drape asset
+// generation, and viewer catalog registration.
+
+const LAYER_UPLOAD_MAX_BYTES = Number(process.env.VEIL_LAYER_UPLOAD_MAX_BYTES || 512 * 1024 * 1024);
+const LAYER_PRIMARY_EXTS = new Set([
+  '.gpkg', '.geojson', '.json', '.tif', '.tiff', '.shp', '.kml', '.kmz',
+  '.gpx', '.csv', '.zip',
+]);
+
+function layerSlug(value, fallback = 'layer') {
+  const text = String(value || '').toLowerCase()
+    .replace(/\.[a-z0-9]+$/i, '')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 64);
+  return text || fallback;
+}
+
+function safeUploadFileName(name) {
+  const clean = path.basename(String(name || 'upload')).replace(/[^a-zA-Z0-9._ -]+/g, '_').slice(0, 160);
+  return clean && clean !== '.' && clean !== '..' ? clean : `upload-${Date.now()}`;
+}
+
+function chooseLayerPrimary(files) {
+  const candidates = files
+    .map((file) => ({ ...file, ext: path.extname(file.path).toLowerCase() }))
+    .filter((file) => LAYER_PRIMARY_EXTS.has(file.ext));
+  if (!candidates.length) return null;
+  return candidates.find((file) => file.ext !== '.json') || candidates[0];
+}
+
+function readAtlasCatalog(dataDir) {
+  const catalogPath = path.join(dataDir, 'atlas', 'local', 'viewer-layers.json');
+  try {
+    return JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+  } catch (_err) {
+    return { layers: [] };
+  }
+}
+
+function handleLayerUpload(req, res, dataDir) {
+  parseMultipart(req, LAYER_UPLOAD_MAX_BYTES, (err, form) => {
+    if (err) {
+      const tooLarge = /too large/i.test(String(err.message || ''));
+      return send(res, tooLarge ? 413 : 400,
+        JSON.stringify({ ok: false, error: err.message }),
+        { 'Content-Type': 'application/json' });
+    }
+    const rawFiles = (form.files || []).filter((file) => file.field === 'files' && file.data?.length);
+    if (!rawFiles.length) {
+      return send(res, 400, JSON.stringify({ ok: false, error: 'drop at least one geospatial file' }),
+        { 'Content-Type': 'application/json' });
+    }
+    const uploadId = `${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(4).toString('hex')}`;
+    const uploadDir = path.join(dataDir, 'uploads', 'layers', uploadId);
+    fs.mkdirSync(uploadDir, { recursive: true });
+    const saved = rawFiles.map((file) => {
+      const filename = safeUploadFileName(file.filename);
+      const filePath = path.join(uploadDir, filename);
+      fs.writeFileSync(filePath, file.data);
+      return { filename, path: filePath };
+    });
+    const primary = chooseLayerPrimary(saved);
+    if (!primary) {
+      return send(res, 400,
+        JSON.stringify({ ok: false, error: 'no supported geospatial file found; use GeoTIFF, GeoJSON, GeoPackage, Shapefile, KML, GPX, CSV, or ZIP' }),
+        { 'Content-Type': 'application/json' });
+    }
+    const label = String(form.fields.label || '').trim()
+      || path.basename(primary.filename, path.extname(primary.filename)).replace(/[_-]+/g, ' ');
+    const baseId = layerSlug(form.fields.id || label || primary.filename);
+    const layerId = `${baseId}_${crypto.randomBytes(3).toString('hex')}`;
+    const argv = [
+      path.join(ROOT, 'scripts', 'add_layer.py'),
+      primary.path,
+      '--id', layerId,
+      '--label', label,
+      '--data-dir', dataDir,
+      '--description', `User-uploaded layer from ${primary.filename}`,
+    ];
+    if (form.fields.src_crs) argv.push('--src-crs', String(form.fields.src_crs).trim());
+    if (form.fields.layer_name) argv.push('--layer', String(form.fields.layer_name).trim());
+    if (form.fields.label_field) argv.push('--label-field', String(form.fields.label_field).trim());
+
+    const py = spawn(MCP_PYTHON, argv, {
+      cwd: ROOT,
+      env: { ...process.env, TWIN_DATA_DIR: dataDir },
+    });
+    let stdout = '';
+    let stderr = '';
+    let finished = false;
+    const finish = (status, payload) => {
+      if (finished) return;
+      finished = true;
+      send(res, status, JSON.stringify(payload), { 'Content-Type': 'application/json' });
+    };
+    py.stdout.on('data', (c) => { stdout += c; });
+    py.stderr.on('data', (c) => { stderr += c; });
+    py.on('error', (e) => finish(500, { ok: false, error: e.message }));
+    py.on('close', (code) => {
+      if (code !== 0) {
+        return finish(400, {
+          ok: false,
+          error: stderr.trim().slice(-800) || stdout.trim().slice(-800) || `add_layer exited ${code}`,
+        });
+      }
+      finish(200, {
+        ok: true,
+        layer_id: layerId,
+        label,
+        primary: primary.filename,
+        files: saved.map((f) => f.filename),
+        output: stdout.trim().slice(-1200),
+        atlas: readAtlasCatalog(dataDir),
+      });
+    });
+  });
+}
+
 // ------------------------------------------------------------ survey upload
 // POST /api/survey-upload?name=... — the Survey companion write path
 // (docs/survey.md). The raw request body is a zipped QField project folder.
@@ -3132,7 +3471,7 @@ function handleSurveyUpload(req, res, query) {
 
 const SIMULATE_TIMEOUT_MS = 2 * 60 * 1000;
 
-function handleSimulate(req, res) {
+function handleSimulate(req, res, dataDir = DATA_DIR) {
   readBodyJson(req, LIVE_MAX_BODY, (err, params) => {
     if (err) {
       const tooLarge = /too large/i.test(String(err.message || ''));
@@ -3165,7 +3504,7 @@ function handleSimulate(req, res) {
     if (params.frozen === true) argv.push('--frozen');
 
     const py = spawn(HYDRO_PYTHON, argv,
-      { cwd: ROOT, env: { ...process.env, TWIN_DATA_DIR: DATA_DIR } });
+      { cwd: ROOT, env: { ...process.env, TWIN_DATA_DIR: dataDir } });
     let stdout = '';
     let stderr = '';
     let done = false;
@@ -3263,8 +3602,8 @@ function saveBuildingPlacements(req, res) {
 // same file (set_layer_visibility/filter_layer) are cleared too, so the one
 // button also hides any atlas layers the agent revealed — the client's
 // follow-up poll applies the now-empty layer_views and resets the drape.
-function clearAnnotations(res) {
-  const annPath = path.join(DATA_DIR, 'annotations.json');
+function clearAnnotations(res, dataDir = DATA_DIR) {
+  const annPath = path.join(dataDir, 'annotations.json');
   try {
     fs.writeFileSync(annPath, JSON.stringify({
       version: 1, updated_at: new Date().toISOString(),
@@ -3290,6 +3629,7 @@ const CSRF_PROTECTED = new Set([
   '/api/simulate',
   '/api/annotations/clear',
   '/api/chat',
+  '/api/layers/upload',
   '/api/live/events',
   '/api/live/gateways', '/api/live/gateways/remove',
   '/api/live/gateways/restart', '/api/live/gateways/stop',
@@ -3297,6 +3637,13 @@ const CSRF_PROTECTED = new Set([
   '/api/live/export', '/api/live/token',
   '/api/survey-upload',
 ]);
+
+function hostedUnsupported(pathname) {
+  if (!HOSTED_MODE) return false;
+  return pathname.startsWith('/api/live/')
+    || pathname === '/api/building-placements'
+    || pathname === '/api/survey-upload';
+}
 
 function sameOriginOk(req) {
   const host = req.headers.host;
@@ -3325,9 +3672,20 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && CSRF_PROTECTED.has(pathname) && !sameOriginOk(req)) {
     return send(res, 403, 'Forbidden: cross-origin request rejected');
   }
+  if (hostedUnsupported(pathname)) {
+    return send(res, 403, JSON.stringify({
+      ok: false,
+      error: 'this local hardware/import route is disabled in hosted mode',
+    }), { 'Content-Type': 'application/json' });
+  }
 
   if (req.method === 'POST' && pathname === '/api/building-placements') {
     return saveBuildingPlacements(req, res);
+  }
+
+  if (req.method === 'GET' && pathname === '/api/hosted/status') {
+    return send(res, 200, JSON.stringify(hostedStatusPayload(req, res)),
+      { 'Content-Type': 'application/json' });
   }
 
   if (req.method === 'GET' && pathname === '/api/init-status') {
@@ -3421,15 +3779,22 @@ const server = http.createServer((req, res) => {
     return handleChat(req, res);
   }
 
+  if (req.method === 'POST' && pathname === '/api/layers/upload') {
+    return handleLayerUpload(req, res, requestDataDir(req, res));
+  }
+
   if (req.method === 'POST' && pathname === '/api/simulate') {
-    return handleSimulate(req, res);
+    return handleSimulate(req, res, requestDataDir(req, res));
   }
 
   if (req.method === 'POST' && pathname === '/api/annotations/clear') {
-    return clearAnnotations(res);
+    return clearAnnotations(res, requestDataDir(req, res));
   }
 
-  if (pathname === '/') pathname = '/index.html';
+  if (pathname === '/') {
+    if (HOSTED_MODE && !twinBuilt(requestDataDir(req, res))) pathname = '/init.html';
+    else pathname = '/index.html';
+  }
   // directory request (any trailing-slash path) -> its index.html
   else if (pathname.endsWith('/')) pathname += 'index.html';
 
@@ -3438,8 +3803,8 @@ const server = http.createServer((req, res) => {
   let filePath;
   let baseDir;
   if (pathname.startsWith('/data/')) {
-    baseDir = DATA_DIR;
-    filePath = path.normalize(path.join(DATA_DIR, pathname.slice('/data/'.length)));
+    baseDir = requestDataDir(req, res);
+    filePath = path.normalize(path.join(baseDir, pathname.slice('/data/'.length)));
   } else {
     baseDir = path.join(ROOT, 'public');
     filePath = path.normalize(path.join(ROOT, path.posix.join('/public', pathname)));

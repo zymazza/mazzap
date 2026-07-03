@@ -148,6 +148,31 @@ html, body {
 .mini-search:focus { border-color: var(--accent-line); outline: none; }
 .mini-search::placeholder { color: var(--ink-faint); }
 
+/* atlas upload */
+.layer-upload-form { display: flex; flex-direction: column; gap: 7px; }
+.layer-dropzone {
+  position: relative; display: flex; flex-direction: column; gap: 3px;
+  min-height: 86px; justify-content: center; align-items: center; text-align: center;
+  border: 1px dashed var(--line-strong); border-radius: var(--r-sm);
+  background: var(--glass-2); cursor: pointer; padding: 12px;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.layer-dropzone:hover, .layer-dropzone.dragging {
+  background: var(--accent-tint); border-color: var(--accent-line);
+}
+.layer-dropzone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.layer-drop-main { font-size: 12.5px; font-weight: 620; color: var(--ink); }
+.layer-drop-sub { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--ink-dim); }
+.layer-upload-form input[type="text"] {
+  width: 100%; font: inherit; font-size: 11.5px; color: var(--ink);
+  background: var(--glass-2); border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 7px 9px;
+}
+.layer-upload-form input[type="text"]:focus { border-color: var(--accent-line); outline: none; }
+.layer-upload-status { min-height: 14px; margin: 0; font-size: 11.5px; line-height: 1.4; color: var(--ink-dim); }
+.layer-upload-status.ok { color: var(--accent); }
+.layer-upload-status.err { color: var(--red); }
+
 /* generic buttons used inside panes */
 .wide-btn, .primary-btn, .link-btn {
   width: 100%; font: inherit; font-size: 12.5px; cursor: pointer; text-align: center;

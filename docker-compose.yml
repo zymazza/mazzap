@@ -30,8 +30,15 @@ x-veil-base: &veil-base
     # "Ask the land" chat panel (optional). Set OPENAI_API_KEY in your shell
     # or a .env file, or mount a .openai_key file (below).
     OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+    OPENAI_REQUIRE_USER_KEY: "${OPENAI_REQUIRE_USER_KEY:-}"
+    CHAT_PROVIDER: "${CHAT_PROVIDER:-openai}"
     OPENAI_MODEL: "${OPENAI_MODEL:-gpt-5.5}"
     OPENAI_REASONING_EFFORT: "${OPENAI_REASONING_EFFORT:-low}"
+    VEIL_HOSTED: "${VEIL_HOSTED:-}"
+    VEIL_SESSION_SECRET: "${VEIL_SESSION_SECRET:-}"
+    VEIL_COOKIE_SECURE: "${VEIL_COOKIE_SECURE:-}"
+    VEIL_HOSTED_ROOT: "${VEIL_HOSTED_ROOT:-/app/hosted}"
+    VEIL_HOSTED_TEMPLATE_DATA_DIR: "${VEIL_HOSTED_TEMPLATE_DATA_DIR:-}"
   volumes: &veil-volumes
     # Twin data lives on the host (private/gitignored) and is built/served here.
     - ./data:/app/data
@@ -49,7 +56,7 @@ services:
     #   VEIL_UID=$(id -u) VEIL_GID=$(id -g) docker compose run --rm veil npm run demo
     user: "${VEIL_UID:-0}:${VEIL_GID:-0}"
     ports:
-      - "4173:4173"
+      - "${VEIL_HOST_PORT:-4173}:4173"
   veil-live:
     <<: *veil-base
     profiles: ["live-hardware"]

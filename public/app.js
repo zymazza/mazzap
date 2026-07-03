@@ -160,6 +160,8 @@
     state.viewer = viewer;
     window.__twin = { viewer, state };
     viewer.updateScenePayload?.(scene);
+    state.hosted = await loadHostedStatus();
+    applyHostedChrome();
     SCENE_LAYERS.forEach((layer) => viewer.setLayerVisibility(layer.id, sceneLayerDefaultVisible(layer.id)));
     try {
       await viewer.streamLoad(scene, { onLayerState() {}, onTerrainReady() {} });
@@ -178,11 +180,7 @@
       })
       .catch((err) => console.error('building models failed:', err));
 
-    try {
-      state.atlas = await fetchJson('/data/atlas/local/viewer-layers.json');
-    } catch (_e) {
-      state.atlas = { layers: [] };
-    }
+    state.atlas = await loadAtlasCatalog();
     state.atlas.layers.forEach((l) => state.enabled.set(l.id, false));
     state.survey = await loadSurveyCatalog();
     state.survey.layers.forEach((l) => state.enabled.set(l.id, false));
@@ -204,6 +202,7 @@
     setupPicking(viewer, scene);
     setupPOV(viewer, scene);
     window.__twin.applyLayerViews = applyLayerViews;
+    window.__twin.refreshAtlasLayers = refreshAtlasLayers;
     window.__twin.annotations = window.VEILAnnotations?.create(viewer, scene);
     window.__twin.chat = window.VEILChat?.create(viewer, scene);
     window.__twin.survey = window.VEILSurvey?.create(refreshSurveyLayers);
@@ -216,9 +215,52 @@
       },
       refresh: refreshSimulationLayers,
     });
-    window.__twin.live = window.VEILLiveInputs?.create(viewer, scene);
+    window.__twin.live = state.hosted?.hosted ? null : window.VEILLiveInputs?.create(viewer, scene);
     renderKey();
     loadSpeciesGrids();
+  }
+
+  async function loadHostedStatus() {
+    try {
+      return await fetchJson('/api/hosted/status');
+    } catch (_err) {
+      return { hosted: false };
+    }
+  }
+
+  function applyHostedChrome() {
+    if (!state.hosted?.hosted) return;
+    document.querySelectorAll('[data-mode="telemetry"], [data-pane="telemetry"], [data-mode="survey"], [data-pane="survey"]')
+      .forEach((el) => {
+        el.hidden = true;
+        el.style.display = 'none';
+      });
+  }
+
+  async function loadAtlasCatalog() {
+    try {
+      return await fetchJson('/data/atlas/local/viewer-layers.json');
+    } catch (_e) {
+      return { layers: [] };
+    }
+  }
+
+  async function refreshAtlasLayers(options = {}) {
+    const fresh = options.catalog || await loadAtlasCatalog();
+    const oldAtlasIds = new Set((state.atlas?.layers || []).map((l) => l.id));
+    state.atlas = fresh;
+    state.atlas.layers.forEach((layer) => {
+      if (!state.enabled.has(layer.id)) state.enabled.set(layer.id, false);
+      if (!oldAtlasIds.has(layer.id)) state.layerData.delete(layer.id);
+    });
+    buildAtlasToggles();
+    const enableIds = new Set(options.enableIds || []);
+    for (const layer of state.atlas.layers) {
+      if (enableIds.has(layer.id)) await setDrapeLayerEnabled(layer, true);
+    }
+    redrawDrape();
+    renderKey();
+    return state.atlas;
   }
 
   /* ---------------- simulation layers (Simulation window — hydrology) ----- */
@@ -694,7 +736,21 @@
       sceneHost.appendChild(row);
     }
 
+    buildAtlasToggles();
+
+    buildSurveyToggles();
+  }
+
+  function buildAtlasToggles() {
     const atlasHost = document.getElementById('atlas-toggles');
+    if (!atlasHost) return;
+    atlasHost.innerHTML = '';
+    for (const [id, input] of state.toggleInputs.entries()) {
+      if ((state.atlas.layers || []).some((layer) => layer.id === id)) {
+        state.toggleInputs.delete(id);
+        input.closest?.('.toggle-row')?.remove();
+      }
+    }
     state.atlas.layers.forEach((layer) => {
       const swatch = layer.type === 'raster' ? '#888' : (layer.stroke || '#ccc');
       const row = makeToggleRow(layer.label, swatch, state.enabled.get(layer.id),
@@ -708,8 +764,6 @@
       state.toggleInputs.set(layer.id, row.querySelector('input'));
       atlasHost.appendChild(row);
     });
-
-    buildSurveyToggles();
   }
 
   /* ---- MCP layer-view overrides (set_layer_visibility / filter_layer) ----

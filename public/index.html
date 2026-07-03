@@ -96,6 +96,22 @@
           <div id="atlas-toggles" class="toggle-list atlas-toggle-list"></div>
         </div>
 
+        <div class="group">
+          <p class="group-label">Add data</p>
+          <form id="layer-upload-form" class="layer-upload-form">
+            <label id="layer-dropzone" class="layer-dropzone" for="layer-upload-files">
+              <input id="layer-upload-files" type="file" multiple
+                accept=".tif,.tiff,.geojson,.json,.gpkg,.shp,.shx,.dbf,.prj,.kml,.kmz,.gpx,.csv,.zip" />
+              <span class="layer-drop-main">Drop geospatial files</span>
+              <span id="layer-upload-files-label" class="layer-drop-sub">GeoTIFF, GeoJSON, GPKG, Shapefile, KML, GPX, CSV</span>
+            </label>
+            <input id="layer-upload-label" type="text" placeholder="Layer name" autocomplete="off" />
+            <input id="layer-upload-src-crs" type="text" placeholder="Source CRS if missing, e.g. EPSG:4326" autocomplete="off" />
+            <button id="layer-upload-submit" type="submit" class="primary-btn">Add layer</button>
+          </form>
+          <p id="layer-upload-status" class="layer-upload-status"></p>
+        </div>
+
         <div class="group" id="survey-group" hidden>
           <p class="group-label">Field surveys</p>
           <div id="survey-toggles" class="toggle-list"></div>
@@ -360,6 +376,7 @@
   <script src="/survey.js"></script>
   <script src="/simulation.js"></script>
   <script src="/live-inputs.js"></script>
+  <script src="/layer-upload.js"></script>
   <!-- boot (shared) -->
   <script src="/app.js"></script>
   <!-- viewer chrome -->
