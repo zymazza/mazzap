@@ -12,9 +12,9 @@ contract used by fetch_nato.py:
   provenance() -> dict
   attribution() -> list[str]
 
-Only the Netherlands is implemented in this first pack slice. The other NATO
-members are intentionally present as stubs so the CLI can fail clearly instead
-of silently guessing a national source.
+The Netherlands, Norway, and Spain are implemented in this pack slice. The
+other NATO members are intentionally present as stubs so the CLI can fail
+clearly instead of silently guessing a national source.
 """
 
 from dataclasses import dataclass
@@ -121,6 +121,18 @@ def _load_nl():
     return NetherlandsAdapter()
 
 
+def _load_no():
+    from .no import NorwayAdapter
+
+    return NorwayAdapter()
+
+
+def _load_es():
+    from .es import SpainAdapter
+
+    return SpainAdapter()
+
+
 def get_adapter(code):
     """Return the country adapter for a two- or three-letter ISO code."""
     key = _normalize(code)
@@ -128,6 +140,10 @@ def get_adapter(code):
         return _REGISTRY[key]
     if key == "NL":
         adapter = _load_nl()
+    elif key == "NO":
+        adapter = _load_no()
+    elif key == "ES":
+        adapter = _load_es()
     elif key in _MEMBERS:
         adapter = _stub(key)
     else:

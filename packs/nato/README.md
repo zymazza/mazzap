@@ -8,6 +8,13 @@ Implemented now:
 
 - Netherlands (`NL`/`NLD`) national Tier-A path: AHN terrain/CHM, PDOK RGB+CIR,
   and Copernicus HRL Dominant Leaf Type for conifer/broadleaf typing.
+- Norway (`NO`/`NOR`) national Tier-A path: Kartverket / Geonorge Nasjonal
+  hoydemodell DTM/DOM 1 m terrain/CHM, Sentinel-2 RGB+NIR imagery fallback, and
+  Copernicus HRL Dominant Leaf Type for conifer/broadleaf typing.
+- Spain (`ES`/`ESP`) national Tier-A path: IGN/CNIG PNOA-LiDAR MDT 5 m terrain,
+  ETH Global Canopy Height CHM fallback because no open national MDS/DSM WCS was
+  reachable, PNOA RGB WMS plus Sentinel-2 NIR, and Copernicus HRL Dominant Leaf
+  Type for conifer/broadleaf typing.
 - Global Tier-C fallback for registered countries without a national adapter:
   Copernicus GLO-30 terrain, ETH Global Canopy Height, Sentinel-2 RGB+NIR, and
   global/continental forest typing.
@@ -32,6 +39,46 @@ Serve it:
 
 ```bash
 TWIN_DATA_DIR=twins/nl-speulderbos/data PORT=4180 HOST=127.0.0.1 node server.js
+```
+
+## Build The Norwegian Demo
+
+Nordmarka north of Oslo is in Kartverket NHM EPSG:25832 coverage.
+
+```bash
+python3 packs/nato/fetch_nato.py \
+  --country NO \
+  --aoi 10.676,60.018,10.684,60.022 \
+  --data-dir twins/no-nordmarka/data \
+  --resolution 1 \
+  --name "Nordmarka, Norway"
+```
+
+Serve it:
+
+```bash
+TWIN_DATA_DIR=twins/no-nordmarka/data PORT=4193 HOST=127.0.0.1 node server.js
+```
+
+## Build The Spanish Demo
+
+The Valsain / Sierra de Guadarrama demo uses a mixed pine-and-oak AOI in
+EPSG:25830 coverage.
+
+```bash
+python3 packs/nato/fetch_nato.py \
+  --country ES \
+  --aoi -4.023,40.868,-4.017,40.872 \
+  --data-dir twins/es-valsain/data \
+  --resolution 5 \
+  --name "Valsain, Sierra de Guadarrama, Spain" \
+  --force
+```
+
+Serve it:
+
+```bash
+TWIN_DATA_DIR=twins/es-valsain/data PORT=4194 HOST=127.0.0.1 node server.js
 ```
 
 ## Build A Global / Continental Fallback Twin
@@ -101,6 +148,11 @@ python3 packs/nato/fetch_nato.py \
   stems. Terrain, imagery, and draped context layers still cover the full AOI.
   This preserves the engine CHM contract without claiming a global bare-earth
   DTM exists.
+- The NATO Spain adapter writes `terrain/dtm.tif` from void-filled IGN/CNIG
+  PNOA-LiDAR MDT and `terrain/dsm.tif` as MDT plus forest-masked ETH Global
+  Canopy Height. This keeps national bare-earth terrain while dropping canopy
+  structure to the global 10 m ETH fallback for AOIs where no open national
+  MDS/DSM WCS is available.
 - Future country adapters with DEM/DSM voids can opt into the same pack-side
   interpolation helper in `packs/nato/adapters/elevation.py`. It uses GDAL
   `FillNodata` IDW interpolation with smoothing and records before/after
@@ -171,6 +223,123 @@ Attribution:
 - AHN height data: Actueel Hoogtebestand Nederland
   (Rijkswaterstaat/PDOK), open data / CC-BY 4.0.
 - Aerial imagery: PDOK current aerial orthophoto RGB and CIR services.
+- Dominant Leaf Type: Copernicus HRL Dominant Leaf Type 2018
+  (European Environment Agency / Copernicus Land Monitoring Service).
+
+## Norway Sources
+
+Elevation:
+
+- NHM DTM WCS, EPSG:25832:
+  `https://wcs.geonorge.no/skwms1/wcs.hoyde-dtm-nhm-25832`
+- Coverage: `nhm_dtm_topo_25832`
+- NHM DOM WCS, EPSG:25832:
+  `https://wcs.geonorge.no/skwms1/wcs.hoyde-dom-nhm-25832`
+- Coverage: `nhm_dom_topo_25832`
+- NHM DTM WCS, EPSG:25833:
+  `https://wcs.geonorge.no/skwms1/wcs.hoyde-dtm-nhm-25833`
+- Coverage: `nhm_dtm_topo_25833`
+- NHM DOM WCS, EPSG:25833:
+  `https://wcs.geonorge.no/skwms1/wcs.hoyde-dom-nhm-25833`
+- Coverage: `nhm_dom_topo_25833`
+- WCS version used by the adapter: `1.1.2`, `GetCoverage` with
+  `identifier=<coverage>` and a projected `boundingbox=...,urn:ogc:def:crs:EPSG::<zone>`.
+- Native resolution: 1 m. The adapter chooses EPSG:25832 west of 12 E and
+  EPSG:25833 east of that split for mainland Norway demos.
+- Terrain uses NHM DTM. The Norway adapter keeps raw NHM rasters in
+  `source/nato/no/`, fills nodata voids in DTM and DOM with GDAL `FillNodata`,
+  and uses the filled DTM for terrain ingest. CHM uses filled NHM DOM minus
+  filled NHM DTM.
+
+Imagery:
+
+- Checked national Norge i bilder WMS:
+  `https://services.norgeibilder.no/wms/ortofoto?service=WMS&request=GetCapabilities`
+- Checked national Norge i bilder WMTS:
+  `https://tilecache.norgeibilder.no/wmts/utm32_euref89?SERVICE=WMTS&REQUEST=GetCapabilities`
+- Both national orthophoto endpoints require token/Norway Digital access from
+  this environment, and the national WMS/WMTS catalog entries are marked
+  restricted. The Norway adapter therefore uses Sentinel-2 L2A RGB+NIR via
+  Element84 Earth Search for both visible drape and the NIR band required by
+  `false_color.png`.
+
+Forest leaf type:
+
+- Source: Copernicus HRL Dominant Leaf Type 2018, 10 m, via EEA Discomap.
+- Norway is in `EEA_DLT_ALPHA2`, so `fetch_nato.py` automatically adds
+  `no_leaf_type` before vegetation analysis. Boreal AOIs should normally type
+  mostly as conifer/evergreen.
+
+Attribution:
+
+- Elevation: Kartverket / Geonorge Nasjonal hoydemodell DTM/DOM open data.
+- Imagery: modified Copernicus Sentinel data via Element84 Earth Search.
+- Dominant Leaf Type: Copernicus HRL Dominant Leaf Type 2018
+  (European Environment Agency / Copernicus Land Monitoring Service).
+
+## Spain Sources
+
+Elevation:
+
+- IGN/CNIG MDT WCS:
+  `https://servicios.idee.es/wcs-inspire/mdt`
+- Coverage used for the mainland demo: `Elevacion25830_5`
+- WCS version used by the adapter: `2.0.1`, `GetCoverage` with
+  `coverageId=Elevacion25830_5`, `subset=x(...)`, `subset=y(...)`, and
+  `format=image/tiff`.
+- CRS for the Valsain demo: `EPSG:25830` (ETRS89 / UTM zone 30N)
+- Native resolution: 5 m. The adapter keeps raw MDT rasters in
+  `source/nato/es/`, fills MDT nodata voids with GDAL `FillNodata`, and uses the
+  filled MDT for terrain ingest.
+
+Canopy / CHM:
+
+- Checked open MDS/DSM WCS candidates:
+  `https://servicios.idee.es/wcs-inspire/mds`,
+  `https://servicios.idee.es/wcs-inspire/dsm`, and
+  `https://servicios.idee.es/wcs-inspire/mdt-mds`.
+- The reachable `mdt-mds`/`mdtmds` paths returned the same MDT coverage list as
+  `mdt`; separate open MDS/DSM coverages were not available from this
+  environment. The Spain adapter therefore uses ETH Global Canopy Height 2020
+  over the national MDT and writes `DSM = MDT + forest-masked ETH canopy`.
+- ETH canopy record:
+  `https://www.research-collection.ethz.ch/handle/20.500.11850/609802`
+- Public Libdrive tile download share:
+  `https://libdrive.ethz.ch/index.php/s/cO8or7iOe5dT2Rt`
+- This fallback drops canopy structure to the global 10 m ETH product while
+  preserving national LiDAR terrain.
+
+Imagery:
+
+- IGN/CNIG PNOA maxima actualidad WMS:
+  `https://www.ign.es/wms-inspire/pnoa-ma`
+- RGB layer: `OI.OrthoimageCoverage`
+- The open WMS exposes current visible PNOA orthophoto RGB. No open IGN/CNIG
+  PNOA CIR/4-band NIR WMS was reachable, so the adapter fetches Sentinel-2 L2A
+  NIR via Element84 Earth Search and combines it as `R,G,B,NIR` with the PNOA
+  visible drape.
+- Element84 Earth Search STAC:
+  `https://earth-search.aws.element84.com/v1`
+- Collection: `sentinel-2-l2a`
+
+Forest leaf type:
+
+- Source: Copernicus HRL Dominant Leaf Type 2018, 10 m, via EEA Discomap.
+- Spain is in `EEA_DLT_ALPHA2`, so `fetch_nato.py` automatically adds
+  `es_leaf_type` before vegetation analysis. The Valsain demo AOI was selected
+  to include both DLT class `1` broadleaf and class `2` conifer.
+
+Attribution:
+
+- Elevation: Instituto Geografico Nacional (IGN) / CNIG PNOA-LiDAR MDT,
+  CC BY 4.0 scne.es.
+- Imagery RGB: Instituto Geografico Nacional (IGN) / CNIG PNOA orthophoto WMS,
+  CC BY 4.0 scne.es.
+- Imagery NIR: modified Copernicus Sentinel data via Element84 Earth Search.
+- Canopy fallback: ETH Global Canopy Height 2020, Lang, Schindler and Wegner,
+  CC-BY 4.0.
+- Canopy forest mask fallback: ESA WorldCover 2021 v200, European Space Agency
+  / VITO, open data.
 - Dominant Leaf Type: Copernicus HRL Dominant Leaf Type 2018
   (European Environment Agency / Copernicus Land Monitoring Service).
 
@@ -288,6 +457,12 @@ Real in this pack:
 
 - Netherlands AHN DTM/DSM terrain and CHM.
 - Netherlands PDOK RGB+CIR imagery.
+- Norway Kartverket NHM DTM/DOM terrain and CHM.
+- Norway Sentinel-2 RGB+NIR imagery fallback because national Norge i bilder
+  WMS/WMTS access is restricted/tokened from this environment.
+- Spain IGN/CNIG PNOA-LiDAR MDT terrain, with ETH Global Canopy Height CHM
+  fallback because no open national MDS/DSM WCS was reachable.
+- Spain PNOA RGB imagery plus Sentinel-2 NIR fallback for `false_color.png`.
 - Copernicus HRL Dominant Leaf Type over the EEA/European HRL domain for real
   broadleaf/conifer/no-tree typing.
 - ESA WorldCover global tree-mask fallback for non-EEA AOIs. This is coarse and

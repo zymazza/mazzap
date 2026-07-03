@@ -96,10 +96,12 @@ def _write_geojson(path, ring, crs=None, properties=None):
 
 def parse_aoi(aoi_arg, adapter, source_dir, aoi_crs=None):
     native_crs = getattr(adapter, "native_crs", "EPSG:4326")
-    native_tag = native_crs.lower().replace(":", "")
     bbox = _parse_bbox(aoi_arg)
     if bbox is not None:
         src_crs = _bbox_crs_for_values(bbox, aoi_crs)
+        if hasattr(adapter, "native_crs_for_aoi"):
+            native_crs = adapter.native_crs_for_aoi({"bbox": bbox, "crs": src_crs})
+        native_tag = native_crs.lower().replace(":", "")
         to_native = Transformer.from_crs(src_crs, native_crs, always_xy=True)
         native_pts = [to_native.transform(x, y) for x, y in _ring_from_bbox(bbox)]
         xs, ys = zip(*native_pts)
@@ -140,6 +142,13 @@ def parse_aoi(aoi_arg, adapter, source_dir, aoi_crs=None):
             "--aoi must be either 'minx,miny,maxx,maxy' or a GeoJSON/Shapefile/GPKG path"
         )
     ring, src_crs = ingest_dem.ring_from_aoi(aoi_arg, aoi_crs or "EPSG:4326")
+    xs0, ys0 = zip(*ring)
+    if hasattr(adapter, "native_crs_for_aoi"):
+        native_crs = adapter.native_crs_for_aoi({
+            "bbox": (min(xs0), min(ys0), max(xs0), max(ys0)),
+            "crs": src_crs,
+        })
+    native_tag = native_crs.lower().replace(":", "")
     to_native = Transformer.from_crs(src_crs, native_crs, always_xy=True)
     native_ring = [list(to_native.transform(x, y)) for x, y in ring]
     xs, ys = zip(*native_ring)
@@ -356,7 +365,7 @@ def _add_canopy_layer(chm_inputs, adapter, data_dir):
     label = chm_inputs.get("layer_label") or (
         "ETH Canopy Height" if is_global else "AHN Canopy Height"
     )
-    description = (
+    description = chm_inputs.get("layer_description") or (
         "Canopy height model from ETH Global Canopy Height 2020."
         if is_global else
         "Canopy height model derived from AHN DSM minus DTM."
@@ -417,10 +426,10 @@ def main():
         )
     else:
         adapter = country_adapter
-        if getattr(adapter, "alpha2", None) != "NL":
+        if getattr(adapter, "alpha2", None) not in {"NL", "NO", "ES"}:
             raise SystemExit(
-                f"{args.country} is registered, but only the Netherlands national adapter "
-                "is implemented now. Use --tier global or --tier continental for fallback."
+                f"{args.country} is registered, but only the Netherlands, Norway, and Spain national adapters "
+                "are implemented now. Use --tier global or --tier continental for fallback."
             )
 
     resolution = args.resolution or getattr(adapter, "default_resolution", 30.0)
@@ -433,6 +442,10 @@ def main():
     if "bbox_28992" in coverage:
         print("AOI:", tuple(round(v, 3) for v in coverage["bbox_28992"]),
               f"{coverage['area_ha']} ha in {adapter.native_crs}", flush=True)
+    elif "bbox_native" in coverage and "area_ha" in coverage:
+        print("AOI:", tuple(round(v, 3) for v in coverage["bbox_native"]),
+              f"{coverage['area_ha']} ha in {coverage.get('crs', aoi['native_crs'])}",
+              flush=True)
     else:
         print("AOI:", tuple(round(v, 6) for v in coverage["bbox_wgs84"]),
               f"{coverage.get('area_ha_approx')} ha approx in EPSG:4326", flush=True)
@@ -454,9 +467,12 @@ def main():
         "--resolution", str(resolution),
     ]
     if aoi["kind"] == "bbox":
-        cmd += ["--bbox"] + [str(v) for v in aoi["bbox_native"]] + ["--bbox-crs", adapter.native_crs]
+        cmd += ["--bbox"] + [str(v) for v in aoi["bbox_native"]] + [
+            "--bbox-crs", aoi.get("native_crs", adapter.native_crs)
+        ]
     else:
-        cmd += ["--aoi", aoi["aoi_native"], "--aoi-crs", adapter.native_crs]
+        cmd += ["--aoi", aoi["aoi_native"], "--aoi-crs",
+                aoi.get("native_crs", adapter.native_crs)]
     if args.force:
         cmd.append("--force")
     run(cmd)

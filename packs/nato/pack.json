@@ -1,8 +1,8 @@
 {
   "name": "nato",
   "title": "NATO regional adapter pack",
-  "description": "A per-country acquisition and interpretation pack for NATO member states. The engine stays region-agnostic; this pack chooses country-specific source adapters, shared forest leaf-type sources, vegetation knowledge, and layer styling. The Netherlands adapter is implemented with AHN LiDAR elevation, PDOK aerial imagery, and Copernicus HRL Dominant Leaf Type for tree typing; registered countries without a national adapter build through explicit global/continental fallback sources.",
-  "coverage": "NATO member states; national Tier-A path for the Netherlands (NLD/NL), global fallback for registered members without national adapters, and EEA/CLMS continental enrichment where available.",
+  "description": "A per-country acquisition and interpretation pack for NATO member states. The engine stays region-agnostic; this pack chooses country-specific source adapters, shared forest leaf-type sources, vegetation knowledge, and layer styling. The Netherlands adapter is implemented with AHN LiDAR elevation and PDOK aerial imagery; the Norway adapter is implemented with Kartverket NHM DTM/DOM elevation and Sentinel-2 RGB+NIR imagery because Norge i bilder WMS/WMTS requires token or Norway Digital access from this environment; the Spain adapter is implemented with IGN/CNIG PNOA-LiDAR MDT terrain, ETH canopy fallback for CHM, PNOA RGB WMS, and Sentinel-2 NIR. These EEA countries use Copernicus HRL Dominant Leaf Type for tree typing; registered countries without a national adapter build through explicit global/continental fallback sources.",
+  "coverage": "NATO member states; national Tier-A paths for the Netherlands (NLD/NL), Norway (NOR/NO), and Spain (ESP/ES), global fallback for registered members without national adapters, and EEA/CLMS continental enrichment where available.",
   "hooks": {
     "vegetation": "vegetation.py",
     "layers": "layers.py"
@@ -32,13 +32,13 @@
     {"alpha2": "ME", "alpha3": "MNE", "name": "Montenegro", "tier": "C", "adapter": null},
     {"alpha2": "NL", "alpha3": "NLD", "name": "Netherlands", "tier": "A", "adapter": "adapters.nl:NetherlandsAdapter"},
     {"alpha2": "MK", "alpha3": "MKD", "name": "North Macedonia", "tier": "C", "adapter": null},
-    {"alpha2": "NO", "alpha3": "NOR", "name": "Norway", "tier": "A", "adapter": null},
+    {"alpha2": "NO", "alpha3": "NOR", "name": "Norway", "tier": "A", "adapter": "adapters.no:NorwayAdapter"},
     {"alpha2": "PL", "alpha3": "POL", "name": "Poland", "tier": "A", "adapter": null},
     {"alpha2": "PT", "alpha3": "PRT", "name": "Portugal", "tier": "B", "adapter": null},
     {"alpha2": "RO", "alpha3": "ROU", "name": "Romania", "tier": "B", "adapter": null},
     {"alpha2": "SK", "alpha3": "SVK", "name": "Slovakia", "tier": "A", "adapter": null},
     {"alpha2": "SI", "alpha3": "SVN", "name": "Slovenia", "tier": "B", "adapter": null},
-    {"alpha2": "ES", "alpha3": "ESP", "name": "Spain", "tier": "A", "adapter": null},
+    {"alpha2": "ES", "alpha3": "ESP", "name": "Spain", "tier": "A", "adapter": "adapters.es:SpainAdapter"},
     {"alpha2": "SE", "alpha3": "SWE", "name": "Sweden", "tier": "A", "adapter": null},
     {"alpha2": "TR", "alpha3": "TUR", "name": "Turkey", "tier": "C", "adapter": null},
     {"alpha2": "GB", "alpha3": "GBR", "name": "United Kingdom", "tier": "B", "adapter": null},
@@ -53,11 +53,17 @@
   "adapter_registry": {
     "NL": "packs/nato/adapters/nl.py",
     "NLD": "packs/nato/adapters/nl.py",
+    "NO": "packs/nato/adapters/no.py",
+    "NOR": "packs/nato/adapters/no.py",
+    "ES": "packs/nato/adapters/es.py",
+    "ESP": "packs/nato/adapters/es.py",
     "US": "packs/us-national",
     "USA": "packs/us-national"
   },
   "bundled": {
     "adapters/nl.py": "Netherlands AHN + PDOK acquisition adapter",
+    "adapters/no.py": "Norway Kartverket NHM DTM/DOM acquisition adapter with Sentinel-2 RGB+NIR imagery fallback",
+    "adapters/es.py": "Spain IGN/CNIG MDT acquisition adapter with ETH canopy CHM fallback, PNOA RGB, and Sentinel-2 NIR",
     "adapters/eea.py": "Shared Copernicus HRL Dominant Leaf Type plus CLC+/Natura context fetchers",
     "adapters/global.py": "Global fallback: Copernicus GLO-30 terrain, ETH canopy, Sentinel-2 imagery, CGLS/WorldCover typing",
     "vegetation.py": "NATO vegetation typing hook with leaf-type grid support",
