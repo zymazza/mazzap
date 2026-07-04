@@ -44,7 +44,10 @@ import twin_store  # noqa: E402
 
 gdal.UseExceptions()
 global_leaf = importlib.import_module("adapters.global")
-IMPLEMENTED_NATIONAL = {"NL", "NO", "ES", "BE", "CZ", "DK", "EE", "FI", "FR", "LV", "LU"}
+IMPLEMENTED_NATIONAL = {
+    "NL", "NO", "ES", "BE", "CZ", "DK", "EE", "FI", "FR", "LV", "LU",
+    "PL", "SK", "SE",
+}
 
 
 def run(cmd, env=None):

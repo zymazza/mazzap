@@ -13,7 +13,7 @@ contract used by fetch_nato.py:
   attribution() -> list[str]
 
 The Netherlands, Norway, Spain, Belgium, Czechia, Denmark, Estonia, Finland,
-France, Latvia, and Luxembourg are implemented in this pack slice. The other NATO members are intentionally
+France, Latvia, Luxembourg, Poland, Slovakia, and Sweden are implemented in this pack slice. The other NATO members are intentionally
 present as stubs so the CLI can fail clearly instead of silently guessing a
 national source.
 """
@@ -182,6 +182,24 @@ def _load_lu():
     return LuxembourgAdapter()
 
 
+def _load_pl():
+    from .pl import PolandAdapter
+
+    return PolandAdapter()
+
+
+def _load_sk():
+    from .sk import SlovakiaAdapter
+
+    return SlovakiaAdapter()
+
+
+def _load_se():
+    from .se import SwedenAdapter
+
+    return SwedenAdapter()
+
+
 def get_adapter(code):
     """Return the country adapter for a two- or three-letter ISO code."""
     key = _normalize(code)
@@ -209,6 +227,12 @@ def get_adapter(code):
         adapter = _load_lv()
     elif key == "LU":
         adapter = _load_lu()
+    elif key == "PL":
+        adapter = _load_pl()
+    elif key == "SK":
+        adapter = _load_sk()
+    elif key == "SE":
+        adapter = _load_se()
     elif key in _MEMBERS:
         adapter = _stub(key)
     else:

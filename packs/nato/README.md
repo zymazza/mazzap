@@ -42,6 +42,17 @@ Implemented now:
 - Luxembourg (`LU`/`LUX`) national terrain path: ACT / data.public.lu BD-L-MNT
   1 m terrain, geoportail.lu RGB and infrared orthophoto WMS, forest-masked ETH
   canopy fallback for CHM because the 2019 MNS ZIP is open but about 27 GB.
+- Poland (`PL`/`POL`) national/fallback path: checks GUGiK NMT terrain and
+  NMPT surface WCS in EPSG:2180 plus GUGiK ORTO WMS RGB; falls back to GLO-30
+  terrain, forest-masked ETH canopy, and Sentinel-2 when WCS GetCoverage stalls
+  or disconnects. NIR comes from Sentinel-2.
+- Slovakia (`SK`/`SVK`) working fallback adapter: checked UGKK SR / ZBGIS DMR,
+  DMP, and orthophoto WCS/WMS/ImageServer routes, but anonymous probes timed
+  out from this environment; fallback terrain/CHM and Sentinel-2 are used.
+- Sweden (`SE`/`SWE`) working fallback adapter: checked Lantmateriet Min karta
+  orthophoto and height-model WMS routes; no anonymous numeric DEM/DSM route
+  was found, so fallback terrain/CHM are used. Lantmateriet orthophoto WMS
+  supplies visible RGB when reachable; NIR comes from Sentinel-2.
 - Global Tier-C fallback for registered countries without a national adapter:
   Copernicus GLO-30 terrain, ETH Global Canopy Height, Sentinel-2 RGB+NIR, and
   global/continental forest typing.
@@ -219,6 +230,59 @@ python3 packs/nato/fetch_nato.py \
   --data-dir twins/lu-grengewald/data \
   --resolution 2 \
   --name "Grengewald, Luxembourg" \
+  --force
+```
+
+## Build The Poland Demo
+
+The Bialowieza demo uses a forested old-growth AOI in EPSG:2180 coverage.
+Attribution: © GUGiK (Poland) when national NMT/NMPT/ORTO services are used;
+fallbacks are Copernicus GLO-30, forest-masked ETH canopy, modified Copernicus
+Sentinel data, and Copernicus HRL DLT / EEA.
+
+```bash
+python3 packs/nato/fetch_nato.py \
+  --country PL \
+  --aoi 23.848,52.719,23.854,52.722 \
+  --data-dir twins/pl-bialowieza/data \
+  --resolution 10 \
+  --name "Bialowieza Forest, Poland" \
+  --force
+```
+
+## Build The Slovakia Demo
+
+The High Tatras demo uses a conifer-dominant forest AOI. The adapter records
+UGKK SR / ZBGIS routes, but this environment uses the fallback stack after
+anonymous probes timed out. Attribution: © UGKK SR (Slovakia) for checked
+national sources; fallback data are Copernicus GLO-30, forest-masked ETH
+canopy, modified Copernicus Sentinel data, and Copernicus HRL DLT / EEA.
+
+```bash
+python3 packs/nato/fetch_nato.py \
+  --country SK \
+  --aoi 20.100,49.150,20.106,49.153 \
+  --data-dir twins/sk-high-tatras/data \
+  --resolution 10 \
+  --name "High Tatras, Slovakia" \
+  --force
+```
+
+## Build The Sweden Demo
+
+The Tyresta demo uses a boreal forest AOI in EPSG:3006 coverage. Attribution:
+© Lantmateriet (Sweden) for orthophoto RGB when used and for checked national
+height-model visualization routes; fallback data are Copernicus GLO-30,
+forest-masked ETH canopy, modified Copernicus Sentinel data, and Copernicus HRL
+DLT / EEA.
+
+```bash
+python3 packs/nato/fetch_nato.py \
+  --country SE \
+  --aoi 18.226,59.178,18.234,59.182 \
+  --data-dir twins/se-tyresta/data \
+  --resolution 10 \
+  --name "Tyresta National Park, Sweden" \
   --force
 ```
 
