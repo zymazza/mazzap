@@ -38,6 +38,7 @@ if SCRIPTS not in sys.path:
 
 from adapters import AdapterUnavailable, StubAdapter, get_adapter  # noqa: E402
 from adapters import atlas_global  # noqa: E402
+from adapters.hydrology_surface import build_hydrology_features  # noqa: E402
 from adapters import eea as eea_leaf  # noqa: E402
 import display as nato_display  # noqa: E402
 import ingest_dem  # noqa: E402
@@ -600,6 +601,17 @@ def main():
     _add_source_layer(forest_type, data_dir)
     for layer in context_layers:
         _add_source_layer(layer, data_dir)
+    hydrology_features = build_hydrology_features(
+        data_dir,
+        alpha2=getattr(adapter, "alpha2", "nato"),
+    )
+    print(
+        "  hydrology features: {features_written} features "
+        "({lakes} lakes, {rivers} rivers, {jrc_polys} JRC polygons)".format(
+            **hydrology_features
+        ),
+        flush=True,
+    )
 
     if not args.no_layer:
         print(f"\n[{step}/{total_steps}] adding canopy-height atlas layer...", flush=True)
