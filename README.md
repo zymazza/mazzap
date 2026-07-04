@@ -184,10 +184,10 @@ TWIN_DATA_DIR=./twins/mine/data PORT=4174 npm start    # -> http://127.0.0.1:417
 npm run demo && npm run serve-demo
 ```
 
-**Build a twin anywhere (global open data)** — the paths above are US-only. To
-build a twin **outside the US**, the bundled `nato` pack (`packs/nato/`)
-assembles one from worldwide open datasets, no national account or portal
-needed. Give it an ISO country code and a lon/lat AOI:
+**Build a twin anywhere (global open data)** — the paths above are US-only. The
+bundled `nato` pack (`packs/nato/`) extends VEIL to **any of the 32 NATO member
+nations**, assembling a twin from worldwide open datasets with no national
+account or portal needed. Give it an ISO country code and a lon/lat AOI:
 
 ```bash
 python3 packs/nato/fetch_nato.py --country FR --aoi 2.6,48.4,2.7,48.5 \
@@ -195,8 +195,17 @@ python3 packs/nato/fetch_nato.py --country FR --aoi 2.6,48.4,2.7,48.5 \
 TWIN_DATA_DIR=./twins/mine/data npm start
 ```
 
-It prefers a country's own national LiDAR where available and falls back to
-global sources everywhere else. What it pulls, all as clickable atlas layers:
+Coverage is **tiered, and the pack is honest about which tier you get**. 14
+members have a national-data adapter that pulls their own higher-resolution
+terrain/LiDAR — **BE, CZ, DK, EE, ES, FI, FR, LU, LV, NL, NO, PL, SE, SK**; the
+remaining members fall back to the **global stack**, which works for any land
+AOI on Earth. So every member resolves to a working fetch path — but *builds a
+twin* is not the same as *builds a great twin*: where a member relies on the
+global fallback, the terrain (30 m) and the canopy are **modeled, not surveyed**,
+and the quality of the free aerial imagery varies by location and date (see the
+note below). The US is served by its own richer `us-national` pack (3DEP LiDAR +
+NAIP + LANDFIRE), not this one. What the pack pulls, all as clickable atlas
+layers:
 
 - **Terrain** — Copernicus GLO-30, or national LiDAR (e.g. Netherlands AHN,
   Spain PNOA) where a country publishes it.
