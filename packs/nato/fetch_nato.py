@@ -37,6 +37,7 @@ if SCRIPTS not in sys.path:
     sys.path.insert(0, SCRIPTS)
 
 from adapters import AdapterUnavailable, StubAdapter, get_adapter  # noqa: E402
+from adapters import atlas_global  # noqa: E402
 from adapters import eea as eea_leaf  # noqa: E402
 import display as nato_display  # noqa: E402
 import ingest_dem  # noqa: E402
@@ -357,6 +358,8 @@ def _fetch_context_layers(adapter, aoi, source_dir, data_dir, tier):
     if tier in ("auto", "continental", "global") and eea_leaf.is_eea_covered(alpha2):
         print("  source: EEA/CLMS continental context layers (CLC+ and Natura 2000, optional)")
         layers.extend(eea_leaf.fetch_continental_layers(aoi, source_dir, data_dir, alpha2=alpha2))
+    print("  source: global atlas context layers (SoilGrids, HydroSHEDS/JRC, GBIF, optional)")
+    layers.extend(atlas_global.fetch_global_atlas_layers(aoi, source_dir, data_dir, alpha2=alpha2))
     return layers
 
 

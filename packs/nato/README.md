@@ -58,6 +58,13 @@ Implemented now:
   global/continental forest typing.
 - Continental EEA enrichment where available: Copernicus HRL Dominant Leaf Type,
   CLC+ land cover, and Natura 2000 context layers.
+- Global atlas enrichment for every NATO twin build: ISRIC SoilGrids 250 m v2.0
+  topsoil pH, organic carbon, clay, and sand layers; WWF HydroSHEDS
+  HydroRIVERS and HydroLAKES vectors; JRC/EC Global Surface Water occurrence;
+  and GBIF observation-density tiles filtered to CC0/CC-BY where supported.
+  These layers are optional and graceful: failed fetches are logged and skipped.
+  Large HydroSHEDS source archives and GBIF tiles are cached under
+  `packs/nato/cache/`, which is gitignored.
 
 Registered but national-stubbed: all other NATO members. `USA` is Tier S
 because the existing `packs/us-national` pack already covers the United States.
@@ -78,6 +85,34 @@ Serve it:
 ```bash
 TWIN_DATA_DIR=twins/nl-speulderbos/data PORT=4180 HOST=127.0.0.1 node server.js
 ```
+
+## Add Global Atlas Layers To An Existing Twin
+
+The global atlas fetcher can be run independently after a twin already exists:
+
+```bash
+python3 packs/nato/adapters/atlas_global.py \
+  --data-dir twins/ca-algonquin/data \
+  --alpha2 ca \
+  --theme all \
+  --register
+```
+
+Use `--theme soil`, `--theme hydrology`, or `--theme species` to refresh one
+theme. Registration goes through `scripts/add_layer.py`, so the viewer receives
+the same draped PNG/value-grid or localized GeoJSON entries as the existing
+DLT, CLC+, and Natura 2000 layers.
+
+Global atlas attribution/provenance:
+
+- ISRIC SoilGrids 250 m v2.0: ISRIC - World Soil Information, CC-BY 4.0.
+- HydroRIVERS v1.0 and HydroLAKES v1.0: WWF HydroSHEDS; HydroLAKES is CC-BY
+  4.0.
+- JRC Global Surface Water occurrence v1.4: European Commission Joint Research
+  Centre / Copernicus open data.
+- GBIF occurrence density tiles: GBIF Maps API, filtered to CC0/CC-BY where the
+  API accepts license filters. Raster values are visualization intensity, not a
+  raw occurrence count.
 
 ## Build The Norwegian Demo
 
