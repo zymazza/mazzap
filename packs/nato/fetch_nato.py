@@ -38,6 +38,7 @@ if SCRIPTS not in sys.path:
 
 from adapters import AdapterUnavailable, StubAdapter, get_adapter  # noqa: E402
 from adapters import eea as eea_leaf  # noqa: E402
+import display as nato_display  # noqa: E402
 import ingest_dem  # noqa: E402
 import twin_georef  # noqa: E402
 import twin_store  # noqa: E402
@@ -250,6 +251,33 @@ def _write_pack_marker(data_dir):
     os.makedirs(data_dir, exist_ok=True)
     with open(os.path.join(data_dir, "pack.txt"), "w") as fh:
         fh.write("nato\n")
+
+
+def _refresh_display_layer_hashes(data_dir, adapter):
+    twin_store.JOURNAL_DIR = os.path.join(data_dir, "journal")
+    store = twin_store.Store(os.path.join(data_dir, "twin.gpkg"))
+    try:
+        run_id = store.begin_run("packs/nato/display.py")
+        for layer_id, rel, label in [
+            ("imagery_drape", "imagery/drape.png", "RGB imagery drape"),
+            ("imagery_naip_rgb", "imagery/naip_rgb.png", "RGB imagery"),
+        ]:
+            path = os.path.join(data_dir, rel)
+            if os.path.exists(path):
+                store.upsert_layer(
+                    layer_id,
+                    label=label,
+                    kind="imagery",
+                    acquisition="nato_adapter_display_stretch",
+                    service=adapter.name,
+                    source_path="data/" + rel,
+                    fetched_at=_file_mtime_utc(path),
+                    content_sha1=twin_store.sha1_file(path),
+                    status="ok",
+                )
+        store.finish_run(run_id, notes="refreshed display-stretched imagery layer hashes")
+    finally:
+        store.close()
 
 
 def _copy_attribution(data_dir, adapter, forest_type=None, extra_layers=None):
@@ -553,6 +581,27 @@ def main():
         env = dict(os.environ, TWIN_PACK="nato", TWIN_DATA_DIR=data_dir)
         run([sys.executable, os.path.join(SCRIPTS, "analyze_vegetation.py"),
              "--data-dir", data_dir], env=env)
+        if isinstance(adapter, global_leaf.GlobalFallbackAdapter) and not args.no_imagery:
+            print("\n[display] stretching fallback visible imagery after vegetation...", flush=True)
+            stretch = nato_display.apply_display_stretch(data_dir)
+            if stretch.get("status") == "applied":
+                drape = stretch["after"]["drape"]
+                print(
+                    "  drape display mean {} p98 {}".format(
+                        drape["mean"], drape["p98"]
+                    ),
+                    flush=True,
+                )
+                _refresh_display_layer_hashes(data_dir, adapter)
+            else:
+                print(
+                    "  display stretch skipped: {}".format(
+                        stretch.get("reason") or stretch.get("skipped") or stretch.get("status")
+                    ),
+                    flush=True,
+                )
+    elif isinstance(adapter, global_leaf.GlobalFallbackAdapter) and not args.no_imagery:
+        print("\n[display] skipped fallback display stretch because vegetation was skipped")
 
     summary = _summary(data_dir)
     json.dump(summary, open(os.path.join(data_dir, "build_summary.json"), "w"), indent=2)

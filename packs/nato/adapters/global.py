@@ -62,6 +62,20 @@ S2_DEFAULT_DATETIME = "2024-06-01T00:00:00Z/2024-09-30T23:59:59Z"
 S2_REFLECTANCE_BYTE_CLIP_DN = 3000.0
 S2_BOA_ADD_OFFSET_DN = 1000.0
 S2_BYTE_NODATA = 255
+S2_CANDIDATE_LIMIT = 50
+S2_MAX_CLOUD_COVER = 60.0
+S2_MIN_VALID_COVERAGE = 0.85
+S2_MIN_NONZERO_COVERAGE = 0.75
+S2_MIN_VISIBLE_MEAN_BYTE = 14.0
+S2_MIN_VISIBLE_P98_BYTE = 20.0
+S2_NONZERO_BYTE = 3
+S2_FALLBACK_DATETIMES = (
+    S2_DEFAULT_DATETIME,
+    "2023-06-01T00:00:00Z/2023-09-30T23:59:59Z",
+    "2025-06-01T00:00:00Z/2025-09-30T23:59:59Z",
+    "2022-06-01T00:00:00Z/2022-09-30T23:59:59Z",
+    "2021-06-01T00:00:00Z/2021-09-30T23:59:59Z",
+)
 CGLS_LC100_RECORD = "https://zenodo.org/records/3939050"
 CGLS_FOREST_URL = (
     "https://zenodo.org/api/records/3939050/files/"
@@ -311,45 +325,83 @@ def fetch_sentinel2_imagery(aoi, out_dir, data_dir, footprint, px_per_m=1, alpha
     georef = os.path.join(data_dir, "georef.json")
     working_crs = twin_georef.crs(georef)
     datetime_range = os.environ.get("VEIL_SENTINEL2_DATETIME", S2_DEFAULT_DATETIME)
-    item = _select_sentinel2_item(bbox, datetime_range)
-    item_id = item["id"]
-    assets = item.get("assets", {})
     band_keys = [("red", "red"), ("green", "green"), ("blue", "blue"), ("nir", "nir")]
-    band_paths = []
-    for key, label in band_keys:
-        href = assets[key]["href"]
-        out_band = os.path.join(out_dir, "sentinel2_%s_%s_u16.tif" %
-                                (item_id.replace("/", "_"), label))
-        _warp_sentinel_band("/vsicurl/" + href, out_band, footprint, working_crs)
-        band_paths.append(out_band)
-    rgbn = os.path.join(out_dir, "sentinel2_%s_rgbnir_byte.tif" %
-                        item_id.replace("/", "_"))
-    _write_rgbn_byte(rgbn, band_paths)
-    meta = {
-        "adapter": "packs/nato/adapters/global.py",
-        "source": "Sentinel-2 L2A via Element84 Earth Search",
-        "stac": EARTH_SEARCH,
-        "collection": S2_COLLECTION,
-        "datetime_query": datetime_range,
-        "item_id": item_id,
-        "datetime": item.get("properties", {}).get("datetime"),
-        "eo_cloud_cover": item.get("properties", {}).get("eo:cloud_cover"),
-        "bbox_wgs84": [round(v, 8) for v in bbox],
-        "target_crs": working_crs,
-        "footprint": [round(float(v), 3) for v in footprint],
-        "px_per_m": int(px_per_m),
-        "reflectance_scaling": (
-            "uniform Sentinel-2 stretch for R,G,B,NIR: optional BOA offset "
-            "correction, 0..3000 DN -> Byte 0..254, 255 nodata"
-        ),
-        "band_order": "R,G,B,NIR",
-        "assets": {key: assets[key]["href"] for key, _label in band_keys},
-        "rgbn": os.path.basename(rgbn),
-        "fetched_at": _utcnow(),
-    }
-    json.dump(meta, open(os.path.join(out_dir, "sentinel2_imagery_fetch.json"), "w"),
-              indent=2)
-    return {"rgbn": rgbn, "bands": band_paths, "metadata": meta}
+    rejected = []
+    searched_ranges = []
+    seen = set()
+    for query_range in _sentinel2_datetime_ranges(datetime_range):
+        searched_ranges.append(query_range)
+        items = _sentinel2_candidate_items(bbox, query_range)
+        for item in items:
+            item_id = item["id"]
+            if item_id in seen:
+                continue
+            seen.add(item_id)
+            assets = item.get("assets", {})
+            safe_id = item_id.replace("/", "_")
+            band_paths = []
+            try:
+                for key, label in band_keys:
+                    href = assets[key]["href"]
+                    out_band = os.path.join(out_dir, "sentinel2_%s_%s_u16.tif" %
+                                            (safe_id, label))
+                    _warp_sentinel_band("/vsicurl/" + href, out_band, footprint, working_crs)
+                    band_paths.append(out_band)
+                quality = _sentinel2_scene_quality(band_paths)
+            except Exception as exc:  # noqa: BLE001
+                rejected.append(_sentinel2_rejection(item, "warp/read failed: %s" % exc))
+                continue
+            ok, reason = _sentinel2_scene_passes(quality, item)
+            if not ok:
+                rejected.append(_sentinel2_rejection(item, reason, quality))
+                print(
+                    "  reject Sentinel-2 %s: %s (valid %.1f%%, mean %.1f, p98 %.1f)" %
+                    (
+                        item_id,
+                        reason,
+                        quality.get("valid_coverage_pct", 0.0),
+                        quality.get("visible_mean_byte_avg", 0.0),
+                        quality.get("visible_p98_byte_avg", 0.0),
+                    ),
+                    flush=True,
+                )
+                continue
+
+            rgbn = os.path.join(out_dir, "sentinel2_%s_rgbnir_byte.tif" % safe_id)
+            _write_rgbn_byte(rgbn, band_paths)
+            meta = {
+                "adapter": "packs/nato/adapters/global.py",
+                "source": "Sentinel-2 L2A via Element84 Earth Search",
+                "stac": EARTH_SEARCH,
+                "collection": S2_COLLECTION,
+                "datetime_query": datetime_range,
+                "datetime_ranges_searched": searched_ranges,
+                "item_id": item_id,
+                "datetime": item.get("properties", {}).get("datetime"),
+                "eo_cloud_cover": item.get("properties", {}).get("eo:cloud_cover"),
+                "scene_quality": quality,
+                "rejected_candidates": rejected,
+                "bbox_wgs84": [round(v, 8) for v in bbox],
+                "target_crs": working_crs,
+                "footprint": [round(float(v), 3) for v in footprint],
+                "px_per_m": int(px_per_m),
+                "reflectance_scaling": (
+                    "uniform Sentinel-2 stretch for R,G,B,NIR: optional BOA offset "
+                    "correction, 0..3000 DN -> Byte 0..254, 255 nodata; display "
+                    "brightening happens after vegetation analysis in packs/nato/display.py"
+                ),
+                "band_order": "R,G,B,NIR",
+                "assets": {key: assets[key]["href"] for key, _label in band_keys},
+                "rgbn": os.path.basename(rgbn),
+                "fetched_at": _utcnow(),
+            }
+            json.dump(meta, open(os.path.join(out_dir, "sentinel2_imagery_fetch.json"), "w"),
+                      indent=2)
+            return {"rgbn": rgbn, "bands": band_paths, "metadata": meta}
+    raise RuntimeError(
+        "No Sentinel-2 L2A candidate passed AOI quality checks for %r; rejected %d scenes"
+        % (bbox, len(rejected))
+    )
 
 
 def fetch_leaf_type(aoi, out_dir, data_dir, alpha2="nato"):
@@ -949,13 +1001,21 @@ def _canopy_stats(path):
     }
 
 
-def _select_sentinel2_item(bbox, datetime_range):
+def _sentinel2_datetime_ranges(primary):
+    ranges = []
+    for candidate in (primary,) + S2_FALLBACK_DATETIMES:
+        if candidate and candidate not in ranges:
+            ranges.append(candidate)
+    return ranges
+
+
+def _sentinel2_candidate_items(bbox, datetime_range):
     body = {
         "collections": [S2_COLLECTION],
         "bbox": [float(v) for v in bbox],
         "datetime": datetime_range,
-        "limit": 25,
-        "query": {"eo:cloud_cover": {"lt": 80}},
+        "limit": S2_CANDIDATE_LIMIT,
+        "query": {"eo:cloud_cover": {"lt": S2_MAX_CLOUD_COVER}},
         "sortby": [{"field": "properties.eo:cloud_cover", "direction": "asc"}],
     }
     url = EARTH_SEARCH.rstrip("/") + "/search"
@@ -965,13 +1025,105 @@ def _select_sentinel2_item(bbox, datetime_range):
     items = resp.json().get("features", [])
     needed = {"red", "green", "blue", "nir"}
     usable = [it for it in items if needed.issubset(set(it.get("assets", {})))]
-    if not usable:
-        raise RuntimeError("Earth Search returned no Sentinel-2 L2A RGB+NIR items for %r" % (bbox,))
     usable.sort(key=lambda it: (
         float(it.get("properties", {}).get("eo:cloud_cover") or 999),
         it.get("properties", {}).get("datetime") or "",
     ))
-    return usable[0]
+    return usable
+
+
+def _sentinel2_scene_quality(band_paths):
+    arrays = []
+    masks = []
+    for path in band_paths:
+        ds = gdal.Open(path)
+        band = ds.GetRasterBand(1)
+        arr = band.ReadAsArray().astype(np.float32)
+        nodata = band.GetNoDataValue()
+        valid = np.isfinite(arr)
+        if nodata is not None and np.isfinite(nodata):
+            valid &= arr != nodata
+        arrays.append(arr)
+        masks.append(valid)
+    if not arrays:
+        return {}
+    valid = np.logical_and.reduce(masks)
+    total = int(valid.size)
+    valid_count = int(valid.sum())
+    if valid_count == 0:
+        return {
+            "valid_coverage_pct": 0.0,
+            "nonzero_coverage_pct": 0.0,
+            "visible_mean_byte": [0.0, 0.0, 0.0],
+            "visible_p98_byte": [0.0, 0.0, 0.0],
+            "visible_mean_byte_avg": 0.0,
+            "visible_p98_byte_avg": 0.0,
+        }
+    apply_boa_offset = _sentinel2_should_apply_boa_offset(arrays, masks)
+    visible = np.stack(arrays[:3], axis=2)
+    if apply_boa_offset:
+        visible = np.maximum(visible - S2_BOA_ADD_OFFSET_DN, 0.0)
+    visible_byte = np.clip(
+        np.rint(visible * (254.0 / S2_REFLECTANCE_BYTE_CLIP_DN)),
+        0,
+        S2_BYTE_NODATA - 1,
+    ).astype(np.uint8)
+    vals = visible_byte[valid].astype(np.float32)
+    nonzero = valid & (np.max(visible_byte, axis=2) > S2_NONZERO_BYTE)
+    mean = vals.mean(axis=0)
+    p98 = np.percentile(vals, 98, axis=0)
+    return {
+        "valid_coverage_pct": round(100.0 * valid_count / total, 3) if total else 0.0,
+        "nonzero_coverage_pct": round(100.0 * int(nonzero.sum()) / total, 3) if total else 0.0,
+        "valid_pixels": valid_count,
+        "total_pixels": total,
+        "boa_offset_correction": bool(apply_boa_offset),
+        "visible_mean_byte": [round(float(v), 2) for v in mean],
+        "visible_p98_byte": [round(float(v), 2) for v in p98],
+        "visible_mean_byte_avg": round(float(mean.mean()), 2),
+        "visible_p98_byte_avg": round(float(p98.mean()), 2),
+    }
+
+
+def _sentinel2_should_apply_boa_offset(arrays, masks):
+    visible_p2 = []
+    visible_p50 = []
+    for arr, valid in zip(arrays[:3], masks[:3]):
+        vals = arr[valid]
+        if vals.size:
+            visible_p2.append(float(np.percentile(vals, 2)))
+            visible_p50.append(float(np.percentile(vals, 50)))
+    return (
+        len(visible_p2) == 3 and
+        min(visible_p2) > 700.0 and
+        min(visible_p50) > 1300.0
+    )
+
+
+def _sentinel2_scene_passes(quality, item):
+    cloud = item.get("properties", {}).get("eo:cloud_cover")
+    if cloud is None or float(cloud) > S2_MAX_CLOUD_COVER:
+        return False, "cloud cover is above low-cloud threshold"
+    if quality.get("valid_coverage_pct", 0.0) < 100.0 * S2_MIN_VALID_COVERAGE:
+        return False, "insufficient valid AOI coverage"
+    if quality.get("nonzero_coverage_pct", 0.0) < 100.0 * S2_MIN_NONZERO_COVERAGE:
+        return False, "insufficient non-near-zero AOI coverage"
+    if quality.get("visible_mean_byte_avg", 0.0) < S2_MIN_VISIBLE_MEAN_BYTE:
+        return False, "visible AOI mean is near-black"
+    if quality.get("visible_p98_byte_avg", 0.0) < S2_MIN_VISIBLE_P98_BYTE:
+        return False, "visible AOI p98 is near-black"
+    return True, "ok"
+
+
+def _sentinel2_rejection(item, reason, quality=None):
+    props = item.get("properties", {})
+    return {
+        "item_id": item.get("id"),
+        "datetime": props.get("datetime"),
+        "eo_cloud_cover": props.get("eo:cloud_cover"),
+        "reason": reason,
+        "quality": quality or {},
+    }
 
 
 def _warp_sentinel_band(src_path, out_path, bounds, working_crs):
