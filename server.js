@@ -11,6 +11,7 @@ const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
 const fsp = fs.promises;
+const os = require('os');
 const path = require('path');
 const { URL } = require('url');
 const { spawn, spawnSync } = require('child_process');
@@ -1143,6 +1144,17 @@ function hostedStatusPayload(req, res) {
 // the CLI path, passing the name through to ingest_dem.py.
 
 const INIT_MAX_BODY = 256 * 1024;
+const INIT_DISK_PROBE_TIMEOUT_MS = 1500;
+const INIT_TOOL_PROBE_TIMEOUT_MS = 3000;
+const INIT_ESTIMATE_SAMPLE_DIR = path.join(ROOT, 'twins', 'init', 'data');
+const INIT_ESTIMATE_SAMPLE_AOI = path.join(INIT_ESTIMATE_SAMPLE_DIR, 'init', 'aoi.geojson');
+const INIT_ESTIMATE_FALLBACK_BYTES_PER_KM2 = 1536 * 1024 * 1024;
+const INIT_ESTIMATE_BASE_BYTES = 768 * 1024 * 1024;
+const INIT_ESTIMATE_MIN_FREE_BYTES = 1024 * 1024 * 1024;
+const INIT_ESTIMATE_RECOMMENDED_FREE_BYTES = 2 * 1024 * 1024 * 1024;
+const INIT_SYSTEM_LOW_DISK_BYTES = 10 * 1024 * 1024 * 1024;
+const INIT_SYSTEM_LOW_FREE_MEMORY_BYTES = 1024 * 1024 * 1024;
+const INIT_SYSTEM_LOW_TOTAL_MEMORY_BYTES = 8 * 1024 * 1024 * 1024;
 const initJob = {
   status: 'idle',
   running: false,
@@ -1179,6 +1191,371 @@ function initJobFor(req, res) {
 
 function initModeEnabled() {
   return HOSTED_MODE || process.env.VEIL_INIT === '1';
+}
+
+function bytesLabel(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n < 0) return 'unknown';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = n;
+  let idx = 0;
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024;
+    idx += 1;
+  }
+  return idx === 0 ? `${Math.round(value)} ${units[idx]}` : `${value.toFixed(1)} ${units[idx]}`;
+}
+
+function nearestExistingPath(targetPath) {
+  let current = path.resolve(targetPath || ROOT);
+  for (;;) {
+    try {
+      if (fs.existsSync(current)) return current;
+    } catch (_err) { /* keep walking up */ }
+    const parent = path.dirname(current);
+    if (parent === current) return ROOT;
+    current = parent;
+  }
+}
+
+function spawnCapture(command, args, options = {}) {
+  const timeoutMs = Number(options.timeoutMs) || 3000;
+  const maxOutput = Number(options.maxOutput) || 16000;
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(command, args, {
+        cwd: options.cwd || ROOT,
+        env: options.env || process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      resolve({ ok: false, error: err.message || String(err), stdout: '', stderr: '' });
+      return;
+    }
+    let done = false;
+    let stdout = '';
+    let stderr = '';
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve({
+        stdout,
+        stderr,
+        ...result,
+      });
+    };
+    const append = (which, chunk) => {
+      const text = String(chunk || '');
+      if (!text) return;
+      if (which === 'stdout') stdout = (stdout + text).slice(-maxOutput);
+      else stderr = (stderr + text).slice(-maxOutput);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill('SIGTERM'); } catch (_err) { /* ignore */ }
+      finish({ ok: false, timed_out: true, error: `${path.basename(command)} timed out` });
+    }, timeoutMs);
+    child.stdout.on('data', (chunk) => append('stdout', chunk));
+    child.stderr.on('data', (chunk) => append('stderr', chunk));
+    child.on('error', (err) => finish({ ok: false, error: err.message || String(err) }));
+    child.on('close', (code) => finish({
+      ok: code === 0,
+      code,
+      error: code === 0 ? null : ((stderr || stdout).trim().split('\n')[0] || `${path.basename(command)} exited ${code}`),
+    }));
+  });
+}
+
+function statfsDiskInfo(targetPath) {
+  const checkPath = nearestExistingPath(targetPath);
+  if (typeof fs.statfsSync !== 'function') {
+    return { ok: false, path: checkPath, error: 'fs.statfs is not available' };
+  }
+  try {
+    const stats = fs.statfsSync(checkPath);
+    const blockSize = Number(stats.bsize);
+    const blocks = Number(stats.blocks);
+    const available = Number(stats.bavail);
+    if (![blockSize, blocks, available].every((n) => Number.isFinite(n) && n >= 0)) {
+      throw new Error('statfs returned invalid block counts');
+    }
+    return {
+      ok: true,
+      method: 'statfs',
+      path: checkPath,
+      free_bytes: Math.max(0, Math.floor(available * blockSize)),
+      total_bytes: Math.max(0, Math.floor(blocks * blockSize)),
+    };
+  } catch (err) {
+    return { ok: false, path: checkPath, error: err.message || String(err) };
+  }
+}
+
+async function dfDiskInfo(targetPath) {
+  const checkPath = nearestExistingPath(targetPath);
+  const result = await spawnCapture('df', ['-kP', checkPath], {
+    timeoutMs: INIT_DISK_PROBE_TIMEOUT_MS,
+    maxOutput: 4000,
+  });
+  if (!result.ok) {
+    return {
+      ok: false,
+      method: 'df',
+      path: checkPath,
+      error: result.error || 'df failed',
+    };
+  }
+  const lines = result.stdout.trim().split('\n').filter(Boolean);
+  const parts = (lines[lines.length - 1] || '').trim().split(/\s+/);
+  const totalKb = Number(parts[1]);
+  const freeKb = Number(parts[3]);
+  if (!Number.isFinite(totalKb) || !Number.isFinite(freeKb)) {
+    return {
+      ok: false,
+      method: 'df',
+      path: checkPath,
+      error: 'df returned unparseable disk numbers',
+    };
+  }
+  return {
+    ok: true,
+    method: 'df',
+    path: checkPath,
+    free_bytes: Math.max(0, Math.floor(freeKb * 1024)),
+    total_bytes: Math.max(0, Math.floor(totalKb * 1024)),
+  };
+}
+
+async function diskInfoForDataDir(dataDir) {
+  const statfs = statfsDiskInfo(dataDir);
+  if (statfs.ok) return statfs;
+  const df = await dfDiskInfo(dataDir);
+  if (df.ok) return { ...df, statfs_error: statfs.error || null };
+  return {
+    ok: false,
+    method: 'unavailable',
+    path: nearestExistingPath(dataDir),
+    free_bytes: null,
+    total_bytes: null,
+    error: df.error || statfs.error || 'disk probe failed',
+  };
+}
+
+async function pythonProbe() {
+  const result = await spawnCapture(MCP_PYTHON, ['--version'], {
+    timeoutMs: INIT_TOOL_PROBE_TIMEOUT_MS,
+    maxOutput: 2000,
+  });
+  const version = (result.stdout || result.stderr || '').trim().split('\n')[0] || null;
+  return {
+    ok: !!result.ok,
+    executable: MCP_PYTHON,
+    version,
+    error: result.ok ? null : (result.error || 'python probe failed'),
+  };
+}
+
+async function gdalProbe() {
+  const result = await spawnCapture(MCP_PYTHON, [
+    '-c',
+    'from osgeo import gdal; print(gdal.__version__)',
+  ], {
+    timeoutMs: INIT_TOOL_PROBE_TIMEOUT_MS,
+    maxOutput: 2000,
+  });
+  const version = (result.stdout || '').trim().split('\n')[0] || null;
+  return {
+    ok: !!result.ok,
+    version,
+    error: result.ok ? null : (result.error || 'GDAL probe failed'),
+  };
+}
+
+function memoryInfo() {
+  return {
+    ok: true,
+    free_bytes: os.freemem(),
+    total_bytes: os.totalmem(),
+  };
+}
+
+function systemCheckWarnings(payload) {
+  const warnings = [];
+  const disk = payload.disk || {};
+  const memory = payload.memory || {};
+  const tools = payload.tools || {};
+  if (!Number.isFinite(Number(disk.free_bytes))) {
+    warnings.push('Disk free space could not be checked; avoid starting a large AOI build until the volume is verified.');
+  } else if (disk.free_bytes < INIT_SYSTEM_LOW_DISK_BYTES) {
+    warnings.push(`Only ${bytesLabel(disk.free_bytes)} is free on the twin data volume; choose a smaller AOI if the estimate is close to this.`);
+  }
+  if (Number.isFinite(Number(memory.total_bytes)) && memory.total_bytes < INIT_SYSTEM_LOW_TOTAL_MEMORY_BYTES) {
+    warnings.push(`This machine reports ${bytesLabel(memory.total_bytes)} total RAM; large AOIs can exhaust memory, so start with a smaller AOI.`);
+  } else if (Number.isFinite(Number(memory.free_bytes)) && memory.free_bytes < INIT_SYSTEM_LOW_FREE_MEMORY_BYTES) {
+    warnings.push(`Only ${bytesLabel(memory.free_bytes)} RAM is currently free; close other apps or choose a smaller AOI before building.`);
+  }
+  if (tools.python && !tools.python.ok) {
+    warnings.push(`Python probe failed for ${tools.python.executable || MCP_PYTHON}; the builder cannot run until Python is fixed.`);
+  }
+  if (tools.gdal && !tools.gdal.ok) {
+    warnings.push('GDAL Python bindings are not available; install/fix osgeo.gdal before building a twin.');
+  }
+  return warnings;
+}
+
+async function initSystemCheckPayload(dataDir) {
+  const [disk, python, gdal] = await Promise.all([
+    diskInfoForDataDir(dataDir),
+    pythonProbe(),
+    gdalProbe(),
+  ]);
+  const payload = {
+    ok: true,
+    data_dir: path.relative(ROOT, dataDir) || '.',
+    disk,
+    memory: memoryInfo(),
+    tools: {
+      python,
+      gdal,
+      node: { ok: true, version: process.version },
+    },
+    warnings: [],
+  };
+  payload.warnings = systemCheckWarnings(payload);
+  return payload;
+}
+
+function featureCollectionPolygonCoordinates(doc) {
+  const feature = doc && Array.isArray(doc.features) ? doc.features[0] : null;
+  const geom = feature && feature.geometry ? feature.geometry : doc && doc.type ? doc : null;
+  if (!geom || geom.type !== 'Polygon' || !Array.isArray(geom.coordinates) || !Array.isArray(geom.coordinates[0])) {
+    return null;
+  }
+  return normalizeInitCoordinates(geom.coordinates[0]);
+}
+
+function aoiAreaKm2(coordinates) {
+  const ring = normalizeInitCoordinates(coordinates);
+  if (ring.length < 4) return 0;
+  const earthRadiusM = 6371008.8;
+  let sum = 0;
+  for (let i = 0; i < ring.length - 1; i += 1) {
+    const lon1 = ring[i][0] * Math.PI / 180;
+    const lat1 = ring[i][1] * Math.PI / 180;
+    const lon2 = ring[i + 1][0] * Math.PI / 180;
+    const lat2 = ring[i + 1][1] * Math.PI / 180;
+    sum += (lon2 - lon1) * (2 + Math.sin(lat1) + Math.sin(lat2));
+  }
+  return Math.abs(sum * earthRadiusM * earthRadiusM / 2) / 1e6;
+}
+
+function directorySizeBytesSync(dirPath, budget = { entries: 0, maxEntries: 200000 }) {
+  let stat;
+  try {
+    stat = fs.lstatSync(dirPath);
+  } catch (_err) {
+    return null;
+  }
+  budget.entries += 1;
+  if (budget.entries > budget.maxEntries) return null;
+  if (stat.isSymbolicLink()) return 0;
+  if (stat.isFile()) return stat.size;
+  if (!stat.isDirectory()) return 0;
+  let total = 0;
+  let entries;
+  try {
+    entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  } catch (_err) {
+    return null;
+  }
+  for (const entry of entries) {
+    const childSize = directorySizeBytesSync(path.join(dirPath, entry.name), budget);
+    if (childSize === null) return null;
+    total += childSize;
+  }
+  return total;
+}
+
+let initEstimateCalibrationCache = null;
+function initEstimateCalibration() {
+  if (initEstimateCalibrationCache) return initEstimateCalibrationCache;
+  let measured = null;
+  try {
+    const doc = readJsonFile(INIT_ESTIMATE_SAMPLE_AOI, null);
+    const coordinates = featureCollectionPolygonCoordinates(doc);
+    const areaKm2 = coordinates ? aoiAreaKm2(coordinates) : 0;
+    const bytes = directorySizeBytesSync(INIT_ESTIMATE_SAMPLE_DIR);
+    if (Number.isFinite(areaKm2) && areaKm2 > 0 && Number.isFinite(bytes) && bytes > 0) {
+      measured = {
+        source: path.relative(ROOT, INIT_ESTIMATE_SAMPLE_DIR),
+        aoi: path.relative(ROOT, INIT_ESTIMATE_SAMPLE_AOI),
+        sample_area_km2: areaKm2,
+        sample_bytes: bytes,
+        bytes_per_km2: Math.ceil(bytes / areaKm2),
+      };
+    }
+  } catch (_err) { /* fall back below */ }
+  const bytesPerKm2 = Math.max(
+    measured ? measured.bytes_per_km2 : 0,
+    INIT_ESTIMATE_FALLBACK_BYTES_PER_KM2,
+  );
+  initEstimateCalibrationCache = {
+    base_bytes: INIT_ESTIMATE_BASE_BYTES,
+    bytes_per_km2: bytesPerKm2,
+    fallback_bytes_per_km2: INIT_ESTIMATE_FALLBACK_BYTES_PER_KM2,
+    measured,
+  };
+  return initEstimateCalibrationCache;
+}
+
+function estimateAdvisory({ areaKm2, estBytes, diskFreeBytes, projectedFreeBytes, blocked }) {
+  if (!Number.isFinite(Number(diskFreeBytes))) {
+    return 'Disk free space could not be checked. Keep the AOI small until the twin data volume is verified.';
+  }
+  if (blocked) {
+    if (estBytes > diskFreeBytes) {
+      return `This ~${areaKm2.toFixed(areaKm2 < 1 ? 3 : 1)} km^2 AOI needs about ${bytesLabel(estBytes)}, but only ${bytesLabel(diskFreeBytes)} is free. Choose a smaller AOI before building.`;
+    }
+    return `This ~${areaKm2.toFixed(areaKm2 < 1 ? 3 : 1)} km^2 AOI would leave less than ${bytesLabel(INIT_ESTIMATE_MIN_FREE_BYTES)} free after the build. Choose a smaller AOI before building.`;
+  }
+  if (projectedFreeBytes < INIT_ESTIMATE_RECOMMENDED_FREE_BYTES) {
+    return `This ~${areaKm2.toFixed(areaKm2 < 1 ? 3 : 1)} km^2 AOI may leave only ${bytesLabel(projectedFreeBytes)} free after the build. A smaller AOI is recommended.`;
+  }
+  return null;
+}
+
+async function initEstimatePayload(coordinates, dataDir) {
+  const normalized = normalizeInitCoordinates(coordinates);
+  const areaKm2 = aoiAreaKm2(normalized);
+  const calibration = initEstimateCalibration();
+  const estBytes = Math.ceil(calibration.base_bytes + (areaKm2 * calibration.bytes_per_km2));
+  const disk = await diskInfoForDataDir(dataDir);
+  const diskFreeBytes = Number.isFinite(Number(disk.free_bytes)) ? Number(disk.free_bytes) : null;
+  const diskTotalBytes = Number.isFinite(Number(disk.total_bytes)) ? Number(disk.total_bytes) : null;
+  const projectedFreeBytes = diskFreeBytes === null ? null : diskFreeBytes - estBytes;
+  const blocked = projectedFreeBytes !== null && projectedFreeBytes < INIT_ESTIMATE_MIN_FREE_BYTES;
+  const advisory = estimateAdvisory({
+    areaKm2,
+    estBytes,
+    diskFreeBytes,
+    projectedFreeBytes,
+    blocked,
+  });
+  return {
+    ok: !blocked,
+    blocked,
+    area_km2: areaKm2,
+    est_bytes: estBytes,
+    disk_free_bytes: diskFreeBytes,
+    disk_total_bytes: diskTotalBytes,
+    projected_free_bytes: projectedFreeBytes,
+    min_free_bytes: INIT_ESTIMATE_MIN_FREE_BYTES,
+    recommended_free_bytes: INIT_ESTIMATE_RECOMMENDED_FREE_BYTES,
+    advisory,
+    disk,
+    estimate: calibration,
+  };
 }
 
 function initJobSnapshot(job = initJob) {
@@ -1357,6 +1734,60 @@ function handleInitStatus(req, res) {
   send(res, 200, JSON.stringify(initJobSnapshot(initJobFor(req, res))), { 'Content-Type': 'application/json' });
 }
 
+async function handleSystemCheck(req, res) {
+  if (!initModeEnabled()) {
+    return send(res, 404, JSON.stringify({ ok: false, error: 'init mode is not enabled' }),
+      { 'Content-Type': 'application/json' });
+  }
+  const dataDir = requestDataDir(req, res);
+  try {
+    const payload = await initSystemCheckPayload(dataDir);
+    return send(res, 200, JSON.stringify(payload), { 'Content-Type': 'application/json' });
+  } catch (err) {
+    return send(res, 200, JSON.stringify({
+      ok: false,
+      data_dir: path.relative(ROOT, dataDir) || '.',
+      disk: { ok: false, free_bytes: null, total_bytes: null },
+      memory: memoryInfo(),
+      tools: { node: { ok: true, version: process.version } },
+      warnings: [`System check failed: ${err.message || err}`],
+    }), { 'Content-Type': 'application/json' });
+  }
+}
+
+function handleInitEstimate(req, res) {
+  if (!initModeEnabled()) {
+    return send(res, 404, JSON.stringify({ ok: false, error: 'init mode is not enabled' }),
+      { 'Content-Type': 'application/json' });
+  }
+  const dataDir = requestDataDir(req, res);
+  readBodyJson(req, INIT_MAX_BODY, (err, body) => {
+    if (err) {
+      return send(res, 400, JSON.stringify({ ok: false, error: err.message }),
+        { 'Content-Type': 'application/json' });
+    }
+    let coordinates;
+    try {
+      coordinates = normalizeInitCoordinates(body.coordinates);
+    } catch (e) {
+      return send(res, 400, JSON.stringify({ ok: false, error: e.message }),
+        { 'Content-Type': 'application/json' });
+    }
+    initEstimatePayload(coordinates, dataDir)
+      .then((payload) => send(res, 200, JSON.stringify(payload), { 'Content-Type': 'application/json' }))
+      .catch((e) => send(res, 200, JSON.stringify({
+        ok: true,
+        blocked: false,
+        area_km2: aoiAreaKm2(coordinates),
+        est_bytes: null,
+        disk_free_bytes: null,
+        disk_total_bytes: null,
+        projected_free_bytes: null,
+        advisory: `Build size could not be estimated: ${e.message || e}. Keep the AOI small.`,
+      }), { 'Content-Type': 'application/json' }));
+  });
+}
+
 function handleInitLayerScan(req, res) {
   if (!initModeEnabled()) {
     return send(res, 404, JSON.stringify({ ok: false, error: 'init mode is not enabled' }),
@@ -1532,54 +1963,74 @@ function handleInitAoi(req, res) {
     }
     const name = cleanTwinName(body.name);
     const nationalLayers = normalizeNationalLayerIds(body.national_layers);
-    const initDir = path.join(dataDir, 'init');
-    const aoiPath = path.join(initDir, 'aoi.geojson');
-    writeJsonFileAtomic(aoiPath, initAoiFeatureCollection(name, coordinates));
+    initEstimatePayload(coordinates, dataDir).then((estimate) => {
+      if (estimate.blocked && body.override !== true) {
+        return send(res, 507, JSON.stringify({
+          ok: false,
+          error: 'Insufficient disk space for this AOI; choose a smaller AOI before building.',
+          advisory: estimate.advisory || 'Choose a smaller AOI before building.',
+          area_km2: estimate.area_km2,
+          est_bytes: estimate.est_bytes,
+          disk_free_bytes: estimate.disk_free_bytes,
+          disk_total_bytes: estimate.disk_total_bytes,
+          projected_free_bytes: estimate.projected_free_bytes,
+          min_free_bytes: estimate.min_free_bytes,
+        }), { 'Content-Type': 'application/json' });
+      }
 
-    Object.assign(job, {
-      status: 'running',
-      running: true,
-      logs: [`Starting ${name}`].concat(
-        nationalLayers.length ? [`Selected optional layers: ${nationalLayers.join(', ')}`] : []),
-      name,
-      started_at: new Date().toISOString(),
-      finished_at: null,
-      exit_code: null,
-    });
+      const initDir = path.join(dataDir, 'init');
+      const aoiPath = path.join(initDir, 'aoi.geojson');
+      writeJsonFileAtomic(aoiPath, initAoiFeatureCollection(name, coordinates));
 
-    const args = [
-      path.join(ROOT, 'scripts', 'build_from_aoi.py'),
-      '--aoi', aoiPath,
-      '--data-dir', dataDir,
-      '--name', name,
-      '--force',
-    ];
-    if (nationalLayers.length) {
-      args.push('--national-layers', nationalLayers.join(','));
-    }
-    const child = spawn(MCP_PYTHON, args, {
-      cwd: ROOT,
-      env: { ...process.env, TWIN_DATA_DIR: dataDir, TWIN_PACK: 'us-national' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    child.stdout.on('data', (chunk) => appendInitLog(job, chunk));
-    child.stderr.on('data', (chunk) => appendInitLog(job, chunk));
-    child.on('error', (e) => {
-      job.status = 'error';
-      job.running = false;
-      job.finished_at = new Date().toISOString();
-      appendInitLog(job, `could not start build: ${e.message}`);
-    });
-    child.on('close', (code) => {
-      job.exit_code = code;
-      job.running = false;
-      job.finished_at = new Date().toISOString();
-      job.status = code === 0 ? 'done' : 'error';
-      appendInitLog(job, code === 0 ? 'Build complete' : `Build exited ${code}`);
-    });
+      Object.assign(job, {
+        status: 'running',
+        running: true,
+        logs: [`Starting ${name}`].concat(
+          estimate.advisory ? [`Disk-space advisory: ${estimate.advisory}`] : [],
+          nationalLayers.length ? [`Selected optional layers: ${nationalLayers.join(', ')}`] : []),
+        name,
+        started_at: new Date().toISOString(),
+        finished_at: null,
+        exit_code: null,
+      });
 
-    send(res, 202, JSON.stringify({ ok: true, job: initJobSnapshot(job) }),
-      { 'Content-Type': 'application/json' });
+      const args = [
+        path.join(ROOT, 'scripts', 'build_from_aoi.py'),
+        '--aoi', aoiPath,
+        '--data-dir', dataDir,
+        '--name', name,
+        '--force',
+      ];
+      if (nationalLayers.length) {
+        args.push('--national-layers', nationalLayers.join(','));
+      }
+      const child = spawn(MCP_PYTHON, args, {
+        cwd: ROOT,
+        env: { ...process.env, TWIN_DATA_DIR: dataDir, TWIN_PACK: 'us-national' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      child.stdout.on('data', (chunk) => appendInitLog(job, chunk));
+      child.stderr.on('data', (chunk) => appendInitLog(job, chunk));
+      child.on('error', (e) => {
+        job.status = 'error';
+        job.running = false;
+        job.finished_at = new Date().toISOString();
+        appendInitLog(job, `could not start build: ${e.message}`);
+      });
+      child.on('close', (code) => {
+        job.exit_code = code;
+        job.running = false;
+        job.finished_at = new Date().toISOString();
+        job.status = code === 0 ? 'done' : 'error';
+        appendInitLog(job, code === 0 ? 'Build complete' : `Build exited ${code}`);
+      });
+
+      return send(res, 202, JSON.stringify({ ok: true, job: initJobSnapshot(job), estimate }),
+        { 'Content-Type': 'application/json' });
+    }).catch((e) => send(res, 500, JSON.stringify({
+      ok: false,
+      error: `could not check disk space: ${e.message || e}`,
+    }), { 'Content-Type': 'application/json' }));
   });
 }
 
@@ -3688,11 +4139,19 @@ const server = http.createServer((req, res) => {
       { 'Content-Type': 'application/json' });
   }
 
+  if (req.method === 'GET' && pathname === '/api/system-check') {
+    return handleSystemCheck(req, res);
+  }
+
   if (req.method === 'GET' && pathname === '/api/init-status') {
     return handleInitStatus(req, res);
   }
   if (req.method === 'GET' && pathname === '/api/init-address-search') {
     return handleInitAddressSearch(req, res, requestUrl.searchParams);
+  }
+
+  if (req.method === 'POST' && pathname === '/api/init-estimate') {
+    return handleInitEstimate(req, res);
   }
 
   if (req.method === 'POST' && pathname === '/api/init-layer-scan') {

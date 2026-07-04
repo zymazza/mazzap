@@ -49,3 +49,6 @@ Trees_library/
 packs/*/data/
 packs/*/local_sources/
 packs/*/cache/
+
+# Working scratch (prompts, logs, screenshots, throwaway builds).
+scratchpad/

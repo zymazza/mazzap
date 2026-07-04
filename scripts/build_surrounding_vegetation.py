@@ -14,7 +14,6 @@ Run:  python3 scripts/build_surrounding_vegetation.py
 """
 
 import json
-import math
 import os
 import random
 import sys
@@ -27,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import export_viewer_payloads
 import twin_pack
 import twin_store
+import veg_detect
 from twin_store import SHRUB_ATTRS, TREE_ATTRS, Store
 
 gdal.UseExceptions()
@@ -37,9 +37,6 @@ HERE = Path(__file__).resolve().parent
 PROJECT = HERE.parent
 D = PROJECT / "data"          # reset from --data-dir / TWIN_DATA_DIR in main()
 STORE_PATH = str(D / "twin.gpkg")
-
-CELL = 4.0
-
 
 def _use_data_dir(data_dir):
     """Retarget at a twin's data dir; its store + journal stay there."""
@@ -92,21 +89,6 @@ def sample_elevation(params, x, y):
 
 def crown_radius(height):
     return round(max(1.6, min(7.5, height * 0.22)), 2)
-
-
-def build_spatial_index(trees):
-    buckets = {}
-    for index, tree in enumerate(trees):
-        buckets.setdefault((int(tree["x"] // CELL), int(tree["y"] // CELL)), []).append(index)
-    return buckets
-
-
-def neighbor_indices(buckets, x, y, radius):
-    out = []
-    for cx in range(int((x - radius) // CELL), int((x + radius) // CELL) + 1):
-        for cy in range(int((y - radius) // CELL), int((y + radius) // CELL) + 1):
-            out.extend(buckets.get((cx, cy), []))
-    return out
 
 
 def main():
@@ -195,7 +177,6 @@ def main():
     shrubs = store.instances("shrub", "shrubs", "member_parcel", SHRUB_ATTRS,
                              include_id=False)
 
-    buckets = build_spatial_index(all_trees)
     surrounding_trees = []
     counts = {
         "existing": 0,
@@ -247,48 +228,26 @@ def main():
         )
         counts["existing"] += 1
 
-    gx = np.arange(ox0 + spacing / 2, ox1, spacing)
-    gy = np.arange(oy0 + spacing / 2, oy1, spacing)
-    for x in gx:
-        for y in gy:
-            if not is_surrounding_cell(x, y):
-                continue
-            px, py = to_px(x, y)
-            if ndvi[py, px] < 0.15:
-                continue
-            phys, community = evt_at(x, y)
-            forest = pack.is_forest(phys)
-            if not forest and not has_spectral_canopy(x, y):
-                continue
-            near = neighbor_indices(buckets, x, y, 9.0)
-            if near:
-                dmin = min(math.hypot(all_trees[index]["x"] - x, all_trees[index]["y"] - y) for index in near)
-                if dmin < 2.8:
-                    continue
-                heights = [
-                    all_trees[index]["height"] for index in near
-                    if math.hypot(all_trees[index]["x"] - x, all_trees[index]["y"] - y) < 12
-                ]
-                base = float(np.mean(heights)) if heights else typical_height(community)
-            else:
-                base = typical_height(community)
+    def accept_canopy(x, y, phys, _community):
+        forest = pack.is_forest(phys)
+        if forest:
+            return True, {"spectral": False}
+        return has_spectral_canopy(x, y), {"spectral": True}
 
-            height = max(3.0, base * random.uniform(0.72, 1.04))
-            px_jitter = x + random.uniform(-1.0, 1.0)
-            py_jitter = y + random.uniform(-1.0, 1.0)
-            if not is_surrounding_cell(px_jitter, py_jitter):
-                px_jitter, py_jitter = x, y
-            add_tree(
-                px_jitter,
-                py_jitter,
-                sample_elevation(apron_p, px_jitter, py_jitter),
-                height,
-                "canopy_fill",
-                0.4,
-            )
-            counts["canopy_fill"] += 1
-            if not forest:
-                counts["spectral_canopy_fill"] += 1
+    def fill_elevation(x, y, _near, _anchor_trees):
+        return sample_elevation(apron_p, x, y)
+
+    def add_fill(x, y, z, height, _community, context):
+        add_tree(x, y, z, height, "canopy_fill", 0.4)
+        counts["canopy_fill"] += 1
+        if context and context.get("spectral"):
+            counts["spectral_canopy_fill"] += 1
+
+    veg_detect.densify_canopy(
+        all_trees, grid, spacing, ndvi, to_px, is_surrounding_cell,
+        evt_at, accept_canopy, typical_height, add_fill,
+        elevation_for_candidate=fill_elevation,
+    )
 
     surrounding_shrubs = [
         shrub for shrub in shrubs

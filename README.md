@@ -121,6 +121,29 @@ national data live for your area, or bring your own files. One checkout hosts
 many twins — point `--data-dir` / `TWIN_DATA_DIR` at a folder and your other
 twins are untouched. Full walkthrough: [docs/make-a-twin.md](docs/make-a-twin.md).
 
+### Quick start
+
+Three ways in, easiest first — each writes a self-contained twin you then view
+with `npm start`:
+
+```bash
+# 1. From a map, in the browser: draw an area, press "Set area & scan layers".
+npm run init                                            # -> http://127.0.0.1:4173/init.html
+
+# 2. From an AOI polygon (US): one command fetches terrain, imagery,
+#    vegetation, and soils for that footprint.
+npm run build-from-aoi -- --aoi my_area.shp --data-dir ./twins/mine/data --name "My Place"
+
+# 3. Anywhere on Earth, from global open data (see "Build a twin anywhere" below):
+python3 packs/nato/fetch_nato.py --country FR --aoi 2.6,48.4,2.7,48.5 \
+  --aoi-crs EPSG:4326 --data-dir ./twins/mine/data --name "My Place"
+
+# then view it:
+TWIN_DATA_DIR=./twins/mine/data npm start               # -> http://127.0.0.1:4173
+```
+
+Everything below is the detail behind those three paths.
+
 **First-time setup from a map** — launch the initiation page, optionally search
 for a U.S. street address to jump the map to that location, draw an AOI on the
 basemap, then press **Set area & scan layers**:
@@ -160,6 +183,54 @@ TWIN_DATA_DIR=./twins/mine/data PORT=4174 npm start    # -> http://127.0.0.1:417
 # the bundled demo is exactly this, from one committed shapefile:
 npm run demo && npm run serve-demo
 ```
+
+**Build a twin anywhere (global open data)** — the paths above are US-only. The
+bundled `nato` pack (`packs/nato/`) extends VEIL to **any of the 32 NATO member
+nations**, assembling a twin from worldwide open datasets with no national
+account or portal needed. Give it an ISO country code and a lon/lat AOI:
+
+```bash
+python3 packs/nato/fetch_nato.py --country FR --aoi 2.6,48.4,2.7,48.5 \
+  --aoi-crs EPSG:4326 --data-dir ./twins/mine/data --name "My Place"
+TWIN_DATA_DIR=./twins/mine/data npm start
+```
+
+Coverage is **tiered, and the pack is honest about which tier you get**. 14
+members have a national-data adapter that pulls their own higher-resolution
+terrain/LiDAR — **BE, CZ, DK, EE, ES, FI, FR, LU, LV, NL, NO, PL, SE, SK**; the
+remaining members fall back to the **global stack**, which works for any land
+AOI on Earth. So every member resolves to a working fetch path — but *builds a
+twin* is not the same as *builds a great twin*: where a member relies on the
+global fallback, the terrain (30 m) and the canopy are **modeled, not surveyed**,
+and the quality of the free aerial imagery varies by location and date (see the
+note below). The US is served by its own richer `us-national` pack (3DEP LiDAR +
+NAIP + LANDFIRE), not this one. What the pack pulls, all as clickable atlas
+layers:
+
+- **Terrain** — Copernicus GLO-30, or national LiDAR (e.g. Netherlands AHN,
+  Spain PNOA) where a country publishes it.
+- **Canopy height → trees** — **Meta / WRI Global 1 m Canopy Height** (Tolan et
+  al. 2024, CC-BY 4.0), falling back to ETH Global Canopy Height (10 m). Trees
+  are detected as local maxima of this canopy surface.
+- **Soil** — ISRIC SoilGrids 250 m: pH, organic carbon, clay %, sand %.
+- **Hydrology** — HydroRIVERS + HydroLAKES (WWF) and JRC Global Surface Water.
+  Lakes and rivers render as real **water surfaces**, not just flat overlays.
+- **Species** — GBIF occurrence density and a GBIF **species-richness** grid (an
+  open-data analogue of a GAP richness layer), plus EEA Article 17
+  protected-species distributions across the EU.
+- **Land cover / leaf type** — Copernicus HRL Dominant Leaf Type and CLC+ across
+  Europe, CGLS-LC100 globally, used to type vegetation and mask the canopy to
+  forest.
+
+> **The Meta canopy fallback is imperfect — treat it as modeled, not measured.**
+> Meta/WRI 1 m canopy height is a *model prediction from satellite imagery*, not
+> a survey: ~2.8 m mean absolute error, it saturates (under-estimates) tall
+> canopy above ~25–30 m, and carries a US/NEON training-domain bias. It gives
+> realistic per-tree structure where no LiDAR exists, but a twin built on a
+> country's real national LiDAR is materially more accurate. Likewise, where only
+> a hazy or low-sun free Sentinel-2 scene is available for an area, the draped
+> aerial imagery can come out dark or tinted. See `packs/nato/README.md` for the
+> per-country data tiers and full source list.
 
 During `npm run init`, VEIL also probes an optional national-layer catalog
 against the drawn AOI before the build starts. The setup dialog lists only

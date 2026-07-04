@@ -30,7 +30,6 @@ Run:  python3 scripts/analyze_vegetation.py        # uses TWIN_PACK if set
 """
 
 import json
-import math
 import os
 import random
 import sys
@@ -158,19 +157,6 @@ def main():
         skip_vegetation(capability, has_nir)
         return
 
-    # spatial hash of detected stems for nearest-neighbor queries
-    CELL = 4.0
-    buckets = {}
-    for i, t in enumerate(trees):
-        buckets.setdefault((int(t["x"] // CELL), int(t["y"] // CELL)), []).append(i)
-
-    def neighbors(x, y, rad):
-        out = []
-        for cx in range(int((x - rad) // CELL), int((x + rad) // CELL) + 1):
-            for cy in range(int((y - rad) // CELL), int((y + rad) // CELL) + 1):
-                out.extend(buckets.get((cx, cy), []))
-        return out
-
     out_trees = []
     counts = {"evergreen": 0, "deciduous": 0, "unknown": 0}
     communities = {}
@@ -204,34 +190,20 @@ def main():
     n0 = len(out_trees)
     added = 0
     if ndvi is not None:
-        gx = np.arange(ox0 + spacing / 2, ox1, spacing)
-        gy = np.arange(oy0 + spacing / 2, oy1, spacing)
-        for x in gx:
-            for y in gy:
-                if not terrain_valid(x, y):         # off the DEM -> would float
-                    continue
-                px, py = to_px(x, y)
-                if ndvi[py, px] < 0.15:             # not vegetated (imagery)
-                    continue
-                phys, comm = community_at(x, y)
-                if not is_forest(phys):             # not forest -> leave field/road
-                    continue
-                near = neighbors(x, y, 9.0)
-                if near:
-                    dmin = min(math.hypot(trees[i]["x"] - x, trees[i]["y"] - y) for i in near)
-                    if dmin < 2.8:                  # a stem already occupies this spot
-                        continue
-                    hs = [trees[i]["height"] for i in near
-                          if math.hypot(trees[i]["x"] - x, trees[i]["y"] - y) < 12]
-                    base = float(np.mean(hs)) if hs else typical_height(comm)
-                    zt = trees[near[0]]["z"]
-                else:
-                    base = typical_height(comm)
-                    zt = grid["minElevation"]
-                h = max(3.0, base * random.uniform(0.72, 1.04))
-                finalize(x + random.uniform(-1.0, 1.0), y + random.uniform(-1.0, 1.0),
-                         zt, h, "canopy_fill", 0.4)
-                added += 1
+        def accept_canopy(_x, _y, phys, _comm):
+            return is_forest(phys)             # not forest -> leave field/road
+
+        def fill_elevation(_x, _y, near, anchor_trees):
+            return anchor_trees[near[0]]["z"] if near else grid["minElevation"]
+
+        def add_fill(x, y, z, height, _comm, _context):
+            finalize(x, y, z, height, "canopy_fill", 0.4)
+
+        added = veg_detect.densify_canopy(
+            trees, grid, spacing, ndvi, to_px, terrain_valid, community_at,
+            accept_canopy, typical_height, add_fill,
+            elevation_for_candidate=fill_elevation,
+        )
 
     total = len(out_trees)
     top_comm = sorted(communities.items(), key=lambda kv: -kv[1])[:6]

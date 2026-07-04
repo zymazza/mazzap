@@ -1,0 +1,291 @@
+{
+  "note": "Demo sample twins for the NATO pack. Twin data is gitignored; this manifest records each demo AOI + build result for reproducibility. Rebuild any with: python3 packs/nato/fetch_nato.py --country <ISO> --aoi <aoi> --data-dir <data_dir> --resolution <30 global | native national> --name <name> --force",
+  "national_twins": [
+    {
+      "iso": "NL",
+      "name": "Speulderbos, Netherlands",
+      "tier": "A-national",
+      "adapter": "nl (AHN LiDAR)",
+      "data_dir": "twins/nl-speulderbos/data"
+    },
+    {
+      "iso": "NO",
+      "name": "Nordmarka, Norway",
+      "tier": "A-national",
+      "adapter": "no (Kartverket LiDAR)",
+      "data_dir": "twins/no-nordmarka/data"
+    },
+    {
+      "iso": "ES",
+      "name": "Valsain, Sierra de Guadarrama, Spain",
+      "tier": "A-national",
+      "adapter": "es (IGN PNOA MDT)",
+      "data_dir": "twins/es-valsain/data"
+    },
+    {
+      "iso": "TR",
+      "name": "Bolu, Turkiye",
+      "tier": "C-fallback",
+      "adapter": "global+continental",
+      "data_dir": "twins/tr-bolu/data"
+    }
+  ],
+  "fallback_twins": [
+    {
+      "iso": "BG",
+      "name": "Rila, Bulgaria",
+      "tier": "fallback",
+      "adapter": "continental/global",
+      "aoi": "23.531831,42.116525,23.568169,42.143475",
+      "data_dir": "twins/bg-rila/data",
+      "grid": "104x103",
+      "trees": 1201,
+      "types": {
+        "evergreen": 1164,
+        "deciduous": 37,
+        "unknown": 0
+      },
+      "null_pct": 0.961538
+    },
+    {
+      "iso": "GR",
+      "name": "Pindus Mountains, Greece",
+      "tier": "fallback",
+      "adapter": "continental/global",
+      "aoi": "21.162423,39.936525,21.197577,39.963475",
+      "data_dir": "twins/gr-pindus/data",
+      "grid": "101x100",
+      "trees": 8978,
+      "types": {
+        "evergreen": 5044,
+        "deciduous": 3934,
+        "unknown": 0
+      },
+      "null_pct": 0.990099
+    },
+    {
+      "iso": "HU",
+      "name": "Bukk Mountains, Hungary",
+      "tier": "fallback",
+      "adapter": "continental/global",
+      "aoi": "20.479843,48.036525,20.520157,48.063475",
+      "data_dir": "twins/hu-bukk/data",
+      "grid": "101x101",
+      "trees": 9873,
+      "types": {
+        "evergreen": 10,
+        "deciduous": 9863,
+        "unknown": 0
+      },
+      "null_pct": 0.990099
+    },
+    {
+      "iso": "ME",
+      "name": "Biogradska Gora, Montenegro",
+      "tier": "fallback",
+      "adapter": "continental/global",
+      "aoi": "19.581606,42.886525,19.618394,42.913475",
+      "data_dir": "twins/me-biogradska/data",
+      "grid": "102x102",
+      "trees": 9357,
+      "types": {
+        "evergreen": 1122,
+        "deciduous": 8235,
+        "unknown": 0
+      },
+      "null_pct": 0.980392
+    },
+    {
+      "iso": "MK",
+      "name": "Mavrovo, North Macedonia",
+      "tier": "fallback",
+      "adapter": "continental/global",
+      "aoi": "20.731958,41.666525,20.768042,41.693475",
+      "data_dir": "twins/mk-mavrovo/data",
+      "grid": "101x101",
+      "trees": 4719,
+      "types": {
+        "evergreen": 190,
+        "deciduous": 4529,
+        "unknown": 0
+      },
+      "null_pct": 1.970395
+    },
+    {
+      "iso": "AL",
+      "name": "Shebenik, Albania",
+      "tier": "fallback",
+      "adapter": "continental/global",
+      "aoi": "20.482091,41.186525,20.517909,41.213475",
+      "data_dir": "twins/al-shebenik/data",
+      "grid": "101x101",
+      "trees": 6267,
+      "types": {
+        "evergreen": 1623,
+        "deciduous": 4644,
+        "unknown": 0
+      },
+      "null_pct": 0.990099
+    },
+    {
+      "iso": "CA",
+      "name": "Algonquin, Canada",
+      "tier": "fallback",
+      "adapter": "continental/global",
+      "aoi": "-78.369328,45.786525,-78.330672,45.813475",
+      "data_dir": "twins/ca-algonquin/data",
+      "grid": "104x104",
+      "trees": 10606,
+      "types": {
+        "evergreen": 3028,
+        "deciduous": 7578,
+        "unknown": 0
+      },
+      "null_pct": 1.913831
+    },
+    {
+      "iso": "HR",
+      "name": "Risnjak, Croatia",
+      "tier": "fallback",
+      "adapter": "continental/global",
+      "aoi": "14.600803,45.406525,14.639197,45.433475",
+      "data_dir": "twins/hr-risnjak/data",
+      "grid": "101x101",
+      "trees": 9704,
+      "types": {
+        "evergreen": 963,
+        "deciduous": 8741,
+        "unknown": 0
+      },
+      "null_pct": 0.990099
+    },
+    {
+      "iso": "DE",
+      "name": "Bavarian Forest, Germany",
+      "tier": "fallback",
+      "adapter": "continental/global",
+      "aoi": "13.279461,48.986525,13.320539,49.013475",
+      "data_dir": "twins/de-bavarian-forest/data",
+      "grid": "103x103",
+      "trees": 6197,
+      "types": {
+        "evergreen": 4669,
+        "deciduous": 1528,
+        "unknown": 0
+      },
+      "null_pct": 1.932322
+    },
+    {
+      "iso": "IS",
+      "name": "Hallormsstadur, Iceland",
+      "tier": "fallback",
+      "adapter": "continental/global",
+      "aoi": "-14.782004,65.086525,-14.717996,65.113475",
+      "data_dir": "twins/is-hallormsstadur/data",
+      "grid": "101x101",
+      "trees": 2786,
+      "types": {
+        "evergreen": 841,
+        "deciduous": 1945,
+        "unknown": 0
+      },
+      "null_pct": 0.0
+    },
+    {
+      "iso": "IT",
+      "name": "Sila, Italy",
+      "tier": "fallback",
+      "adapter": "continental/global",
+      "aoi": "16.532587,39.286525,16.567413,39.313475",
+      "data_dir": "twins/it-sila/data",
+      "grid": "102x102",
+      "trees": 3631,
+      "types": {
+        "evergreen": 2052,
+        "deciduous": 1579,
+        "unknown": 0
+      },
+      "null_pct": 0.980392
+    },
+    {
+      "iso": "LT",
+      "name": "Dzukija, Lithuania",
+      "tier": "fallback",
+      "adapter": "continental/global",
+      "aoi": "24.177065,54.006525,24.222935,54.033475",
+      "data_dir": "twins/lt-dzukija/data",
+      "grid": "105x104",
+      "trees": 9080,
+      "types": {
+        "evergreen": 8199,
+        "deciduous": 881,
+        "unknown": 0
+      },
+      "null_pct": 0.952
+    },
+    {
+      "iso": "PT",
+      "name": "Peneda-Geres, Portugal",
+      "tier": "fallback",
+      "adapter": "continental/global",
+      "aoi": "-8.148056,41.716525,-8.111944,41.743475",
+      "data_dir": "twins/pt-peneda-geres/data",
+      "grid": "102x101",
+      "trees": 1219,
+      "types": {
+        "evergreen": 416,
+        "deciduous": 803,
+        "unknown": 0
+      },
+      "null_pct": 0.98
+    },
+    {
+      "iso": "RO",
+      "name": "Piatra Craiului, Romania",
+      "tier": "fallback",
+      "adapter": "continental/global",
+      "aoi": "25.280810,45.386525,25.319190,45.413475",
+      "data_dir": "twins/ro-piatra-craiului/data",
+      "grid": "103x102",
+      "trees": 9445,
+      "types": {
+        "evergreen": 7853,
+        "deciduous": 1592,
+        "unknown": 0
+      },
+      "null_pct": 0.971
+    },
+    {
+      "iso": "SI",
+      "name": "Kocevje, Slovenia",
+      "tier": "fallback",
+      "adapter": "continental/global",
+      "aoi": "14.830734,45.606525,14.869266,45.633475",
+      "data_dir": "twins/si-kocevje/data",
+      "grid": "101x100",
+      "trees": 9382,
+      "types": {
+        "evergreen": 3587,
+        "deciduous": 5795,
+        "unknown": 0
+      },
+      "null_pct": 0.99
+    },
+    {
+      "iso": "GB",
+      "name": "Kielder Forest, United Kingdom",
+      "tier": "fallback",
+      "adapter": "continental/global",
+      "aoi": "-2.573628,55.216525,-2.526372,55.243475",
+      "data_dir": "twins/gb-kielder/data",
+      "grid": "101x101",
+      "trees": 7456,
+      "types": {
+        "evergreen": 7266,
+        "deciduous": 190,
+        "unknown": 0
+      },
+      "null_pct": 0.0
+    }
+  ]
+}
