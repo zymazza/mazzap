@@ -4,11 +4,13 @@ This module keeps the coarse Tier-C path pack-side:
 
 * Copernicus DEM GLO-30 for worldwide 30 m terrain. GLO-30 is a DSM, not
   bare-earth LiDAR; the global tier uses it as the terrain surface.
-* ETH Global Canopy Height 2020 at 10 m for canopy height. To satisfy the
-  existing vegetation engine contract, ``prepare_chm_inputs`` writes
-  ``terrain/dtm.tif = GLO-30`` and ``terrain/dsm.tif = GLO-30 + ETH canopy``.
-  The global canopy is forest-masked before DSM/CHM export so noisy ETH canopy
-  pixels over non-forest land do not become detected stems.
+* Meta/WRI Global Canopy Height at about 1 m for canopy height when coverage is
+  available. ETH Global Canopy Height 2020 at 10 m remains the last-resort
+  fallback. To satisfy the existing vegetation engine contract,
+  ``prepare_chm_inputs`` writes ``terrain/dtm.tif = GLO-30`` and
+  ``terrain/dsm.tif = GLO-30 + canopy``. The global canopy is forest-masked
+  before DSM/CHM export so noisy canopy pixels over non-forest land do not
+  become detected stems.
 * Sentinel-2 L2A RGB+NIR from Element84 Earth Search for imagery/NDVI.
 * Copernicus CGLS-LC100 forest type as a global conifer/broadleaf fallback.
   ESA WorldCover remains the coarsest tree-mask fallback when CGLS cannot
@@ -112,7 +114,10 @@ class GlobalFallbackAdapter:
             "bbox_wgs84": bbox,
             "area_ha_approx": round(_bbox_area_ha_approx(bbox), 3),
             "elevation": ["Copernicus DEM GLO-30 DSM, used as terrain DEM"],
-            "canopy": ["ETH Global Canopy Height 2020, 10 m"],
+            "canopy": [
+                "Meta/WRI Global Canopy Height, about 1 m, modeled",
+                "ETH Global Canopy Height 2020, 10 m fallback",
+            ],
             "imagery": ["Sentinel-2 L2A RGB+NIR via Element84 Earth Search"],
             "note": (
                 "No national elevation adapter is used. GLO-30 is a DSM and "
@@ -125,6 +130,23 @@ class GlobalFallbackAdapter:
 
     def prepare_chm_inputs(self, data_dir, elevation, resolution=30.0, forest_type=None):
         self._data_dir = data_dir
+        if not os.environ.get("VEIL_DISABLE_META_CHM"):
+            try:
+                from adapters import meta_chm
+
+                meta = meta_chm.prepare_meta_chm_inputs(
+                    data_dir,
+                    elevation,
+                    resolution=1.0,
+                    alpha2=self.alpha2,
+                    forest_type=forest_type,
+                )
+                if meta:
+                    print("  source: Meta/WRI 1 m modeled canopy height for CHM")
+                    return meta
+                print("  Meta/WRI 1 m canopy has no tile coverage here; using ETH fallback")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  Meta/WRI 1 m canopy unavailable ({exc}); using ETH fallback")
         return prepare_eth_chm_inputs(data_dir, elevation, resolution=resolution,
                                       alpha2=self.alpha2, forest_type=forest_type)
 
@@ -153,9 +175,12 @@ class GlobalFallbackAdapter:
                 "note": "DSM used as terrain DEM; no global bare-earth DTM",
             },
             "canopy": {
-                "source": "ETH Global Canopy Height 2020",
-                "record": ETH_RESEARCH_RECORD,
-                "download_share": "https://libdrive.ethz.ch/index.php/s/%s" % ETH_SHARE_TOKEN,
+                "fallback_chain": [
+                    "Meta/WRI Global Canopy Height, about 1 m, modeled",
+                    "ETH Global Canopy Height 2020, 10 m",
+                ],
+                "eth_record": ETH_RESEARCH_RECORD,
+                "eth_download_share": "https://libdrive.ethz.ch/index.php/s/%s" % ETH_SHARE_TOKEN,
             },
             "imagery": {
                 "source": "Sentinel-2 L2A",
@@ -173,7 +198,6 @@ class GlobalFallbackAdapter:
         return [
             "Copernicus DEM GLO-30: European Space Agency / DLR, open data.",
             "Sentinel-2 imagery: modified Copernicus Sentinel data via Element84 Earth Search.",
-            "ETH Global Canopy Height 2020: Lang, Schindler and Wegner, CC-BY 4.0.",
             "Copernicus Global Land Service LC100 forest type: Copernicus Service information / VITO.",
             "ESA WorldCover 2021 v200: European Space Agency / VITO, open data.",
         ]
@@ -264,6 +288,11 @@ def prepare_eth_chm_inputs(data_dir, elevation, resolution=30.0, alpha2="nato",
         "resolution_m": float(resolution),
         "canopy": canopy_meta,
         "canopy_forest_mask": mask_meta,
+        "dsm_source": "ETH Global Canopy Height 2020, 10 m modeled CHM",
+        "dsm_source_note": "Global modeled canopy-height fallback, not measured trees or a tree census.",
+        "attribution": [
+            "ETH Global Canopy Height 2020: Lang, Schindler and Wegner, CC-BY 4.0.",
+        ],
     }
     json.dump(status, open(os.path.join(terrain_dir, "global_chm_inputs.json"), "w"),
               indent=2)
@@ -271,7 +300,8 @@ def prepare_eth_chm_inputs(data_dir, elevation, resolution=30.0, alpha2="nato",
             "raw_canopy": canopy_raw,
             "layer_id": "%s_eth_chm" % (alpha2 or "nato").lower(),
             "layer_label": "Forest-Masked ETH Canopy Height",
-            "metadata": status}
+            "metadata": status,
+            "attribution": status["attribution"]}
 
 
 def fetch_eth_canopy_to_grid(data_dir, out_dir, out_path=None):

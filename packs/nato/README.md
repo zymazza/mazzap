@@ -54,8 +54,9 @@ Implemented now:
   was found, so fallback terrain/CHM are used. Lantmateriet orthophoto WMS
   supplies visible RGB when reachable; NIR comes from Sentinel-2.
 - Global Tier-C fallback for registered countries without a national adapter:
-  Copernicus GLO-30 terrain, ETH Global Canopy Height, Sentinel-2 RGB+NIR, and
-  global/continental forest typing.
+  Copernicus GLO-30 terrain, Meta/WRI 1 m modeled canopy height where covered,
+  ETH Global Canopy Height as the last-resort canopy fallback, Sentinel-2
+  RGB+NIR, and global/continental forest typing.
 - Continental EEA enrichment where available: Copernicus HRL Dominant Leaf Type,
   CLC+ land cover, and Natura 2000 context layers.
 - Global atlas enrichment for every NATO twin build: ISRIC SoilGrids 250 m v2.0
@@ -65,8 +66,8 @@ Implemented now:
   distinct `speciesKey` occurrence-search facets, filtered to CC0/CC-BY records
   with coordinates where supported.
   These layers are optional and graceful: failed fetches are logged and skipped.
-  Large HydroSHEDS source archives and GBIF tiles are cached under
-  `packs/nato/cache/`, which is gitignored.
+  Large HydroSHEDS source archives, GBIF tiles, and Meta/WRI CHM tiles are
+  cached under `packs/nato/cache/`, which is gitignored.
 - Continental EEA protected-species enrichment for covered European NATO twins:
   Habitats Directive Article 17 species distributions (2013-2018, 10 km grid)
   are cached once from the EEA SDI download and rasterized as distinct
@@ -394,12 +395,13 @@ python3 packs/nato/fetch_nato.py \
   warps the filled rasters to the grid footprint and writes exactly those two
   paths before vegetation runs.
 - The NATO global fallback writes `terrain/dtm.tif` from Copernicus GLO-30 and
-  `terrain/dsm.tif` as GLO-30 plus ETH canopy height. Before DSM/CHM export,
-  the ETH canopy is forest-masked to the leaf-type/tree-cover extent so noisy
-  global canopy pixels over grass, crop, or built land do not become detected
-  stems. Terrain, imagery, and draped context layers still cover the full AOI.
-  This preserves the engine CHM contract without claiming a global bare-earth
-  DTM exists.
+  `terrain/dsm.tif` as GLO-30 plus the selected global canopy-height model.
+  Meta/WRI 1 m modeled CHM is tried first and ETH 10 m canopy is the last
+  resort. Before DSM/CHM export, the canopy raster is forest-masked to the
+  leaf-type/tree-cover extent so noisy global canopy pixels over grass, crop,
+  or built land do not become detected stems. Terrain, imagery, and draped
+  context layers still cover the full AOI. This preserves the engine CHM
+  contract without claiming a global bare-earth DTM exists.
 - The NATO Spain adapter writes `terrain/dtm.tif` from void-filled IGN/CNIG
   PNOA-LiDAR MDT and `terrain/dsm.tif` as MDT plus forest-masked ETH Global
   Canopy Height. This keeps national bare-earth terrain while dropping canopy
@@ -840,15 +842,16 @@ maps WorldCover class `10` (Tree cover) to the NATO generic forest code `4`.
 WorldCover is a tree mask, not a leaf-type product, so that final fallback is
 coarse by design.
 
-For global-tier CHM generation, the ETH canopy raster is masked before
-`terrain/dsm.tif` and `terrain/chm.tif` are written. The mask precedence is:
-Copernicus HRL Dominant Leaf Type where available (`1`/`2` are forest, `0` is
-non-forest), otherwise ESA WorldCover tree cover, otherwise CGLS-LC100 forest
-classes. The binary mask is dilated by one source-product pixel before
-nearest-neighbor alignment to the CHM grid, avoiding a coarse terrain-grid
-expansion. For DLT masks, aligned DLT `0` remains a hard no-tree exclusion after
-that buffer. CLC+ land cover is kept as context/QA rather than as an additional
-canopy-retention rule.
+For global-tier CHM generation, the selected canopy raster is masked before
+`terrain/dsm.tif` and `terrain/chm.tif` are written. Meta/WRI 1 m modeled CHM is
+preferred; ETH 10 m canopy is used only when Meta/WRI coverage or fetching
+fails. The mask precedence is: Copernicus HRL Dominant Leaf Type where
+available (`1`/`2` are forest, `0` is non-forest), otherwise ESA WorldCover tree
+cover, otherwise CGLS-LC100 forest classes. The binary mask is dilated by one
+source-product pixel before nearest-neighbor alignment to the CHM grid,
+avoiding a coarse terrain-grid expansion. For DLT masks, aligned DLT `0`
+remains a hard no-tree exclusion after that buffer. CLC+ land cover is kept as
+context/QA rather than as an additional canopy-retention rule.
 
 ## Global Sources
 
@@ -864,13 +867,25 @@ Terrain:
 
 Canopy:
 
+- WRI + Meta Global Canopy Height, Tolan et al. 2024:
+  `s3://dataforgood-fb-data/forests/v1/alsgedi_global_v6_float/`
+- Anonymous HTTPS/S3 paths:
+  `https://dataforgood-fb-data.s3.amazonaws.com/forests/v1/alsgedi_global_v6_float/tiles.geojson`
+  and `forests/v1/alsgedi_global_v6_float/chm/<tileid>.tif`
+- License: CC-BY 4.0. Attribution: "Canopy height: Tolan et al. 2024 / WRI +
+  Meta, CC-BY 4.0."
+- Important limitation: this is a modeled CHM prediction, not measured trees,
+  national LiDAR, or a tree census. Build metadata records it as
+  "Meta/WRI 1 m modeled CHM (predicted, MAE~2.8 m, saturates >25-30 m)".
+
 - ETH Global Canopy Height 2020 record:
   `https://www.research-collection.ethz.ch/handle/20.500.11850/609802`
 - Public Libdrive tile download share:
   `https://libdrive.ethz.ch/index.php/s/cO8or7iOe5dT2Rt`
 - Tile pattern:
   `3deg_cogs/ETH_GlobalCanopyHeight_10m_2020_N39E030_Map.tif`
-- License: CC-BY 4.0.
+- License: CC-BY 4.0. ETH is the last-resort global canopy fallback when the
+  Meta/WRI path cannot provide coverage.
 
 Imagery:
 
@@ -956,6 +971,8 @@ Real in this pack:
   broadleaf/conifer/no-tree typing.
 - ESA WorldCover global tree-mask fallback for non-EEA AOIs. This is coarse and
   not a real leaf-type layer.
+- Meta/WRI 1 m modeled canopy height for global-tier CHM, with ETH 10 m canopy
+  retained as a graceful last-resort fallback.
 - AHN CHM draped atlas layer.
 - Generic NATO vegetation interpretation with default leaf-type grid support.
   Mixed/unknown cells use a scene-relative median NIR fallback rather than a

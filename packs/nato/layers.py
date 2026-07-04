@@ -38,6 +38,8 @@ class NatoLayers:
     def raster_label(self, name):
         if name.endswith("_leaf_type"):
             return "Dominant Leaf Type"
+        if name.endswith("_meta_chm"):
+            return "Meta Canopy Height"
         if name.endswith("_eth_chm"):
             return "ETH Canopy Height"
         if name.endswith("_clcplus_landcover"):
@@ -65,6 +67,8 @@ class NatoLayers:
 
     def render_raster(self, name, arr, nodata, helpers):
         if name == "nl_ahn_chm":
+            return _render_chm(arr, nodata)
+        if name.endswith("_meta_chm"):
             return _render_chm(arr, nodata)
         if name.endswith("_eth_chm"):
             return _render_chm(arr, nodata)

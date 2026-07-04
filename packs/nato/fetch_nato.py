@@ -281,19 +281,37 @@ def _refresh_display_layer_hashes(data_dir, adapter):
         store.close()
 
 
-def _copy_attribution(data_dir, adapter, forest_type=None, extra_layers=None):
+def _dedupe_strings(values):
+    out = []
+    seen = set()
+    for value in values:
+        if value in (None, ""):
+            continue
+        key = str(value)
+        if key not in seen:
+            out.append(value)
+            seen.add(key)
+    return out
+
+
+def _copy_attribution(data_dir, adapter, forest_type=None, extra_layers=None,
+                      chm_inputs=None):
     path = os.path.join(data_dir, "attribution.json")
     attribution = list(adapter.attribution())
+    attribution.extend((chm_inputs or {}).get("attribution") or [])
+    attribution.extend(((chm_inputs or {}).get("metadata") or {}).get("attribution") or [])
     if forest_type:
         attribution.extend(forest_type.get("attribution") or [])
     for layer in extra_layers or []:
         attribution.extend(layer.get("attribution") or [])
+    attribution = _dedupe_strings(attribution)
     payload = {
         "pack": "nato",
         "country": adapter.alpha3,
         "attribution": attribution,
         "provenance": {
             **adapter.provenance(),
+            "chm_inputs": (chm_inputs or {}).get("metadata", {}),
             "forest_type": (forest_type or {}).get("metadata", {}),
             "context_layers": [(layer or {}).get("metadata", {}) for layer in extra_layers or []],
         },
@@ -317,7 +335,7 @@ def _chm_stats(chm_path):
     }
 
 
-def _summary(data_dir):
+def _summary(data_dir, chm_inputs=None):
     grid = json.load(open(os.path.join(data_dir, "terrain", "grid.json")))
     heights = grid.get("heights", [])
     null_count = sum(1 for v in heights if v is None or not np.isfinite(v))
@@ -330,7 +348,8 @@ def _summary(data_dir):
         type_dist[typ] = type_dist.get(typ, 0) + 1
     meta_path = os.path.join(data_dir, "vegetation", "metadata.json")
     veg_meta = json.load(open(meta_path)) if os.path.exists(meta_path) else {}
-    return {
+    chm_meta = (chm_inputs or {}).get("metadata", {})
+    summary = {
         "grid": {"width": grid["width"], "height": grid["height"],
                  "xStep": grid.get("xStep"), "yStep": grid.get("yStep"),
                  "null_height_count": null_count, "height_count": height_count,
@@ -340,7 +359,12 @@ def _summary(data_dir):
         "tree_type_distribution": dict(sorted(type_dist.items())),
         "vegetation_metadata": veg_meta,
         "chm": _chm_stats(os.path.join(data_dir, "terrain", "chm.tif")),
+        "dsm_source": chm_meta.get("dsm_source") or chm_meta.get("source"),
+        "dsm_source_note": chm_meta.get("dsm_source_note"),
+        "dsm_resolution_m": chm_meta.get("resolution_m"),
+        "chm_inputs": chm_meta,
     }
+    return summary
 
 
 def _fetch_forest_type(adapter, aoi, source_dir, data_dir):
@@ -561,14 +585,17 @@ def main():
         "imagery": (imagery or {}).get("metadata", {}),
         "forest_type": (forest_type or {}).get("metadata", {}),
         "context_layers": [(layer or {}).get("metadata", {}) for layer in context_layers],
-        "attribution": (
+        "attribution": _dedupe_strings(
             adapter.attribution()
+            + (chm_inputs.get("attribution") or [])
+            + ((chm_inputs.get("metadata") or {}).get("attribution") or [])
             + ((forest_type or {}).get("attribution") or [])
             + [a for layer in context_layers for a in (layer.get("attribution") or [])]
         ),
     }
     json.dump(manifest, open(os.path.join(source_dir, "source_manifest.json"), "w"), indent=2)
-    _copy_attribution(data_dir, adapter, forest_type=forest_type, extra_layers=context_layers)
+    _copy_attribution(data_dir, adapter, forest_type=forest_type,
+                      extra_layers=context_layers, chm_inputs=chm_inputs)
     _seed_store(data_dir, adapter, source_manifest=manifest)
     _add_source_layer(forest_type, data_dir)
     for layer in context_layers:
@@ -606,7 +633,7 @@ def main():
     elif isinstance(adapter, global_leaf.GlobalFallbackAdapter) and not args.no_imagery:
         print("\n[display] skipped fallback display stretch because vegetation was skipped")
 
-    summary = _summary(data_dir)
+    summary = _summary(data_dir, chm_inputs=chm_inputs)
     json.dump(summary, open(os.path.join(data_dir, "build_summary.json"), "w"), indent=2)
     rel_data = os.path.relpath(data_dir, PROJECT)
     print("\nDone. Summary:")

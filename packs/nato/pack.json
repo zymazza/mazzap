@@ -99,7 +99,8 @@
     "adapters/no.py": "Norway Kartverket NHM DTM/DOM acquisition adapter with Sentinel-2 RGB+NIR imagery fallback",
     "adapters/es.py": "Spain IGN/CNIG MDT acquisition adapter with ETH canopy CHM fallback, PNOA RGB, and Sentinel-2 NIR",
     "adapters/eea.py": "Shared Copernicus HRL Dominant Leaf Type plus CLC+/Natura context fetchers",
-    "adapters/global.py": "Global fallback: Copernicus GLO-30 terrain, ETH canopy, Sentinel-2 imagery, CGLS/WorldCover typing",
+    "adapters/meta_chm.py": "Meta/WRI global 1 m modeled canopy-height fallback for global-tier CHM inputs",
+    "adapters/global.py": "Global fallback: Copernicus GLO-30 terrain, Meta/WRI canopy with ETH fallback, Sentinel-2 imagery, CGLS/WorldCover typing",
     "vegetation.py": "NATO vegetation typing hook with leaf-type grid support",
     "layers.py": "NATO atlas styling hook"
   }
