@@ -6,8 +6,8 @@ Implemented national path:
   * Sentinel-2 L2A NIR via Element84 Earth Search for the fourth band
 
 If the Flanders national height service is unreachable for an AOI, the adapter
-falls back internally to Copernicus GLO-30 terrain plus forest-masked ETH
-Global Canopy Height, matching the pack's global fallback contract.
+falls back internally to Copernicus GLO-30 terrain plus forest-masked Meta/WRI
+modeled canopy where covered, with ETH Global Canopy Height as the last resort.
 """
 
 import importlib
@@ -136,7 +136,7 @@ class BelgiumAdapter:
     def prepare_chm_inputs(self, data_dir, elevation, resolution=1.0, forest_type=None):
         self._data_dir = data_dir
         if elevation.get("metadata", {}).get("status") == "fallback":
-            return global_sources.prepare_eth_chm_inputs(
+            return global_sources.prepare_best_chm_inputs(
                 data_dir,
                 elevation,
                 resolution=resolution,
@@ -144,34 +144,20 @@ class BelgiumAdapter:
                 forest_type=forest_type,
             )
 
-        terrain_dir = os.path.join(data_dir, "terrain")
-        os.makedirs(terrain_dir, exist_ok=True)
-        dtm_out = os.path.join(terrain_dir, "dtm.tif")
-        dsm_out = os.path.join(terrain_dir, "dsm.tif")
-        chm_out = os.path.join(terrain_dir, "chm.tif")
-        sh.align_to_grid(elevation["dtm"], data_dir, dtm_out)
-        sh.align_to_grid(elevation["dsm"], data_dir, dsm_out)
-        sh.write_chm(dsm_out, dtm_out, chm_out)
-        status = {
-            "status": "ok",
-            "source": "Digitaal Vlaanderen DHMV II DSM 1 m - DTM 1 m",
-            "dsm": "terrain/dsm.tif",
-            "dtm": "terrain/dtm.tif",
-            "chm": "terrain/chm.tif",
-            "contract": "scripts/analyze_vegetation.py reads terrain/dsm.tif and terrain/dtm.tif",
-            "resolution_m": resolution,
-        }
-        json.dump(status, open(os.path.join(terrain_dir, "be_chm_inputs.json"), "w"),
-                  indent=2)
-        return {
-            "dtm": dtm_out,
-            "dsm": dsm_out,
-            "chm": chm_out,
-            "layer_id": "be_dhmvii_chm",
-            "layer_label": "DHMV II Canopy Height",
-            "layer_description": "Canopy height model derived from DHMV II DSM minus DTM.",
-            "metadata": status,
-        }
+        return global_sources.prepare_best_chm_inputs(
+            data_dir,
+            elevation,
+            resolution=resolution,
+            alpha2=self.alpha2,
+            forest_type=forest_type,
+            terrain_source="Digitaal Vlaanderen DHMV II DTM 1 m national terrain",
+            status_filename="be_chm_inputs.json",
+            contract_note=(
+                "scripts/analyze_vegetation.py reads terrain/dsm.tif and terrain/dtm.tif; "
+                "Belgium adapter writes DSM = national DTM + selected forest-masked "
+                "global canopy, DTM = national DTM"
+            ),
+        )
 
     def fetch_imagery(self, aoi, out_dir, footprint, px_per_m=1):
         os.makedirs(out_dir, exist_ok=True)
@@ -256,7 +242,10 @@ class BelgiumAdapter:
                 "coverages": [self.DHMV_DTM, self.DHMV_DSM],
                 "crs": self.native_crs,
                 "resolution_m": self.default_resolution,
-                "fallback": "Copernicus GLO-30 terrain plus ETH canopy if DHMV II is unreachable",
+                "fallback": (
+                    "Copernicus GLO-30 terrain plus Meta/WRI 1 m modeled canopy "
+                    "where covered; ETH 10 m canopy if Meta is unavailable"
+                ),
             },
             "imagery": {
                 "rgb_wms": self.RGB_WMS,
@@ -270,7 +259,7 @@ class BelgiumAdapter:
             "Elevation: Digitaal Vlaanderen / Agentschap Informatie Vlaanderen DHMV II height model.",
             "Imagery RGB: Digitaal Vlaanderen Flanders orthophoto WMS.",
             "Imagery NIR: modified Copernicus Sentinel data via Element84 Earth Search.",
-            "Fallback canopy: ETH Global Canopy Height 2020, Lang, Schindler and Wegner, CC-BY 4.0.",
+            "Fallback canopy attribution is recorded with the selected CHM inputs.",
         ]
 
     def _fetch_wcs_coverage(self, coverage_id, bbox, out_path, resolution):

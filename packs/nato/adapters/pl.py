@@ -8,8 +8,9 @@ Implemented path where the national services complete:
 
 The GUGiK WCS advertises numeric Arc/Info ASCII Grid coverages, but GetCoverage
 can disconnect or stall from this environment. The adapter records the checked
-national endpoints and falls back to the shared GLO-30 + forest-masked ETH
-canopy + Sentinel-2 path when a national request does not finish promptly.
+national endpoints and falls back to shared GLO-30 terrain, forest-masked
+Meta/WRI canopy when covered, ETH fallback canopy, and Sentinel-2 when a
+national request does not finish promptly.
 """
 
 import importlib
@@ -64,7 +65,8 @@ class PolandAdapter:
     FALLBACK_NOTE = (
         "GUGiK NMT/NMPT WCS is open and was checked, but GetCoverage can "
         "disconnect or exceed the unattended timeout from this environment; "
-        "using GLO-30 + forest-masked ETH canopy when that occurs."
+        "using GLO-30 + forest-masked Meta/WRI canopy when covered, with ETH "
+        "canopy as fallback when that occurs."
     )
 
     nodata_fill_search_distances_px = (256, 512, 1024)
@@ -147,7 +149,7 @@ class PolandAdapter:
     def prepare_chm_inputs(self, data_dir, elevation, resolution=10.0, forest_type=None):
         self._data_dir = data_dir
         if elevation.get("metadata", {}).get("status") == "fallback":
-            return global_sources.prepare_eth_chm_inputs(
+            return global_sources.prepare_best_chm_inputs(
                 data_dir,
                 elevation,
                 resolution=max(float(resolution), 10.0),
@@ -155,34 +157,20 @@ class PolandAdapter:
                 forest_type=forest_type,
             )
 
-        terrain_dir = os.path.join(data_dir, "terrain")
-        os.makedirs(terrain_dir, exist_ok=True)
-        dtm_out = os.path.join(terrain_dir, "dtm.tif")
-        dsm_out = os.path.join(terrain_dir, "dsm.tif")
-        chm_out = os.path.join(terrain_dir, "chm.tif")
-        sh.align_to_grid(elevation["dtm"], data_dir, dtm_out)
-        sh.align_to_grid(elevation["dsm"], data_dir, dsm_out)
-        sh.write_chm(dsm_out, dtm_out, chm_out)
-        status = {
-            "status": "ok",
-            "source": "GUGiK NMPT surface - NMT terrain",
-            "dsm": "terrain/dsm.tif",
-            "dtm": "terrain/dtm.tif",
-            "chm": "terrain/chm.tif",
-            "contract": "scripts/analyze_vegetation.py reads terrain/dsm.tif and terrain/dtm.tif",
-            "resolution_m": resolution,
-        }
-        json.dump(status, open(os.path.join(terrain_dir, "pl_chm_inputs.json"), "w"),
-                  indent=2)
-        return {
-            "dtm": dtm_out,
-            "dsm": dsm_out,
-            "chm": chm_out,
-            "layer_id": "pl_gugik_chm",
-            "layer_label": "GUGiK NMPT-NMT Canopy Height",
-            "layer_description": "Canopy height model derived from GUGiK NMPT minus NMT.",
-            "metadata": status,
-        }
+        return global_sources.prepare_best_chm_inputs(
+            data_dir,
+            elevation,
+            resolution=max(float(resolution), 10.0),
+            alpha2=self.alpha2,
+            forest_type=forest_type,
+            terrain_source="GUGiK NMT national terrain",
+            status_filename="pl_chm_inputs.json",
+            contract_note=(
+                "scripts/analyze_vegetation.py reads terrain/dsm.tif and terrain/dtm.tif; "
+                "Poland adapter writes DSM = national NMT + selected forest-masked "
+                "global canopy, DTM = national NMT"
+            ),
+        )
 
     def fetch_imagery(self, aoi, out_dir, footprint, px_per_m=1):
         os.makedirs(out_dir, exist_ok=True)
@@ -264,7 +252,10 @@ class PolandAdapter:
                 "dsm_wcs": self.NMPT_WCS,
                 "coverages": [self.NMT_COVERAGE, self.NMPT_COVERAGE],
                 "crs": self.native_crs,
-                "fallback": "Copernicus GLO-30 terrain plus ETH canopy if GUGiK WCS GetCoverage is unreachable",
+                "fallback": (
+                    "Copernicus GLO-30 terrain plus Meta/WRI 1 m modeled canopy "
+                    "where covered; ETH 10 m canopy if Meta is unavailable"
+                ),
             },
             "imagery": {
                 "rgb_wms": self.ORTO_WMS,
@@ -280,7 +271,7 @@ class PolandAdapter:
             "Imagery NIR: modified Copernicus Sentinel data via Element84 Earth Search.",
             "Forest typing: Copernicus HRL Dominant Leaf Type / EEA.",
             "Fallback terrain: Copernicus DEM GLO-30, European Space Agency / DLR, open data.",
-            "Fallback canopy: ETH Global Canopy Height 2020, Lang, Schindler and Wegner, CC-BY 4.0.",
+            "Fallback canopy attribution is recorded with the selected CHM inputs.",
             "Canopy forest mask fallback: ESA WorldCover 2021 v200, European Space Agency / VITO, open data.",
         ]
 

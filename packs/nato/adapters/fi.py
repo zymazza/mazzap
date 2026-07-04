@@ -47,7 +47,8 @@ class FinlandAdapter:
     FALLBACK_NOTE = (
         "NLS/Maanmittauslaitos 2 m DEM and orthophoto interfaces are documented "
         "as open-data channels, but anonymous WCS/WMS/OGC API calls returned 401 "
-        "from this environment; using GLO-30 + forest-masked ETH canopy + Sentinel-2."
+        "from this environment; using GLO-30 + forest-masked Meta/WRI canopy when "
+        "covered, ETH fallback canopy, and Sentinel-2."
     )
 
     user_agent = "veil/1.0 (+packs/nato Finland adapter)"
@@ -64,7 +65,10 @@ class FinlandAdapter:
             "bbox_wgs84": self.bbox_wgs84(aoi),
             "area_ha": round(((bbox[2] - bbox[0]) * (bbox[3] - bbox[1])) / 10000.0, 3),
             "elevation": ["Copernicus GLO-30 terrain fallback"],
-            "canopy": ["ETH Global Canopy Height 2020, forest-masked"],
+            "canopy": [
+                "Meta/WRI Global Canopy Height, about 1 m, modeled",
+                "ETH Global Canopy Height 2020, 10 m fallback",
+            ],
             "imagery": ["Sentinel-2 L2A RGB+NIR via Element84 Earth Search"],
             "checked_national_endpoints": self.CHECKED_NATIONAL_ENDPOINTS,
             "national_note": self.FALLBACK_NOTE,
@@ -129,7 +133,7 @@ class FinlandAdapter:
 
     def prepare_chm_inputs(self, data_dir, elevation, resolution=10.0, forest_type=None):
         self._data_dir = data_dir
-        return global_sources.prepare_eth_chm_inputs(
+        return global_sources.prepare_best_chm_inputs(
             data_dir,
             elevation,
             resolution=max(float(resolution), 10.0),
@@ -169,7 +173,7 @@ class FinlandAdapter:
             "national_sources_checked": self.CHECKED_NATIONAL_ENDPOINTS,
             "fallback": {
                 "terrain": "Copernicus DEM GLO-30",
-                "canopy": "ETH Global Canopy Height 2020, forest-masked",
+                "canopy": "Meta/WRI 1 m modeled canopy preferred; ETH 10 m fallback",
                 "imagery": "Sentinel-2 L2A via Element84 Earth Search",
             },
             "note": self.FALLBACK_NOTE,
@@ -180,7 +184,7 @@ class FinlandAdapter:
             "National sources checked but not used anonymously: © Maanmittauslaitos/NLS (Finland).",
             "Terrain fallback: Copernicus DEM GLO-30, European Space Agency / DLR, open data.",
             "Imagery: modified Copernicus Sentinel data via Element84 Earth Search.",
-            "Canopy fallback: ETH Global Canopy Height 2020, Lang, Schindler and Wegner, CC-BY 4.0.",
+            "Canopy fallback attribution is recorded with the selected CHM inputs.",
             "Canopy forest mask fallback: ESA WorldCover 2021 v200, European Space Agency / VITO, open data.",
         ]
 

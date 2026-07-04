@@ -6,7 +6,7 @@ access from this environment. This adapter records the checked national routes
 and builds a working twin through the pack fallback stack:
 
   * Copernicus GLO-30 terrain
-  * forest-masked ETH Global Canopy Height 2020 for DSM/CHM
+  * forest-masked Meta/WRI 1 m modeled canopy, with ETH 10 m fallback
   * Sentinel-2 L2A RGB+NIR via Element84 Earth Search
 """
 
@@ -44,7 +44,7 @@ class DenmarkAdapter:
     FALLBACK_NOTE = (
         "Danish DHM/Terraen and DHM/Overflade endpoints require Dataforsyningen/"
         "Klimadatastyrelsen token access from this environment; using GLO-30 + "
-        "forest-masked ETH canopy + Sentinel-2."
+        "forest-masked Meta/WRI canopy when covered, ETH fallback canopy, and Sentinel-2."
     )
 
     user_agent = "veil/1.0 (+packs/nato Denmark adapter)"
@@ -61,7 +61,10 @@ class DenmarkAdapter:
             "bbox_wgs84": self.bbox_wgs84(aoi),
             "area_ha": round(((bbox[2] - bbox[0]) * (bbox[3] - bbox[1])) / 10000.0, 3),
             "elevation": ["Copernicus GLO-30 terrain fallback"],
-            "canopy": ["ETH Global Canopy Height 2020, forest-masked"],
+            "canopy": [
+                "Meta/WRI Global Canopy Height, about 1 m, modeled",
+                "ETH Global Canopy Height 2020, 10 m fallback",
+            ],
             "imagery": ["Sentinel-2 L2A RGB+NIR via Element84 Earth Search"],
             "national_note": self.FALLBACK_NOTE,
             "checked_national_endpoints": self.CHECKED_DHM_ENDPOINTS,
@@ -124,7 +127,7 @@ class DenmarkAdapter:
 
     def prepare_chm_inputs(self, data_dir, elevation, resolution=10.0, forest_type=None):
         self._data_dir = data_dir
-        return global_sources.prepare_eth_chm_inputs(
+        return global_sources.prepare_best_chm_inputs(
             data_dir,
             elevation,
             resolution=max(float(resolution), 10.0),
@@ -159,7 +162,7 @@ class DenmarkAdapter:
             "national_elevation_checked": self.CHECKED_DHM_ENDPOINTS,
             "fallback": {
                 "terrain": "Copernicus DEM GLO-30",
-                "canopy": "ETH Global Canopy Height 2020, forest-masked",
+                "canopy": "Meta/WRI 1 m modeled canopy preferred; ETH 10 m fallback",
                 "imagery": "Sentinel-2 L2A via Element84 Earth Search",
             },
             "note": self.FALLBACK_NOTE,
@@ -170,6 +173,6 @@ class DenmarkAdapter:
             "National DHM checked but not used: Klimadatastyrelsen / Dataforsyningen DHM/Terraen and DHM/Overflade require token access.",
             "Terrain fallback: Copernicus DEM GLO-30, European Space Agency / DLR, open data.",
             "Imagery: modified Copernicus Sentinel data via Element84 Earth Search.",
-            "Canopy fallback: ETH Global Canopy Height 2020, Lang, Schindler and Wegner, CC-BY 4.0.",
+            "Canopy fallback attribution is recorded with the selected CHM inputs.",
             "Canopy forest mask fallback: ESA WorldCover 2021 v200, European Space Agency / VITO, open data.",
         ]

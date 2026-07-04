@@ -53,7 +53,7 @@ class SwedenAdapter:
     FALLBACK_NOTE = (
         "Anonymous Lantmateriet Min karta height-model routes provide WMS "
         "visualization, not a numeric DEM/DSM coverage; using GLO-30 + "
-        "forest-masked ETH canopy for terrain/CHM."
+        "forest-masked Meta/WRI canopy when covered, with ETH canopy as fallback."
     )
     NIR_FALLBACK_NOTE = (
         "No open Lantmateriet CIR/infrared orthophoto route was found in the "
@@ -74,7 +74,10 @@ class SwedenAdapter:
             "bbox_wgs84": self.bbox_wgs84(aoi),
             "area_ha": round(((bbox[2] - bbox[0]) * (bbox[3] - bbox[1])) / 10000.0, 3),
             "elevation": ["Copernicus GLO-30 terrain fallback"],
-            "canopy": ["ETH Global Canopy Height 2020, forest-masked"],
+            "canopy": [
+                "Meta/WRI Global Canopy Height, about 1 m, modeled",
+                "ETH Global Canopy Height 2020, 10 m fallback",
+            ],
             "imagery": [
                 "Lantmateriet Min karta orthophoto WMS visible RGB",
                 "Sentinel-2 L2A NIR via Element84 Earth Search",
@@ -143,7 +146,7 @@ class SwedenAdapter:
 
     def prepare_chm_inputs(self, data_dir, elevation, resolution=10.0, forest_type=None):
         self._data_dir = data_dir
-        return global_sources.prepare_eth_chm_inputs(
+        return global_sources.prepare_best_chm_inputs(
             data_dir,
             elevation,
             resolution=max(float(resolution), 10.0),
@@ -230,7 +233,7 @@ class SwedenAdapter:
             "national_sources_checked": self.CHECKED_NATIONAL_ENDPOINTS,
             "fallback": {
                 "terrain": "Copernicus DEM GLO-30",
-                "canopy": "ETH Global Canopy Height 2020, forest-masked",
+                "canopy": "Meta/WRI 1 m modeled canopy preferred; ETH 10 m fallback",
                 "imagery_nir": "Sentinel-2 L2A via Element84 Earth Search",
             },
             "imagery": {
@@ -248,7 +251,7 @@ class SwedenAdapter:
             "Terrain fallback: Copernicus DEM GLO-30, European Space Agency / DLR, open data.",
             "Imagery NIR or fallback RGB+NIR: modified Copernicus Sentinel data via Element84 Earth Search.",
             "Forest typing: Copernicus HRL Dominant Leaf Type / EEA.",
-            "Canopy fallback: ETH Global Canopy Height 2020, Lang, Schindler and Wegner, CC-BY 4.0.",
+            "Canopy fallback attribution is recorded with the selected CHM inputs.",
             "Canopy forest mask fallback: ESA WorldCover 2021 v200, European Space Agency / VITO, open data.",
         ]
 

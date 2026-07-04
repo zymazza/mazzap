@@ -118,7 +118,7 @@ class FranceAdapter:
     def prepare_chm_inputs(self, data_dir, elevation, resolution=1.0, forest_type=None):
         self._data_dir = data_dir
         if elevation.get("metadata", {}).get("status") == "fallback":
-            return global_sources.prepare_eth_chm_inputs(
+            return global_sources.prepare_best_chm_inputs(
                 data_dir,
                 elevation,
                 resolution=resolution,
@@ -126,34 +126,20 @@ class FranceAdapter:
                 forest_type=forest_type,
             )
 
-        terrain_dir = os.path.join(data_dir, "terrain")
-        os.makedirs(terrain_dir, exist_ok=True)
-        dtm_out = os.path.join(terrain_dir, "dtm.tif")
-        dsm_out = os.path.join(terrain_dir, "dsm.tif")
-        chm_out = os.path.join(terrain_dir, "chm.tif")
-        sh.align_to_grid(elevation["dtm"], data_dir, dtm_out)
-        sh.align_to_grid(elevation["dsm"], data_dir, dsm_out)
-        sh.write_chm(dsm_out, dtm_out, chm_out)
-        status = {
-            "status": "ok",
-            "source": "IGN Geoplateforme high-resolution MNS - RGE ALTI high-resolution MNT",
-            "dsm": "terrain/dsm.tif",
-            "dtm": "terrain/dtm.tif",
-            "chm": "terrain/chm.tif",
-            "contract": "scripts/analyze_vegetation.py reads terrain/dsm.tif and terrain/dtm.tif",
-            "resolution_m": resolution,
-        }
-        json.dump(status, open(os.path.join(terrain_dir, "fr_chm_inputs.json"), "w"),
-                  indent=2)
-        return {
-            "dtm": dtm_out,
-            "dsm": dsm_out,
-            "chm": chm_out,
-            "layer_id": "fr_ign_chm",
-            "layer_label": "IGN MNS-MNT Canopy Height",
-            "layer_description": "Canopy height model derived from IGN MNS minus RGE ALTI MNT.",
-            "metadata": status,
-        }
+        return global_sources.prepare_best_chm_inputs(
+            data_dir,
+            elevation,
+            resolution=resolution,
+            alpha2=self.alpha2,
+            forest_type=forest_type,
+            terrain_source="IGN Geoplateforme RGE ALTI high-resolution MNT national terrain",
+            status_filename="fr_chm_inputs.json",
+            contract_note=(
+                "scripts/analyze_vegetation.py reads terrain/dsm.tif and terrain/dtm.tif; "
+                "France adapter writes DSM = national MNT + selected forest-masked "
+                "global canopy, DTM = national MNT"
+            ),
+        )
 
     def fetch_imagery(self, aoi, out_dir, footprint, px_per_m=1):
         os.makedirs(out_dir, exist_ok=True)
@@ -248,7 +234,10 @@ class FranceAdapter:
                 "dtm_layer": self.DTM_LAYER,
                 "dsm_layer": self.DSM_LAYER,
                 "crs": self.native_crs,
-                "fallback": "Copernicus GLO-30 terrain plus ETH canopy if IGN elevation is unreachable",
+                "fallback": (
+                    "Copernicus GLO-30 terrain plus Meta/WRI 1 m modeled canopy "
+                    "where covered; ETH 10 m canopy if Meta is unavailable"
+                ),
             },
             "imagery": {
                 "wms": self.GEOPF_WMS,
@@ -262,7 +251,7 @@ class FranceAdapter:
             "Elevation: IGN France Geoplateforme RGE ALTI / MNS WMS-R layers.",
             "Imagery: IGN France Geoplateforme BD ORTHO RGB and ORTHO IRC WMS-R layers.",
             "Fallback imagery: modified Copernicus Sentinel data via Element84 Earth Search.",
-            "Fallback canopy: ETH Global Canopy Height 2020, Lang, Schindler and Wegner, CC-BY 4.0.",
+            "Fallback canopy attribution is recorded with the selected CHM inputs.",
         ]
 
     def _fetch_wms_float(self, layer, bbox, out_path, resolution):

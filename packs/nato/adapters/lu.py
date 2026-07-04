@@ -4,9 +4,10 @@ Implemented national path:
   * ACT / data.public.lu BD-L-MNT-1m national terrain JP2, EPSG:3035 source
     warped to EPSG:2169 for the twin.
   * ACT / geoportail.lu open WMS RGB orthophoto and infrared orthophoto.
-  * ETH Global Canopy Height 2020 fallback for CHM. The 2019 national LiDAR
-    MNS/MNT ZIP resources are numeric and open, but each is about 27 GB and
-    remote range-opening the internal TIFF is too slow for unattended AOI builds.
+  * Meta/WRI 1 m modeled canopy-height fallback for CHM, with ETH 10 m canopy
+    as the last resort. The 2019 national LiDAR MNS/MNT ZIP resources are
+    numeric and open, but each is about 27 GB and remote range-opening the
+    internal TIFF is too slow for unattended AOI builds.
 """
 
 import importlib
@@ -53,7 +54,8 @@ class LuxembourgAdapter:
     DSM_FALLBACK_NOTE = (
         "ACT 2019 MNS/MNT ZIP resources are open numeric rasters but about 27 GB "
         "each; remote range-opening the internal TIFF timed out in unattended "
-        "checks, so CHM uses forest-masked ETH canopy over national MNT terrain."
+        "checks, so CHM uses forest-masked Meta/WRI modeled canopy over national "
+        "MNT terrain when covered, with ETH canopy as the last resort."
     )
 
     user_agent = "veil/1.0 (+packs/nato Luxembourg adapter)"
@@ -73,7 +75,8 @@ class LuxembourgAdapter:
             "area_ha": round(((bbox[2] - bbox[0]) * (bbox[3] - bbox[1])) / 10000.0, 3),
             "elevation": [
                 "ACT / data.public.lu BD-L-MNT-1m national terrain",
-                "ETH Global Canopy Height 2020 fallback CHM",
+                "Meta/WRI 1 m modeled canopy fallback CHM",
+                "ETH Global Canopy Height 2020 last-resort fallback CHM",
             ],
             "elevation_note": self.DSM_FALLBACK_NOTE,
             "imagery": [
@@ -119,7 +122,7 @@ class LuxembourgAdapter:
         meta = {
             "adapter": "packs/nato/adapters/lu.py",
             "country": self.alpha3,
-            "status": "national_dtm_eth_canopy",
+            "status": "national_dtm_best_global_canopy",
             "bbox_native": bbox,
             "fetch_bounds": [round(v, 3) for v in fetch_bounds],
             "crs": self.native_crs,
@@ -135,7 +138,7 @@ class LuxembourgAdapter:
                 "mns_zip": self.MNS_2019_ZIP,
                 "status": "open but too large/slow for unattended AOI range-open",
             },
-            "dsm_status": "fallback_to_eth_canopy",
+            "dsm_status": "fallback_to_best_global_canopy",
             "dsm_note": self.DSM_FALLBACK_NOTE,
             "nodata_fill": {
                 "enabled": True,
@@ -153,7 +156,7 @@ class LuxembourgAdapter:
     def prepare_chm_inputs(self, data_dir, elevation, resolution=2.0, forest_type=None):
         self._data_dir = data_dir
         if elevation.get("metadata", {}).get("status") == "fallback":
-            return global_sources.prepare_eth_chm_inputs(
+            return global_sources.prepare_best_chm_inputs(
                 data_dir,
                 elevation,
                 resolution=resolution,
@@ -161,60 +164,20 @@ class LuxembourgAdapter:
                 forest_type=forest_type,
             )
 
-        terrain_dir = os.path.join(data_dir, "terrain")
-        os.makedirs(terrain_dir, exist_ok=True)
-        source_dir = os.path.dirname(elevation["dtm"])
-        dtm_out = os.path.join(terrain_dir, "dtm.tif")
-        dsm_out = os.path.join(terrain_dir, "dsm.tif")
-        chm_out = os.path.join(terrain_dir, "chm.tif")
-        canopy_raw = os.path.join(source_dir, "lu_eth_canopy_height_2020_grid.tif")
-        canopy_masked = os.path.join(source_dir, "lu_eth_canopy_height_2020_forest_masked_grid.tif")
-
-        sh.align_to_grid(elevation["dtm"], data_dir, dtm_out)
-        canopy_meta = global_sources.fetch_eth_canopy_to_grid(data_dir, source_dir, canopy_raw)
-        mask_meta = global_sources._forest_mask_canopy(  # noqa: SLF001
+        return global_sources.prepare_best_chm_inputs(
             data_dir,
-            source_dir,
-            canopy_raw,
-            canopy_masked,
-            forest_type=forest_type,
+            elevation,
+            resolution=resolution,
             alpha2=self.alpha2,
-        )
-        global_sources._write_dsm_and_chm(dtm_out, canopy_masked, dsm_out, chm_out)  # noqa: SLF001
-        status = {
-            "status": "ok",
-            "source": "ACT/data.public.lu national MNT plus forest-masked ETH Global Canopy Height 2020",
-            "fallback": self.DSM_FALLBACK_NOTE,
-            "dsm": "terrain/dsm.tif",
-            "dtm": "terrain/dtm.tif",
-            "chm": "terrain/chm.tif",
-            "canopy_raster": os.path.relpath(canopy_masked, data_dir),
-            "raw_canopy_raster": os.path.relpath(canopy_raw, data_dir),
-            "contract": (
+            forest_type=forest_type,
+            terrain_source="ACT/data.public.lu BD-L-MNT national terrain",
+            status_filename="lu_chm_inputs.json",
+            contract_note=(
                 "scripts/analyze_vegetation.py reads terrain/dsm.tif and terrain/dtm.tif; "
-                "Luxembourg adapter writes DSM = national MNT + forest-masked ETH canopy, "
-                "DTM = national MNT"
+                "Luxembourg adapter writes DSM = national MNT + selected forest-masked "
+                "global canopy, DTM = national MNT"
             ),
-            "resolution_m": resolution,
-            "canopy": canopy_meta,
-            "canopy_forest_mask": mask_meta,
-        }
-        json.dump(status, open(os.path.join(terrain_dir, "lu_chm_inputs.json"), "w"),
-                  indent=2)
-        return {
-            "dtm": dtm_out,
-            "dsm": dsm_out,
-            "chm": chm_out,
-            "canopy": canopy_masked,
-            "raw_canopy": canopy_raw,
-            "layer_id": "lu_eth_chm",
-            "layer_label": "ETH Canopy Height over ACT MNT",
-            "layer_description": (
-                "Forest-masked ETH Global Canopy Height 2020 over ACT/data.public.lu "
-                "national terrain."
-            ),
-            "metadata": status,
-        }
+        )
 
     def fetch_imagery(self, aoi, out_dir, footprint, px_per_m=1):
         os.makedirs(out_dir, exist_ok=True)
@@ -310,7 +273,10 @@ class LuxembourgAdapter:
                 "irc_layer": self.IRC_LAYER,
             },
             "canopy": {
-                "source": "ETH Global Canopy Height 2020",
+                "fallback_chain": [
+                    "Meta/WRI Global Canopy Height, about 1 m, modeled",
+                    "ETH Global Canopy Height 2020, 10 m",
+                ],
                 "record": global_sources.ETH_RESEARCH_RECORD,
             },
         }
@@ -319,7 +285,7 @@ class LuxembourgAdapter:
         return [
             "Elevation and imagery: © ACT / Administration du cadastre et de la topographie (Luxembourg), data.public.lu / geoportail.lu.",
             "Imagery fallback: modified Copernicus Sentinel data via Element84 Earth Search.",
-            "Canopy fallback: ETH Global Canopy Height 2020, Lang, Schindler and Wegner, CC-BY 4.0.",
+            "Canopy fallback attribution is recorded with the selected CHM inputs.",
             "Canopy forest mask fallback: ESA WorldCover 2021 v200, European Space Agency / VITO, open data.",
         ]
 

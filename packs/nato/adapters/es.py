@@ -2,15 +2,16 @@
 
 Implemented sources:
   * IGN/CNIG MDT WCS 2.0.1, PNOA-LiDAR bare-earth terrain, 5 m
-  * ETH Global Canopy Height 2020 fallback for CHM where no open national
-    PNOA-LiDAR MDS/DSM WCS is reachable from this environment
+  * Meta/WRI 1 m modeled canopy-height fallback for CHM where no open national
+    PNOA-LiDAR MDS/DSM WCS is reachable from this environment, with ETH 10 m
+    canopy as the last resort
   * IGN/CNIG PNOA maxima actualidad RGB WMS for visible imagery
   * Sentinel-2 L2A NIR via Element84 Earth Search for the fourth NIR band
 
 The public IGN MDT WCS currently exposes 5 m MDT coverages such as
 Elevacion25830_5 and Elevacion4258_5. The checked MDS/DSM WCS candidates were
 not separate surface-model services, so this adapter keeps terrain national and
-uses the pack's existing ETH canopy fallback to synthesize DSM = MDT + canopy.
+uses the pack's Meta-then-ETH canopy fallback to synthesize DSM = MDT + canopy.
 """
 
 import importlib
@@ -72,7 +73,8 @@ class SpainAdapter:
 
     DSM_FALLBACK_NOTE = (
         "No separate open IGN/CNIG PNOA-LiDAR MDS/DSM WCS was reachable; "
-        "CHM uses ETH Global Canopy Height 2020 over national MDT terrain."
+        "CHM uses Meta/WRI 1 m modeled canopy over national MDT terrain when "
+        "covered, with ETH Global Canopy Height 2020 as the last resort."
     )
     NIR_FALLBACK_NOTE = (
         "No open IGN/CNIG 4-band/CIR PNOA WMS was reachable; Sentinel-2 L2A "
@@ -111,7 +113,8 @@ class SpainAdapter:
             "area_ha": round(((bbox[2] - bbox[0]) * (bbox[3] - bbox[1])) / 10000.0, 3),
             "elevation": [
                 "IGN/CNIG PNOA-LiDAR MDT 5 m (%s)" % service_crs,
-                "ETH Global Canopy Height 2020 fallback CHM",
+                "Meta/WRI 1 m modeled canopy fallback CHM",
+                "ETH Global Canopy Height 2020 last-resort fallback CHM",
             ],
             "elevation_coverages": [self.mdt_coverage_id(service_crs)],
             "elevation_note": self.DSM_FALLBACK_NOTE,
@@ -208,7 +211,7 @@ class SpainAdapter:
             "source": "IGN/CNIG PNOA-LiDAR MDT WCS 2.0.1, 5 m",
             "endpoint": self.MDT_WCS,
             "coverage": self.mdt_coverage_id(service_crs),
-            "dsm_status": "fallback_to_eth_canopy",
+            "dsm_status": "fallback_to_best_global_canopy",
             "dsm_note": self.DSM_FALLBACK_NOTE,
             "mds_wcs_checked": [
                 "https://servicios.idee.es/wcs-inspire/mds",
@@ -236,65 +239,22 @@ class SpainAdapter:
         }
 
     def prepare_chm_inputs(self, data_dir, elevation, resolution=5.0, forest_type=None):
-        """Place grid-aligned DTM/DSM using national MDT plus ETH canopy fallback."""
+        """Place grid-aligned DTM/DSM using national MDT plus best global canopy."""
         self._data_dir = data_dir
-        terrain_dir = os.path.join(data_dir, "terrain")
-        os.makedirs(terrain_dir, exist_ok=True)
-        source_dir = os.path.dirname(elevation["dtm"])
-        dtm_out = os.path.join(terrain_dir, "dtm.tif")
-        dsm_out = os.path.join(terrain_dir, "dsm.tif")
-        chm_out = os.path.join(terrain_dir, "chm.tif")
-        canopy_raw = os.path.join(source_dir, "es_eth_canopy_height_2020_grid.tif")
-        canopy_masked = os.path.join(
-            source_dir,
-            "es_eth_canopy_height_2020_forest_masked_grid.tif",
-        )
-
-        self._align_to_grid(elevation["dtm"], data_dir, dtm_out)
-        canopy_meta = global_sources.fetch_eth_canopy_to_grid(data_dir, source_dir, canopy_raw)
-        mask_meta = global_sources._forest_mask_canopy(  # noqa: SLF001
+        return global_sources.prepare_best_chm_inputs(
             data_dir,
-            source_dir,
-            canopy_raw,
-            canopy_masked,
-            forest_type=forest_type,
+            elevation,
+            resolution=resolution,
             alpha2=self.alpha2,
-        )
-        global_sources._write_dsm_and_chm(dtm_out, canopy_masked, dsm_out, chm_out)  # noqa: SLF001
-
-        status = {
-            "status": "ok",
-            "source": "IGN/CNIG PNOA-LiDAR MDT 5 m plus forest-masked ETH Global Canopy Height 2020",
-            "fallback": "ETH Global Canopy Height 2020 used because no open national MDS/DSM WCS was reachable",
-            "dsm": "terrain/dsm.tif",
-            "dtm": "terrain/dtm.tif",
-            "chm": "terrain/chm.tif",
-            "canopy_raster": os.path.relpath(canopy_masked, data_dir),
-            "raw_canopy_raster": os.path.relpath(canopy_raw, data_dir),
-            "contract": (
+            forest_type=forest_type,
+            terrain_source="IGN/CNIG PNOA-LiDAR MDT 5 m national terrain",
+            status_filename="es_chm_inputs.json",
+            contract_note=(
                 "scripts/analyze_vegetation.py reads terrain/dsm.tif and terrain/dtm.tif; "
-                "Spain adapter writes DSM = national MDT + forest-masked ETH canopy, DTM = national MDT"
+                "Spain adapter writes DSM = national MDT + selected forest-masked global "
+                "canopy, DTM = national MDT"
             ),
-            "resolution_m": resolution,
-            "canopy": canopy_meta,
-            "canopy_forest_mask": mask_meta,
-        }
-        json.dump(status, open(os.path.join(terrain_dir, "es_chm_inputs.json"), "w"),
-                  indent=2)
-        return {
-            "dtm": dtm_out,
-            "dsm": dsm_out,
-            "chm": chm_out,
-            "canopy": canopy_masked,
-            "raw_canopy": canopy_raw,
-            "layer_id": "es_eth_chm",
-            "layer_label": "ETH Canopy Height over IGN MDT",
-            "layer_description": (
-                "Forest-masked ETH Global Canopy Height 2020 used over IGN/CNIG "
-                "PNOA-LiDAR MDT terrain because no open national MDS/DSM WCS was reachable."
-            ),
-            "metadata": status,
-        }
+        )
 
     def fetch_imagery(self, aoi, out_dir, footprint, px_per_m=1):
         """Fetch PNOA RGB and Sentinel-2 NIR, then assemble VEIL RGB+NIR."""
@@ -386,7 +346,10 @@ class SpainAdapter:
                 "dsm_fallback": self.DSM_FALLBACK_NOTE,
             },
             "canopy": {
-                "source": "ETH Global Canopy Height 2020",
+                "fallback_chain": [
+                    "Meta/WRI Global Canopy Height, about 1 m, modeled",
+                    "ETH Global Canopy Height 2020, 10 m",
+                ],
                 "record": global_sources.ETH_RESEARCH_RECORD,
                 "download_share": "https://libdrive.ethz.ch/index.php/s/%s" %
                 global_sources.ETH_SHARE_TOKEN,
@@ -408,7 +371,7 @@ class SpainAdapter:
             "Elevation: Instituto Geografico Nacional (IGN) / CNIG PNOA-LiDAR MDT, CC BY 4.0 scne.es.",
             "Imagery RGB: Instituto Geografico Nacional (IGN) / CNIG PNOA orthophoto WMS, CC BY 4.0 scne.es.",
             "Imagery NIR: modified Copernicus Sentinel data via Element84 Earth Search.",
-            "Canopy fallback: ETH Global Canopy Height 2020, Lang, Schindler and Wegner, CC-BY 4.0.",
+            "Canopy fallback attribution is recorded with the selected CHM inputs.",
             "Canopy forest mask fallback: ESA WorldCover 2021 v200, European Space Agency / VITO, open data.",
         ]
 

@@ -18,6 +18,7 @@ This module keeps the coarse Tier-C path pack-side:
 """
 
 import json
+import importlib
 import math
 import os
 import sys
@@ -302,6 +303,201 @@ def prepare_eth_chm_inputs(data_dir, elevation, resolution=30.0, alpha2="nato",
             "layer_label": "Forest-Masked ETH Canopy Height",
             "metadata": status,
             "attribution": status["attribution"]}
+
+
+def prepare_best_chm_inputs(data_dir, elevation, resolution=30.0, alpha2="nato",
+                            forest_type=None, terrain_source=None,
+                            status_filename="global_chm_inputs.json",
+                            contract_note=None):
+    """Write DSM/CHM from terrain plus the best available global canopy model.
+
+    Meta/WRI 1 m modeled canopy is preferred. ETH Global Canopy Height remains
+    the last-resort fallback when Meta has no coverage or cannot be fetched.
+    """
+    terrain_path = elevation.get("dtm") or elevation.get("terrain")
+    if not terrain_path:
+        raise ValueError("prepare_best_chm_inputs requires elevation['dtm'] or ['terrain']")
+    metadata = elevation.get("metadata") or {}
+    label = terrain_source or metadata.get("source") or "terrain"
+    return _prepare_synthetic_chm_inputs(
+        data_dir,
+        terrain_path,
+        os.path.dirname(terrain_path),
+        resolution=resolution,
+        alpha2=alpha2,
+        forest_type=forest_type,
+        terrain_source=label,
+        status_filename=status_filename,
+        contract_note=contract_note,
+    )
+
+
+def _prepare_synthetic_chm_inputs(data_dir, terrain_path, source_dir, resolution=30.0,
+                                  alpha2="nato", forest_type=None,
+                                  terrain_source="terrain",
+                                  status_filename="global_chm_inputs.json",
+                                  contract_note=None):
+    terrain_dir = os.path.join(data_dir, "terrain")
+    os.makedirs(terrain_dir, exist_ok=True)
+    os.makedirs(source_dir, exist_ok=True)
+    dtm_out = os.path.join(terrain_dir, "dtm.tif")
+    dsm_out = os.path.join(terrain_dir, "dsm.tif")
+    chm_out = os.path.join(terrain_dir, "chm.tif")
+
+    canopy = fetch_best_canopy_to_grid(
+        data_dir,
+        source_dir,
+        forest_type=forest_type,
+        alpha2=alpha2,
+    )
+    _warp_float_to_template(terrain_path, dtm_out, canopy["raw_canopy"])
+    _write_dsm_and_chm(dtm_out, canopy["canopy"], dsm_out, chm_out)
+
+    canopy_label = canopy["source_label"]
+    status = {
+        "status": "ok",
+        "source": "%s plus %s" % (terrain_source, canopy_label),
+        "canopy_source": canopy["source_key"],
+        "canopy_source_label": canopy_label,
+        "dsm": "terrain/dsm.tif",
+        "dtm": "terrain/dtm.tif",
+        "chm": "terrain/chm.tif",
+        "canopy_raster": os.path.relpath(canopy["canopy"], data_dir),
+        "raw_canopy_raster": os.path.relpath(canopy["raw_canopy"], data_dir),
+        "contract": contract_note or (
+            "scripts/analyze_vegetation.py reads terrain/dsm.tif and terrain/dtm.tif; "
+            "adapter writes DSM = terrain + selected forest-masked global canopy, "
+            "DTM = terrain"
+        ),
+        "resolution_m": float(canopy["resolution_m"]),
+        "requested_resolution_m": float(resolution),
+        "terrain_source": terrain_source,
+        "canopy": canopy["metadata"],
+        "canopy_forest_mask": canopy["canopy_forest_mask"],
+        "canopy_selection": canopy["selection"],
+        "dsm_source": canopy["dsm_source"] % terrain_source
+        if "%s" in canopy["dsm_source"] else canopy["dsm_source"],
+        "dsm_source_note": canopy["dsm_source_note"],
+        "attribution": canopy["attribution"],
+    }
+    json.dump(status, open(os.path.join(terrain_dir, status_filename), "w"), indent=2)
+    return {
+        "dtm": dtm_out,
+        "dsm": dsm_out,
+        "chm": chm_out,
+        "canopy": canopy["canopy"],
+        "raw_canopy": canopy["raw_canopy"],
+        "layer_id": canopy["layer_id"],
+        "layer_label": canopy["layer_label"],
+        "layer_description": canopy["layer_description"],
+        "metadata": status,
+        "attribution": canopy["attribution"],
+    }
+
+
+def fetch_best_canopy_to_grid(data_dir, out_dir, forest_type=None, alpha2="nato"):
+    """Return the selected forest-masked canopy raster and provenance.
+
+    The returned canopy has already been clipped by the forest mask. The raw
+    raster is kept so callers can align terrain to the selected canopy grid.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    alpha = (alpha2 or "nato").lower()
+    attempts = []
+    if not os.environ.get("VEIL_DISABLE_META_CHM"):
+        try:
+            meta_chm = importlib.import_module("adapters.meta_chm")
+            raw = os.path.join(out_dir, "%s_meta_wri_chm_1m_grid_raw.tif" % alpha)
+            masked = os.path.join(out_dir, "%s_meta_wri_chm_1m_forest_masked_grid.tif" % alpha)
+            canopy = meta_chm.fetch_meta_chm(
+                None,
+                os.path.join(data_dir, "terrain"),
+                _grid(data_dir),
+                data_dir=data_dir,
+                out_dir=out_dir,
+                out_path=raw,
+                alpha2=alpha,
+                resolution=meta_chm.DEFAULT_RESOLUTION_M,
+            )
+            if canopy:
+                mask_meta = _forest_mask_canopy(
+                    data_dir,
+                    out_dir,
+                    raw,
+                    masked,
+                    forest_type=forest_type,
+                    alpha2=alpha,
+                )
+                return {
+                    "source_key": "meta_wri_1m",
+                    "source_label": "forest-masked Meta/WRI 1 m modeled canopy height",
+                    "raw_canopy": raw,
+                    "canopy": masked,
+                    "metadata": canopy["metadata"],
+                    "canopy_forest_mask": mask_meta,
+                    "selection": {
+                        "winner": "Meta/WRI Global Canopy Height",
+                        "fallback_chain": [
+                            "Meta/WRI Global Canopy Height, about 1 m, modeled",
+                            "ETH Global Canopy Height 2020, 10 m",
+                        ],
+                        "attempts": attempts + [{"source": "Meta/WRI", "status": "ok"}],
+                    },
+                    "dsm_source": "Meta/WRI 1 m modeled canopy over %s",
+                    "dsm_source_note": meta_chm.META_MODEL_NOTE,
+                    "resolution_m": _pixel_size(raw),
+                    "layer_id": "%s_meta_chm" % alpha,
+                    "layer_label": "Meta Canopy Height (1 m)",
+                    "layer_description": (
+                        "Forest-masked WRI + Meta global canopy-height model at about 1 m. "
+                        "This is a predicted canopy surface, not measured tree inventory."
+                    ),
+                    "attribution": [meta_chm.META_ATTRIBUTION],
+                }
+            attempts.append({"source": "Meta/WRI", "status": "no_coverage"})
+            print("  Meta/WRI 1 m canopy has no tile coverage here; using ETH fallback")
+        except Exception as exc:  # noqa: BLE001
+            attempts.append({"source": "Meta/WRI", "status": "unavailable", "error": str(exc)})
+            print(f"  Meta/WRI 1 m canopy unavailable ({exc}); using ETH fallback")
+    else:
+        attempts.append({"source": "Meta/WRI", "status": "disabled_by_VEIL_DISABLE_META_CHM"})
+
+    raw = os.path.join(out_dir, "%s_eth_canopy_height_2020_grid.tif" % alpha)
+    masked = os.path.join(out_dir, "%s_eth_canopy_height_2020_forest_masked_grid.tif" % alpha)
+    canopy_meta = fetch_eth_canopy_to_grid(data_dir, out_dir, raw)
+    mask_meta = _forest_mask_canopy(
+        data_dir,
+        out_dir,
+        raw,
+        masked,
+        forest_type=forest_type,
+        alpha2=alpha,
+    )
+    return {
+        "source_key": "eth_10m",
+        "source_label": "forest-masked ETH Global Canopy Height 2020",
+        "raw_canopy": raw,
+        "canopy": masked,
+        "metadata": canopy_meta,
+        "canopy_forest_mask": mask_meta,
+        "selection": {
+            "winner": "ETH Global Canopy Height 2020",
+            "fallback_chain": [
+                "Meta/WRI Global Canopy Height, about 1 m, modeled",
+                "ETH Global Canopy Height 2020, 10 m",
+            ],
+            "attempts": attempts + [{"source": "ETH", "status": "ok"}],
+        },
+        "dsm_source": "ETH Global Canopy Height 2020, 10 m modeled CHM",
+        "dsm_source_note": "Global modeled canopy-height fallback, not measured trees or a tree census.",
+        "resolution_m": _pixel_size(raw),
+        "layer_id": "%s_eth_chm" % alpha,
+        "layer_label": "Forest-Masked ETH Canopy Height",
+        "layer_description": "Forest-masked ETH Global Canopy Height 2020.",
+        "attribution": [
+            "ETH Global Canopy Height 2020: Lang, Schindler and Wegner, CC-BY 4.0.",
+        ],
+    }
 
 
 def fetch_eth_canopy_to_grid(data_dir, out_dir, out_path=None):
@@ -688,6 +884,50 @@ def _warp_float_to_grid(src_path, out_path, grid, bounds, working_crs):
     return out_path
 
 
+def _warp_float_to_template(src_path, out_path, template_path):
+    template = gdal.Open(template_path)
+    if template is None:
+        raise RuntimeError("cannot align terrain to canopy template %r" % template_path)
+    if _raster_matches_template(out_path, template):
+        print(f"  reuse {os.path.basename(out_path)}")
+        return out_path
+    if os.path.exists(out_path):
+        os.remove(out_path)
+    gdal.Warp(
+        out_path,
+        src_path,
+        dstSRS=template.GetProjection(),
+        outputBounds=_dataset_bounds(template),
+        width=template.RasterXSize,
+        height=template.RasterYSize,
+        resampleAlg="bilinear",
+        outputType=gdal.GDT_Float32,
+        dstNodata=-99999,
+        multithread=True,
+        creationOptions=["COMPRESS=DEFLATE", "TILED=YES", "BIGTIFF=IF_SAFER"],
+    )
+    return out_path
+
+
+def _raster_matches_template(path, template):
+    if not os.path.exists(path):
+        return False
+    try:
+        ds = gdal.Open(path)
+        if ds is None:
+            return False
+        if ds.RasterXSize != template.RasterXSize or ds.RasterYSize != template.RasterYSize:
+            return False
+        if ds.GetProjection() != template.GetProjection():
+            return False
+        return all(
+            abs(float(a) - float(b)) <= 0.05
+            for a, b in zip(_dataset_bounds(ds), _dataset_bounds(template))
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _forest_mask_canopy(data_dir, out_dir, canopy_raw, canopy_masked, forest_type=None,
                         alpha2="nato"):
     alpha = (alpha2 or "nato").lower()
@@ -1029,6 +1269,12 @@ def _canopy_stats(path):
         "max": round(float(vals.max()), 2),
         "canopy_cover_gt5_pct": round(100.0 * float((vals > 5.0).mean()), 1),
     }
+
+
+def _pixel_size(path):
+    ds = gdal.Open(path)
+    gt = ds.GetGeoTransform()
+    return round(float((abs(gt[1]) + abs(gt[5])) / 2.0), 3)
 
 
 def _sentinel2_datetime_ranges(primary):
