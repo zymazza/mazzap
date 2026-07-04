@@ -176,6 +176,100 @@ html, body {
   border-radius: var(--r-sm);
 }
 
+.system-card {
+  padding: 12px 14px;
+}
+.system-head,
+.aoi-estimate-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.system-title,
+.aoi-estimate-row span {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.system-state {
+  flex: none;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.system-state.is-ok { color: var(--accent); border-color: rgba(126, 224, 166, 0.32); }
+.system-state.is-warn { color: var(--warn); border-color: rgba(231, 189, 93, 0.38); }
+.system-state.is-error { color: #ef9a9a; border-color: rgba(239, 154, 154, 0.4); }
+.system-grid {
+  display: grid;
+  gap: 5px;
+  margin-top: 10px;
+}
+.system-grid span {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  color: var(--faint);
+  font-size: 12px;
+}
+.system-grid b {
+  min-width: 0;
+  color: var(--fg);
+  font-weight: 650;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.system-warning {
+  margin: 10px 0 0;
+  padding: 9px 10px;
+  color: var(--warn);
+  background: rgba(231, 189, 93, 0.1);
+  border: 1px solid rgba(231, 189, 93, 0.28);
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.system-warning[hidden] { display: none; }
+
+.aoi-estimate {
+  margin: 0 0 12px;
+  padding: 10px 11px;
+  color: var(--muted);
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+.aoi-estimate[hidden] { display: none; }
+.aoi-estimate.is-warn {
+  border-color: rgba(231, 189, 93, 0.38);
+  background: rgba(231, 189, 93, 0.07);
+}
+.aoi-estimate.is-blocked {
+  border-color: rgba(239, 154, 154, 0.42);
+  background: rgba(239, 154, 154, 0.08);
+}
+.aoi-estimate-row b {
+  color: var(--fg);
+  font-size: 13px;
+}
+.aoi-estimate p {
+  margin: 7px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.aoi-estimate .system-warning {
+  color: #ffd17a;
+  background: rgba(231, 189, 93, 0.09);
+}
+
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field > span {
   font-size: 11px;

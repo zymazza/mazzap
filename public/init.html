@@ -44,6 +44,19 @@
     </ol>
 
     <div class="console-scroll">
+      <section class="card system-card" data-panel="system">
+        <div class="system-head">
+          <span class="system-title">System check</span>
+          <span id="system-check-state" class="system-state">Checking</span>
+        </div>
+        <div class="system-grid" aria-live="polite">
+          <span>Disk <b id="system-disk">Checking</b></span>
+          <span>RAM <b id="system-ram">Checking</b></span>
+          <span>GDAL <b id="system-gdal">Checking</b></span>
+        </div>
+        <p id="system-warning" class="system-warning" hidden></p>
+      </section>
+
       <!-- Step 1 -->
       <section class="card" data-panel="locate">
         <form id="address-search-form" class="address-search" role="search">
@@ -71,6 +84,15 @@
             <span class="readout-k">Area</span>
             <span class="readout-v" id="area-label">Draw at least 3 points</span>
           </div>
+        </div>
+
+        <div id="aoi-estimate" class="aoi-estimate" hidden>
+          <div class="aoi-estimate-row">
+            <span>Estimated build</span>
+            <b id="aoi-estimate-size">-</b>
+          </div>
+          <p id="aoi-estimate-detail"></p>
+          <p id="aoi-estimate-warning" class="system-warning" hidden></p>
         </div>
 
         <div class="draw-actions">
@@ -155,9 +177,9 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <!-- Shell safety/status layer: loads first so it can observe AOI clicks. -->
+  <script src="/init-shell.js"></script>
   <!-- Unchanged engine: all map drawing + build orchestration. -->
   <script src="/init.js"></script>
-  <!-- Presentation-only enhancement: drives stepper + manifest from existing DOM. -->
-  <script src="/init-shell.js"></script>
 </body>
 </html>

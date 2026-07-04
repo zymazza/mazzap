@@ -1,14 +1,15 @@
-/* VEIL new-twin setup — default shell enhancement.
-   Presentation-only. /init.js owns all behaviour; this file only reflects the
-   state it already exposes — status text, the build log, the point count, the
-   layer dialog, and the per-layer `veil-scan` CustomEvents — into the stepper,
-   status pill, build manifest, on-map hint, and the live scan feed. It never
-   drives the build itself. Loaded by init.html after /init.js. */
+/* VEIL new-twin setup — shell enhancement.
+   /init.js still owns map drawing, layer scans, and build orchestration. This
+   layer reflects that state into the stepper/live feed and adds system + AOI
+   safety checks around the init flow. */
 (function () {
   const $ = (id) => document.getElementById(id);
 
   const hint = $('map-hint');
   const pointCount = $('point-count');
+  const setButton = $('set-aoi');
+  const undoButton = $('undo-point');
+  const clearButton = $('clear-aoi');
   const statusLabel = $('status-label');
   const statusPill = $('status-pill');
   const viewerLink = $('viewer-link');
@@ -16,6 +17,21 @@
   const dialog = $('layer-dialog');
   const steps = Array.from(document.querySelectorAll('.step'));
   const manifestItems = Array.from(document.querySelectorAll('#manifest-list li'));
+
+  // system safety status
+  const systemState = $('system-check-state');
+  const systemDisk = $('system-disk');
+  const systemRam = $('system-ram');
+  const systemGdal = $('system-gdal');
+  const systemWarning = $('system-warning');
+
+  // AOI disk estimate
+  const aoiEstimate = $('aoi-estimate');
+  const aoiEstimateSize = $('aoi-estimate-size');
+  const aoiEstimateDetail = $('aoi-estimate-detail');
+  const aoiEstimateWarning = $('aoi-estimate-warning');
+  const buildWithoutLayers = $('build-without-layers');
+  const buildWithLayers = $('build-with-layers');
 
   // scan feed
   const scanCard = $('scan-feed') && document.querySelector('.scan-card');
@@ -30,12 +46,268 @@
   const buildElapsed = $('build-elapsed');
 
   const STEP_ORDER = ['locate', 'layers', 'build'];
+  const USA_BOUNDS = {
+    minLat: 24.396308,
+    maxLat: 49.384358,
+    minLon: -124.848974,
+    maxLon: -66.885444,
+  };
+  const rawFetch = window.fetch ? window.fetch.bind(window) : null;
 
   function statusText() {
     return (statusLabel ? statusLabel.textContent : '').trim();
   }
   function dialogOpen() {
     return !!dialog && (dialog.open || dialog.hasAttribute('open'));
+  }
+  function formatBytes(bytes) {
+    const n = Number(bytes);
+    if (!Number.isFinite(n) || n < 0) return 'unknown';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let value = n;
+    let idx = 0;
+    while (value >= 1024 && idx < units.length - 1) {
+      value /= 1024;
+      idx += 1;
+    }
+    return idx === 0 ? `${Math.round(value)} ${units[idx]}` : `${value.toFixed(1)} ${units[idx]}`;
+  }
+  function formatArea(areaKm2) {
+    const n = Number(areaKm2);
+    if (!Number.isFinite(n) || n <= 0) return 'unknown area';
+    if (n < 0.01) return `${(n * 100).toFixed(2)} ha`;
+    if (n < 1) return `${n.toFixed(3)} km2`;
+    return `${n.toFixed(1)} km2`;
+  }
+  function setSystemState(text, cls) {
+    if (!systemState) return;
+    systemState.textContent = text;
+    systemState.classList.toggle('is-ok', cls === 'ok');
+    systemState.classList.toggle('is-warn', cls === 'warn');
+    systemState.classList.toggle('is-error', cls === 'error');
+  }
+  function renderSystemCheck(payload) {
+    const warnings = Array.isArray(payload && payload.warnings) ? payload.warnings : [];
+    if (systemDisk) {
+      const free = payload && payload.disk ? payload.disk.free_bytes : null;
+      systemDisk.textContent = Number.isFinite(Number(free)) ? `${formatBytes(free)} free` : 'Unknown';
+    }
+    if (systemRam) {
+      const mem = payload && payload.memory ? payload.memory : {};
+      const free = Number(mem.free_bytes);
+      const total = Number(mem.total_bytes);
+      systemRam.textContent = Number.isFinite(free) && Number.isFinite(total)
+        ? `${formatBytes(free)} / ${formatBytes(total)}` : 'Unknown';
+    }
+    if (systemGdal) {
+      const gdal = payload && payload.tools ? payload.tools.gdal : null;
+      systemGdal.textContent = gdal && gdal.ok ? (gdal.version || 'OK') : 'Missing';
+    }
+    if (!payload || payload.ok === false) setSystemState('Check failed', 'error');
+    else setSystemState(warnings.length ? 'Review' : 'OK', warnings.length ? 'warn' : 'ok');
+    if (systemWarning) {
+      systemWarning.textContent = warnings.join(' ');
+      systemWarning.hidden = warnings.length === 0;
+    }
+  }
+  async function loadSystemCheck() {
+    if (!rawFetch || !systemState) return;
+    setSystemState('Checking', '');
+    try {
+      const res = await rawFetch('/api/system-check');
+      const payload = await res.json();
+      if (!res.ok) throw new Error(payload.error || 'system check unavailable');
+      renderSystemCheck(payload);
+    } catch (err) {
+      setSystemState('Unavailable', 'error');
+      if (systemWarning) {
+        systemWarning.textContent = err.message || 'System check unavailable';
+        systemWarning.hidden = false;
+      }
+    }
+  }
+
+  let latestEstimate = null;
+  function syncBuildButtonsWithEstimate() {
+    const blocked = !!(latestEstimate && (latestEstimate.blocked || latestEstimate.ok === false));
+    const advisory = latestEstimate && latestEstimate.advisory ? latestEstimate.advisory : '';
+    if (setButton) {
+      if (blocked) setButton.disabled = true;
+      setButton.title = blocked ? advisory : '';
+    }
+    [buildWithoutLayers, buildWithLayers].forEach((button) => {
+      if (!button) return;
+      if (blocked) button.disabled = true;
+      button.title = blocked ? advisory : '';
+    });
+  }
+  function renderEstimate(payload, pending) {
+    if (!aoiEstimate) return;
+    if (!payload && !pending) {
+      latestEstimate = null;
+      aoiEstimate.hidden = true;
+      aoiEstimate.classList.remove('is-warn', 'is-blocked');
+      syncBuildButtonsWithEstimate();
+      return;
+    }
+    aoiEstimate.hidden = false;
+    if (pending) {
+      aoiEstimate.classList.remove('is-warn', 'is-blocked');
+      if (aoiEstimateSize) aoiEstimateSize.textContent = 'Estimating';
+      if (aoiEstimateDetail) aoiEstimateDetail.textContent = 'Checking disk footprint for this AOI.';
+      if (aoiEstimateWarning) aoiEstimateWarning.hidden = true;
+      return;
+    }
+    latestEstimate = payload;
+    const blocked = !!(payload.blocked || payload.ok === false);
+    const hasWarning = !!payload.advisory;
+    aoiEstimate.classList.toggle('is-warn', hasWarning && !blocked);
+    aoiEstimate.classList.toggle('is-blocked', blocked);
+    if (aoiEstimateSize) {
+      aoiEstimateSize.textContent = Number.isFinite(Number(payload.est_bytes))
+        ? formatBytes(payload.est_bytes) : 'Unknown';
+    }
+    if (aoiEstimateDetail) {
+      const freeAfter = Number(payload.projected_free_bytes);
+      const freeNow = Number(payload.disk_free_bytes);
+      const freeText = Number.isFinite(freeAfter)
+        ? `${formatBytes(Math.max(0, freeAfter))} free after build`
+        : Number.isFinite(freeNow) ? `${formatBytes(freeNow)} free now` : 'disk space unknown';
+      aoiEstimateDetail.textContent = `${formatArea(payload.area_km2)} AOI; ${freeText}.`;
+    }
+    if (aoiEstimateWarning) {
+      aoiEstimateWarning.textContent = payload.advisory || '';
+      aoiEstimateWarning.hidden = !payload.advisory;
+    }
+    syncBuildButtonsWithEstimate();
+  }
+
+  let trackedPoints = [];
+  let estimateTimer = null;
+  let estimateSeq = 0;
+
+  function pointInsideSupportedUsa(point) {
+    const lat = Number(point && point.lat);
+    const lng = Number(point && point.lng);
+    return Number.isFinite(lat) && Number.isFinite(lng)
+      && lat >= USA_BOUNDS.minLat && lat <= USA_BOUNDS.maxLat
+      && lng >= USA_BOUNDS.minLon && lng <= USA_BOUNDS.maxLon;
+  }
+  function estimateCoordinates() {
+    return trackedPoints.map((point) => [
+      Number(point.lng.toFixed(7)),
+      Number(point.lat.toFixed(7)),
+    ]);
+  }
+  async function requestEstimate(coordinates) {
+    if (!rawFetch || !Array.isArray(coordinates) || coordinates.length < 3) {
+      renderEstimate(null);
+      return;
+    }
+    const seq = ++estimateSeq;
+    renderEstimate(null, true);
+    try {
+      const res = await rawFetch('/api/init-estimate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ coordinates }),
+      });
+      const payload = await res.json();
+      if (seq !== estimateSeq) return;
+      if (!res.ok) throw new Error(payload.error || 'estimate failed');
+      renderEstimate(payload);
+    } catch (err) {
+      if (seq !== estimateSeq) return;
+      renderEstimate({
+        ok: true,
+        blocked: false,
+        area_km2: null,
+        est_bytes: null,
+        disk_free_bytes: null,
+        projected_free_bytes: null,
+        advisory: `Build size could not be estimated: ${err.message || err}. Keep the AOI small.`,
+      });
+    }
+  }
+  function scheduleEstimate() {
+    clearTimeout(estimateTimer);
+    if (trackedPoints.length < 3) {
+      estimateSeq += 1;
+      renderEstimate(null);
+      return;
+    }
+    estimateTimer = setTimeout(() => requestEstimate(estimateCoordinates()), 250);
+  }
+  function replaceTrackedCoordinates(coordinates) {
+    if (!Array.isArray(coordinates)) return;
+    trackedPoints = coordinates
+      .filter((point) => Array.isArray(point) && point.length >= 2)
+      .map((point) => ({ lng: Number(point[0]), lat: Number(point[1]) }))
+      .filter((point) => Number.isFinite(point.lng) && Number.isFinite(point.lat));
+    scheduleEstimate();
+  }
+  function installAoiTracker() {
+    if (window.L && window.L.Map && !window.L.Map.prototype._veilSafetyHooked) {
+      const originalFire = window.L.Map.prototype.fire;
+      window.L.Map.prototype.fire = function patchedFire(type, data, propagate) {
+        if (type === 'click' && data && pointInsideSupportedUsa(data.latlng)) {
+          trackedPoints.push({ lat: Number(data.latlng.lat), lng: Number(data.latlng.lng) });
+          scheduleEstimate();
+        }
+        return originalFire.call(this, type, data, propagate);
+      };
+      window.L.Map.prototype._veilSafetyHooked = true;
+    }
+    if (undoButton) {
+      undoButton.addEventListener('click', () => {
+        if (trackedPoints.length) trackedPoints.pop();
+        scheduleEstimate();
+      });
+    }
+    if (clearButton) {
+      clearButton.addEventListener('click', () => {
+        trackedPoints = [];
+        scheduleEstimate();
+      });
+    }
+  }
+  function fetchPath(input) {
+    const raw = typeof input === 'string' ? input : input && input.url;
+    if (!raw) return '';
+    try { return new URL(raw, window.location.href).pathname; } catch (_err) { return ''; }
+  }
+  function requestCoordinatesFromInit(init) {
+    const body = init && init.body;
+    if (typeof body !== 'string') return null;
+    try {
+      const payload = JSON.parse(body);
+      return Array.isArray(payload.coordinates) ? payload.coordinates : null;
+    } catch (_err) {
+      return null;
+    }
+  }
+  function installFetchObserver() {
+    if (!rawFetch || window.fetch._veilSafetyObserved) return;
+    window.fetch = async function observedFetch(input, init) {
+      const pathname = fetchPath(input);
+      const coordinates = requestCoordinatesFromInit(init);
+      if (coordinates && (
+        pathname === '/api/init-layer-scan'
+        || pathname === '/api/init-layer-scan-stream'
+        || pathname === '/api/init-aoi'
+      )) {
+        replaceTrackedCoordinates(coordinates);
+      }
+      const response = await rawFetch(input, init);
+      if (pathname === '/api/init-aoi') {
+        response.clone().json().then((payload) => {
+          const estimate = payload && payload.estimate ? payload.estimate : payload;
+          if (estimate && (estimate.est_bytes || estimate.advisory)) renderEstimate(estimate);
+        }).catch(() => {});
+      }
+      return response;
+    };
+    window.fetch._veilSafetyObserved = true;
   }
 
   function readPhase() {
@@ -120,6 +392,7 @@
     syncManifest(state);
     syncHint();
     syncBuild(state);
+    syncBuildButtonsWithEstimate();
   }
 
   // ---- live scan feed (driven by /init.js's veil-scan events) ----------
@@ -188,6 +461,10 @@
         : 'No optional national layers reported features here. The base twin still builds.';
     }
   }
+
+  installAoiTracker();
+  installFetchObserver();
+  loadSystemCheck();
 
   window.addEventListener('veil-scan', (e) => {
     const d = e.detail || {};
