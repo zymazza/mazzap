@@ -12,8 +12,8 @@ contract used by fetch_nato.py:
   provenance() -> dict
   attribution() -> list[str]
 
-The Netherlands, Norway, Spain, Belgium, Czechia, Denmark, and France are
-implemented in this pack slice. The other NATO members are intentionally
+The Netherlands, Norway, Spain, Belgium, Czechia, Denmark, Estonia, Finland,
+France, Latvia, and Luxembourg are implemented in this pack slice. The other NATO members are intentionally
 present as stubs so the CLI can fail clearly instead of silently guessing a
 national source.
 """
@@ -152,10 +152,34 @@ def _load_dk():
     return DenmarkAdapter()
 
 
+def _load_ee():
+    from .ee import EstoniaAdapter
+
+    return EstoniaAdapter()
+
+
+def _load_fi():
+    from .fi import FinlandAdapter
+
+    return FinlandAdapter()
+
+
 def _load_fr():
     from .fr import FranceAdapter
 
     return FranceAdapter()
+
+
+def _load_lv():
+    from .lv import LatviaAdapter
+
+    return LatviaAdapter()
+
+
+def _load_lu():
+    from .lu import LuxembourgAdapter
+
+    return LuxembourgAdapter()
 
 
 def get_adapter(code):
@@ -175,8 +199,16 @@ def get_adapter(code):
         adapter = _load_cz()
     elif key == "DK":
         adapter = _load_dk()
+    elif key == "EE":
+        adapter = _load_ee()
+    elif key == "FI":
+        adapter = _load_fi()
     elif key == "FR":
         adapter = _load_fr()
+    elif key == "LV":
+        adapter = _load_lv()
+    elif key == "LU":
+        adapter = _load_lu()
     elif key in _MEMBERS:
         adapter = _stub(key)
     else:

@@ -25,9 +25,23 @@ Implemented now:
   Klimadatastyrelsen DHM token access: Copernicus GLO-30 terrain,
   forest-masked ETH canopy, Sentinel-2 RGB+NIR, and Copernicus HRL Dominant
   Leaf Type typing.
+- Estonia (`EE`/`EST`) working adapter: checked Maa-amet / Maa- ja Ruumiamet
+  height services, uses fallback terrain/CHM because no anonymous numeric
+  DTM+DSM WCS was reachable, and uses Maa-amet RGB+CIR orthophoto WMS when
+  reachable.
+- Finland (`FI`/`FIN`) working fallback adapter: checked NLS/Maanmittauslaitos
+  2 m DEM, orthophoto/CIR WCS/WMS, and OGC API routes, but anonymous requests
+  returned `401`; fallback terrain/CHM and Sentinel-2 imagery are used.
 - France (`FR`/`FRA`) national Tier-A path: IGN Géoplateforme WMS-R RGE ALTI
   high-resolution MNT terrain, high-resolution MNS surface, BD ORTHO RGB,
   ORTHO IRC NIR, and Copernicus HRL Dominant Leaf Type typing.
+- Latvia (`LV`/`LVA`) working fallback adapter: checked LGIA open DTM, LAS,
+  RGB orthophoto, and infrared orthophoto file routes; DSM-from-LAS assembly is
+  too heavy for unattended builds, so fallback terrain/CHM and Sentinel-2 are
+  used.
+- Luxembourg (`LU`/`LUX`) national terrain path: ACT / data.public.lu BD-L-MNT
+  1 m terrain, geoportail.lu RGB and infrared orthophoto WMS, forest-masked ETH
+  canopy fallback for CHM because the 2019 MNS ZIP is open but about 27 GB.
 - Global Tier-C fallback for registered countries without a national adapter:
   Copernicus GLO-30 terrain, ETH Global Canopy Height, Sentinel-2 RGB+NIR, and
   global/continental forest typing.
@@ -149,6 +163,62 @@ python3 packs/nato/fetch_nato.py \
   --data-dir twins/fr-fontainebleau/data \
   --resolution 1 \
   --name "Fontainebleau Forest, France" \
+  --force
+```
+
+## Build The Estonia Demo
+
+The Järvselja demo uses a forested AOI in EPSG:3301 coverage.
+
+```bash
+python3 packs/nato/fetch_nato.py \
+  --country EE \
+  --aoi 27.306,58.276,27.314,58.280 \
+  --data-dir twins/ee-jarvselja/data \
+  --resolution 10 \
+  --name "Jarvselja, Estonia" \
+  --force
+```
+
+## Build The Finland Demo
+
+The Nuuksio demo uses a conifer-dominant boreal forest AOI.
+
+```bash
+python3 packs/nato/fetch_nato.py \
+  --country FI \
+  --aoi 24.506,60.303,24.515,60.307 \
+  --data-dir twins/fi-nuuksio/data \
+  --resolution 10 \
+  --name "Nuuksio, Finland" \
+  --force
+```
+
+## Build The Latvia Demo
+
+The Gauja demo uses a forested AOI in EPSG:3059 coverage.
+
+```bash
+python3 packs/nato/fetch_nato.py \
+  --country LV \
+  --aoi 24.920,57.280,24.928,57.284 \
+  --data-dir twins/lv-gauja/data \
+  --resolution 10 \
+  --name "Gauja Forest, Latvia" \
+  --force
+```
+
+## Build The Luxembourg Demo
+
+The Gréngewald demo uses ACT/data.public.lu national terrain in EPSG:2169.
+
+```bash
+python3 packs/nato/fetch_nato.py \
+  --country LU \
+  --aoi 6.147,49.670,6.154,49.674 \
+  --data-dir twins/lu-grengewald/data \
+  --resolution 2 \
+  --name "Grengewald, Luxembourg" \
   --force
 ```
 
@@ -526,6 +596,124 @@ Attribution:
 - Dominant Leaf Type: Copernicus HRL Dominant Leaf Type 2018
   (European Environment Agency / Copernicus Land Monitoring Service).
 
+## Estonia Sources
+
+National status:
+
+- Maa-amet / Maa- ja Ruumiamet WMS/WFS/WCS service catalog:
+  `https://geoportaal.maaamet.ee/est/teenused/wms-wfs-wcs-teenused-p65.html`
+- Orthophoto/CIR WMS:
+  `https://kaart.maaamet.ee/wms/alus`
+- RGB layer: `of10000`
+- CIR-NGR layer: `cir_ngr`
+- Height display WMS:
+  `https://kaart.maaamet.ee/wms/fotokaart`
+- Checked DTM/DSM WCS routes did not expose an anonymous numeric terrain and
+  surface coverage from this environment. Terrain/CHM therefore use GLO-30 plus
+  forest-masked ETH canopy.
+
+Attribution:
+
+- National imagery/elevation services checked: © Maa-amet (Estonia).
+- Terrain fallback: Copernicus DEM GLO-30, European Space Agency / DLR.
+- Imagery fallback: modified Copernicus Sentinel data via Element84 Earth
+  Search.
+- Canopy fallback: ETH Global Canopy Height 2020, Lang, Schindler and Wegner,
+  CC-BY 4.0.
+- Dominant Leaf Type: Copernicus HRL Dominant Leaf Type 2018
+  (European Environment Agency / Copernicus Land Monitoring Service).
+
+## Finland Sources
+
+National status:
+
+- NLS 2 m DEM product page:
+  `https://www.maanmittauslaitos.fi/en/maps-and-spatial-data/datasets-and-interfaces/product-descriptions/elevation-model-2-m`
+- NLS orthophoto product page:
+  `https://www.maanmittauslaitos.fi/en/maps-and-spatial-data/datasets-and-interfaces/product-descriptions/orthophotos`
+- Checked WCS:
+  `https://avoin-karttakuva.maanmittauslaitos.fi/ortokuvat-ja-korkeusmallit/wcs/v2?service=WCS&request=GetCapabilities`
+- Checked WMS:
+  `https://avoin-karttakuva.maanmittauslaitos.fi/ortokuvat-ja-korkeusmallit/wms/v1?service=WMS&request=GetCapabilities&version=1.3.0`
+- Checked OGC API Processes file service:
+  `https://avoin-paikkatieto.maanmittauslaitos.fi/tiedostopalvelu/ogcproc/v1/`
+- Anonymous requests to those interfaces returned `401` here. Terrain/CHM use
+  GLO-30 plus forest-masked ETH canopy, and imagery uses Sentinel-2 RGB+NIR.
+
+Attribution:
+
+- National sources checked: © Maanmittauslaitos/NLS (Finland).
+- Terrain fallback: Copernicus DEM GLO-30, European Space Agency / DLR.
+- Imagery: modified Copernicus Sentinel data via Element84 Earth Search.
+- Canopy fallback: ETH Global Canopy Height 2020, Lang, Schindler and Wegner,
+  CC-BY 4.0.
+- Dominant Leaf Type: Copernicus HRL Dominant Leaf Type 2018
+  (European Environment Agency / Copernicus Land Monitoring Service).
+
+## Latvia Sources
+
+National status:
+
+- LGIA open-data catalog:
+  `https://www.lgia.gov.lv/lv/atvertie-dati`
+- 20 m DTM:
+  `https://s3.storage.pub.lvdc.gov.lv/lgia-opendata/citi/dtm/DTM_Latvija_20m.7z`
+- Classified LAS tile list:
+  `https://s3.storage.pub.lvdc.gov.lv/lgia-opendata/las/LGIA_OpenData_las_saites.txt`
+- RGB orthophoto tile list:
+  `http://s3.storage.pub.lvdc.gov.lv/lgia-opendata/ortofoto_rgb_v6/LGIA_OpenData_Ortofoto_rgb_v6_saites.txt`
+- Infrared orthophoto tile list:
+  `http://s3.storage.pub.lvdc.gov.lv/lgia-opendata/ortofoto_ir_v6/LGIA_OpenData_Ortofoto_ir_v6_saites.txt`
+- No anonymous national DTM+DSM WCS was found. DSM-from-LAS assembly is possible
+  in principle but too heavy for unattended demo builds, so terrain/CHM use
+  GLO-30 plus forest-masked ETH canopy and imagery uses Sentinel-2 RGB+NIR.
+
+Attribution:
+
+- National sources checked: © Latvijas Geotelpiskas informacijas agentura
+  (LGIA).
+- Terrain fallback: Copernicus DEM GLO-30, European Space Agency / DLR.
+- Imagery: modified Copernicus Sentinel data via Element84 Earth Search.
+- Canopy fallback: ETH Global Canopy Height 2020, Lang, Schindler and Wegner,
+  CC-BY 4.0.
+- Dominant Leaf Type: Copernicus HRL Dominant Leaf Type 2018
+  (European Environment Agency / Copernicus Land Monitoring Service).
+
+## Luxembourg Sources
+
+Elevation:
+
+- ACT/data.public.lu BD-L-MNT-1m terrain JP2:
+  `https://download.data.public.lu/resources/bd-l-mnt-1m/20180529-134853/EL.ElevationGridCoverage.jp2`
+- Checked 2019 LiDAR MNT ZIP:
+  `https://s3.eu-central-1.amazonaws.com/download.data.public.lu/resources/lidar-2019-modele-numerique-du-terrain/20200121-082330/ACT2019_MNT_EPSG2169.zip`
+- Checked 2019 LiDAR MNS ZIP:
+  `https://s3.eu-central-1.amazonaws.com/download.data.public.lu/resources/lidar-2019-modele-numerique-de-la-surface/20200120-105130/ACT2019_MNS_EPSG2169.zip`
+- CRS: `EPSG:2169` for the adapter output.
+- The 2019 MNT/MNS ZIPs are numeric and open, but about 27 GB each. Remote
+  range-opening the internal TIFF timed out in unattended checks, so CHM uses
+  forest-masked ETH canopy over national terrain.
+
+Imagery:
+
+- geoportail.lu open WMS:
+  `https://wms.geoportail.lu/opendata/service`
+- RGB layer: `ortho_latest`
+- Infrared layer: `ortho_irc`
+- Band order assembled by the adapter: `R,G,B,NIR`, with NIR copied from the
+  infrared orthophoto first band.
+
+Attribution:
+
+- Elevation and imagery: © ACT / Administration du cadastre et de la
+  topographie (Luxembourg), data.public.lu / geoportail.lu.
+- Imagery fallback: modified Copernicus Sentinel data via Element84 Earth
+  Search.
+- Canopy fallback: ETH Global Canopy Height 2020, Lang, Schindler and Wegner,
+  CC-BY 4.0.
+- Dominant Leaf Type: Copernicus HRL Dominant Leaf Type 2018
+  (European Environment Agency / Copernicus Land Monitoring Service).
+
 ## Shared Forest Typing Sources
 
 `packs/nato/adapters/eea.py` is the continental default for European NATO AOIs
@@ -646,6 +834,13 @@ Real in this pack:
 - Spain IGN/CNIG PNOA-LiDAR MDT terrain, with ETH Global Canopy Height CHM
   fallback because no open national MDS/DSM WCS was reachable.
 - Spain PNOA RGB imagery plus Sentinel-2 NIR fallback for `false_color.png`.
+- Estonia Maa-amet RGB+CIR imagery when reachable, with fallback terrain/CHM.
+- Finland fallback terrain/CHM and Sentinel-2 imagery after NLS anonymous
+  endpoints returned `401`.
+- Latvia fallback terrain/CHM and Sentinel-2 imagery after checking LGIA open
+  file routes.
+- Luxembourg ACT/data.public.lu national terrain, geoportail.lu RGB/infrared
+  imagery, and ETH canopy fallback for CHM.
 - Copernicus HRL Dominant Leaf Type over the EEA/European HRL domain for real
   broadleaf/conifer/no-tree typing.
 - ESA WorldCover global tree-mask fallback for non-EEA AOIs. This is coarse and
