@@ -1193,6 +1193,66 @@ function initModeEnabled() {
   return HOSTED_MODE || process.env.VEIL_INIT === '1';
 }
 
+let initNatoMembersCache = null;
+function initNatoMembers() {
+  if (initNatoMembersCache) return initNatoMembersCache;
+  const byAlpha2 = new Map();
+  const byAlpha3 = new Map();
+  try {
+    const pack = readJsonFile(path.join(ROOT, 'packs', 'nato', 'pack.json'), {});
+    const members = Array.isArray(pack.members) ? pack.members : [];
+    for (const member of members) {
+      const alpha2 = String(member.alpha2 || '').trim().toUpperCase();
+      const alpha3 = String(member.alpha3 || '').trim().toUpperCase();
+      if (!/^[A-Z]{2}$/.test(alpha2) || !/^[A-Z]{3}$/.test(alpha3)) continue;
+      const normalized = {
+        alpha2,
+        alpha3,
+        name: String(member.name || alpha2).trim() || alpha2,
+        tier: String(member.tier || '').trim().toUpperCase() || null,
+      };
+      byAlpha2.set(alpha2, normalized);
+      byAlpha3.set(alpha3, normalized);
+    }
+  } catch (_err) { /* fallback below */ }
+  if (!byAlpha2.size) {
+    for (const [alpha2, alpha3, name] of [
+      ['AL', 'ALB', 'Albania'], ['BE', 'BEL', 'Belgium'], ['BG', 'BGR', 'Bulgaria'],
+      ['CA', 'CAN', 'Canada'], ['HR', 'HRV', 'Croatia'], ['CZ', 'CZE', 'Czechia'],
+      ['DK', 'DNK', 'Denmark'], ['EE', 'EST', 'Estonia'], ['FI', 'FIN', 'Finland'],
+      ['FR', 'FRA', 'France'], ['DE', 'DEU', 'Germany'], ['GR', 'GRC', 'Greece'],
+      ['HU', 'HUN', 'Hungary'], ['IS', 'ISL', 'Iceland'], ['IT', 'ITA', 'Italy'],
+      ['LV', 'LVA', 'Latvia'], ['LT', 'LTU', 'Lithuania'], ['LU', 'LUX', 'Luxembourg'],
+      ['ME', 'MNE', 'Montenegro'], ['MK', 'MKD', 'North Macedonia'], ['NL', 'NLD', 'Netherlands'],
+      ['NO', 'NOR', 'Norway'], ['PL', 'POL', 'Poland'], ['PT', 'PRT', 'Portugal'],
+      ['RO', 'ROU', 'Romania'], ['SK', 'SVK', 'Slovakia'], ['SI', 'SVN', 'Slovenia'],
+      ['ES', 'ESP', 'Spain'], ['SE', 'SWE', 'Sweden'], ['TR', 'TUR', 'Turkey'],
+      ['GB', 'GBR', 'United Kingdom'], ['US', 'USA', 'United States'],
+    ]) {
+      const member = { alpha2, alpha3, name, tier: null };
+      byAlpha2.set(alpha2, member);
+      byAlpha3.set(alpha3, member);
+    }
+  }
+  initNatoMembersCache = { byAlpha2, byAlpha3 };
+  return initNatoMembersCache;
+}
+
+function normalizeInitCountry(value) {
+  const raw = String(value || 'US').trim().toUpperCase();
+  const key = raw === 'UK' ? 'GB' : raw;
+  const members = initNatoMembers();
+  const member = members.byAlpha2.get(key) || members.byAlpha3.get(key);
+  if (!member) {
+    throw new Error(`${raw || 'country'} is not a supported NATO country code`);
+  }
+  return member;
+}
+
+function initCountryFromBody(body) {
+  return normalizeInitCountry(body && body.country);
+}
+
 function bytesLabel(bytes) {
   const n = Number(bytes);
   if (!Number.isFinite(n) || n < 0) return 'unknown';
@@ -1673,6 +1733,34 @@ function normalizeCensusAddressMatches(payload) {
   return out;
 }
 
+function normalizeNominatimMatches(payload) {
+  const rows = Array.isArray(payload) ? payload : [];
+  const out = [];
+  for (const row of rows) {
+    const lon = Number(row && row.lon);
+    const lat = Number(row && row.lat);
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+    if (lon < -180 || lon > 180 || lat < -90 || lat > 90) continue;
+    const bbox = Array.isArray(row.boundingbox) && row.boundingbox.length >= 4
+      ? [
+        Number(row.boundingbox[2]),
+        Number(row.boundingbox[0]),
+        Number(row.boundingbox[3]),
+        Number(row.boundingbox[1]),
+      ] : null;
+    out.push({
+      label: String(row.display_name || '').trim() || `${lat.toFixed(6)}, ${lon.toFixed(6)}`,
+      lon,
+      lat,
+      bbox: bbox && bbox.every((n) => Number.isFinite(n)) ? bbox : null,
+      country_code: String(row.address && row.address.country_code || '').toUpperCase() || null,
+      components: row.address && typeof row.address === 'object' ? row.address : {},
+    });
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
 async function handleInitAddressSearch(req, res, searchParams) {
   if (!initModeEnabled()) {
     return send(res, 404, JSON.stringify({ ok: false, error: 'init mode is not enabled' }),
@@ -1682,6 +1770,64 @@ async function handleInitAddressSearch(req, res, searchParams) {
   if (query.length < 3) {
     return send(res, 400, JSON.stringify({ ok: false, error: 'enter at least 3 characters' }),
       { 'Content-Type': 'application/json' });
+  }
+
+  let country;
+  try {
+    country = normalizeInitCountry(searchParams.get('country'));
+  } catch (e) {
+    return send(res, 400, JSON.stringify({ ok: false, error: e.message }),
+      { 'Content-Type': 'application/json' });
+  }
+
+  if (country.alpha2 !== 'US') {
+    const upstream = new URL('https://nominatim.openstreetmap.org/search');
+    upstream.searchParams.set('q', query);
+    upstream.searchParams.set('format', 'jsonv2');
+    upstream.searchParams.set('addressdetails', '1');
+    upstream.searchParams.set('limit', '8');
+    upstream.searchParams.set('countrycodes', country.alpha2.toLowerCase());
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+      const upstreamRes = await fetch(upstream, {
+        signal: controller.signal,
+        headers: { 'User-Agent': 'VEIL init address search (https://github.com/zymazza/mazzap)' },
+      });
+      const text = await upstreamRes.text();
+      if (!upstreamRes.ok) {
+        return send(res, 502, JSON.stringify({
+          ok: false,
+          error: `place search exited ${upstreamRes.status}`,
+          detail: text.slice(0, 600),
+        }), { 'Content-Type': 'application/json' });
+      }
+      let payload;
+      try {
+        payload = JSON.parse(text);
+      } catch (_err) {
+        return send(res, 502, JSON.stringify({
+          ok: false,
+          error: 'place search returned invalid JSON',
+          detail: text.slice(0, 600),
+        }), { 'Content-Type': 'application/json' });
+      }
+      return send(res, 200, JSON.stringify({
+        ok: true,
+        query,
+        country,
+        results: normalizeNominatimMatches(payload),
+      }), { 'Content-Type': 'application/json' });
+    } catch (err) {
+      const aborted = err && err.name === 'AbortError';
+      return send(res, 502, JSON.stringify({
+        ok: false,
+        error: aborted ? 'place search timed out' : `place search failed: ${err.message || err}`,
+      }), { 'Content-Type': 'application/json' });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   const upstream = new URL('https://geocoding.geo.census.gov/geocoder/locations/onelineaddress');
@@ -1799,11 +1945,21 @@ function handleInitLayerScan(req, res) {
         { 'Content-Type': 'application/json' });
     }
     let coordinates;
+    let country;
     try {
       coordinates = normalizeInitCoordinates(body.coordinates);
+      country = initCountryFromBody(body);
     } catch (e) {
       return send(res, 400, JSON.stringify({ ok: false, error: e.message }),
         { 'Content-Type': 'application/json' });
+    }
+    if (country.alpha2 !== 'US') {
+      return send(res, 200, JSON.stringify({
+        ok: true,
+        country,
+        layers: [],
+        note: 'Optional US national-layer scan skipped; NATO builds add available national, continental, and global atlas layers during the build.',
+      }), { 'Content-Type': 'application/json' });
     }
     const dataDir = requestDataDir(req, res);
     const scanDir = path.join(dataDir, 'init');
@@ -1875,11 +2031,30 @@ function handleInitLayerScanStream(req, res) {
         { 'Content-Type': 'application/json' });
     }
     let coordinates;
+    let country;
     try {
       coordinates = normalizeInitCoordinates(body.coordinates);
+      country = initCountryFromBody(body);
     } catch (e) {
       return send(res, 400, JSON.stringify({ ok: false, error: e.message }),
         { 'Content-Type': 'application/json' });
+    }
+    if (country.alpha2 !== 'US') {
+      res.writeHead(200, {
+        'Content-Type': 'application/x-ndjson',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      });
+      res.write(`${JSON.stringify({ event: 'start', total: 0, country })}\n`);
+      res.write(`${JSON.stringify({
+        event: 'done',
+        ok: true,
+        layers: [],
+        country,
+        note: 'Optional US national-layer scan skipped; NATO builds add available national, continental, and global atlas layers during the build.',
+      })}\n`);
+      res.end();
+      return;
     }
     const dataDir = requestDataDir(req, res);
     const scanDir = path.join(dataDir, 'init');
@@ -1955,8 +2130,10 @@ function handleInitAoi(req, res) {
         { 'Content-Type': 'application/json' });
     }
     let coordinates;
+    let country;
     try {
       coordinates = normalizeInitCoordinates(body.coordinates);
+      country = initCountryFromBody(body);
     } catch (e) {
       return send(res, 400, JSON.stringify({ ok: false, error: e.message }),
         { 'Content-Type': 'application/json' });
@@ -1985,7 +2162,7 @@ function handleInitAoi(req, res) {
       Object.assign(job, {
         status: 'running',
         running: true,
-        logs: [`Starting ${name}`].concat(
+        logs: [`Starting ${name}`, `Country: ${country.name} (${country.alpha3})`].concat(
           estimate.advisory ? [`Disk-space advisory: ${estimate.advisory}`] : [],
           nationalLayers.length ? [`Selected optional layers: ${nationalLayers.join(', ')}`] : []),
         name,
@@ -1994,19 +2171,28 @@ function handleInitAoi(req, res) {
         exit_code: null,
       });
 
-      const args = [
+      const isUs = country.alpha2 === 'US';
+      const args = isUs ? [
         path.join(ROOT, 'scripts', 'build_from_aoi.py'),
         '--aoi', aoiPath,
         '--data-dir', dataDir,
         '--name', name,
         '--force',
+      ] : [
+        path.join(ROOT, 'packs', 'nato', 'fetch_nato.py'),
+        '--country', country.alpha2,
+        '--aoi', aoiPath,
+        '--aoi-crs', 'EPSG:4326',
+        '--data-dir', dataDir,
+        '--name', name,
+        '--force',
       ];
-      if (nationalLayers.length) {
+      if (isUs && nationalLayers.length) {
         args.push('--national-layers', nationalLayers.join(','));
       }
       const child = spawn(MCP_PYTHON, args, {
         cwd: ROOT,
-        env: { ...process.env, TWIN_DATA_DIR: dataDir, TWIN_PACK: 'us-national' },
+        env: { ...process.env, TWIN_DATA_DIR: dataDir, TWIN_PACK: isUs ? 'us-national' : 'nato' },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       child.stdout.on('data', (chunk) => appendInitLog(job, chunk));
