@@ -23,9 +23,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 
 import numpy as np
-from osgeo import gdal, osr
+from osgeo import gdal, ogr, osr
 from pyproj import Transformer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -38,6 +39,11 @@ if SCRIPTS not in sys.path:
 import twin_georef  # noqa: E402
 
 gdal.UseExceptions()
+ogr.UseExceptions()
+
+CACHE_DIR = os.path.abspath(os.environ.get(
+    "VEIL_NATO_CACHE", os.path.join(PACK_DIR, "cache")
+))
 
 DLT_SERVICE = (
     "https://image.discomap.eea.europa.eu/arcgis/rest/services/"
@@ -58,6 +64,16 @@ NATURA2000_QUERY = (
     "Natura2000/N2K_2018/MapServer/0/query"
 )
 NATURA2000_CRS = "EPSG:3857"
+ART17_DOWNLOAD = "https://sdi.eea.europa.eu/datashare/s/FsDQnwDBiqf2f88/download"
+ART17_RECORD = "https://sdi.eea.europa.eu/data/9f71b3e3-f8ec-442b-a2d5-c3c190605ac4"
+ART17_ARCHIVE = "eea_v_3035_10_mio_art17-2013-2018_p_2013-2018_v01_r00.zip"
+ART17_ROOT = "eea_v_3035_10_mio_art17-2013-2018_p_2013-2018_v01_r00"
+ART17_GDB_REL = os.path.join(
+    ART17_ROOT, "Art17-2013-2018_GDB", "art17_2013_2018_public.gdb"
+)
+ART17_SPECIES_LAYER = "Art17_species_distribution_2013_2018_EU"
+ART17_CRS = "EPSG:3035"
+ART17_NODATA = 65535
 
 # CLMS/EEA HRLs cover the EEA/EU cooperating European domain. For NATO routing
 # we treat European NATO members, including Turkiye and Iceland, as EEA-HRL
@@ -148,7 +164,8 @@ def fetch_continental_layers(aoi, out_dir, data_dir, alpha2="nato"):
     del aoi
     os.makedirs(out_dir, exist_ok=True)
     layers = []
-    for fetcher in (_fetch_clcplus_landcover, _fetch_natura2000):
+    for fetcher in (_fetch_clcplus_landcover, _fetch_natura2000,
+                    _fetch_article17_species_richness):
         try:
             layer = fetcher(out_dir, data_dir, alpha2=alpha2)
             if layer:
@@ -271,6 +288,229 @@ def _fetch_natura2000(out_dir, data_dir, alpha2="nato"):
             "Natura 2000/N2K 2018: European Environment Agency."
         ],
     }
+
+
+def _fetch_article17_species_richness(out_dir, data_dir, alpha2="nato"):
+    layer_id = "%s_eea_art17_species_richness" % (alpha2 or "nato").lower()
+    out = os.path.join(out_dir, layer_id + ".tif")
+    fetch_meta = os.path.join(out_dir, layer_id + "_fetch.json")
+    refresh = os.environ.get("VEIL_ART17_REFRESH") == "1"
+
+    grid = _grid(data_dir)
+    bounds, working_crs = _grid_bounds_abs(data_dir, grid)
+    bbox_3035 = _transform_bounds(bounds, working_crs, ART17_CRS)
+
+    if refresh:
+        for path in (out, fetch_meta):
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass
+
+    if not refresh and _raster_ok(out) and os.path.exists(fetch_meta):
+        metadata = json.load(open(fetch_meta))
+    else:
+        gdb = _article17_gdb()
+        arr, summary = _article17_species_counts(gdb, grid, bounds, working_crs, bbox_3035)
+        _write_uint16_raster(out, arr, bounds, working_crs, nodata=ART17_NODATA)
+        stats = _raster_stats(out, positive=True)
+        metadata = {
+            "status": "ok",
+            "theme": "species",
+            "source": "Habitats Directive Article 17 species distribution 2013-2018, 10 km",
+            "provider": "European Environment Agency",
+            "record": ART17_RECORD,
+            "endpoint": ART17_DOWNLOAD,
+            "archive": ART17_ARCHIVE,
+            "source_layer": ART17_SPECIES_LAYER,
+            "source_crs": ART17_CRS,
+            "grid_crs": working_crs,
+            "bbox_3035": [round(v, 3) for v in bbox_3035],
+            "raster": os.path.basename(out),
+            "statistics": stats,
+            "summary": summary,
+            "license": "EEA standard re-use policy / open data",
+            "notes": (
+                "Raster values count distinct Article 17 EU-level species codes "
+                "whose 10 km distribution geometries intersect each terrain cell. "
+                "The EU-level layer is used so species reported in multiple "
+                "biogeographical regions are counted once per cell."
+            ),
+            "fetched_at": _utcnow(),
+        }
+        json.dump(metadata, open(fetch_meta, "w"), indent=2)
+
+    return {
+        "path": out,
+        "layer_id": layer_id,
+        "label": "Protected species (EEA Article 17)",
+        "description": (
+            "Distinct Habitats Directive Article 17 Annex species distribution "
+            "count from the EEA 2013-2018 10 km grid."
+        ),
+        "uses": "EU-protected species richness context for EEA-covered NATO AOIs.",
+        "value_kind": "protected species richness",
+        "value_unit": "species",
+        "value_classification": "continuous",
+        "metadata": metadata,
+        "attribution": [
+            "Habitats Directive Article 17 species distribution 2013-2018: European Environment Agency."
+        ],
+    }
+
+
+def _article17_gdb():
+    cache_dir = os.path.join(CACHE_DIR, "eea_art17")
+    os.makedirs(cache_dir, exist_ok=True)
+    archive = os.path.join(cache_dir, ART17_ARCHIVE)
+    if not (os.path.exists(archive) and os.path.getsize(archive) > 1000000):
+        _download(ART17_DOWNLOAD, archive, timeout=900)
+    gdb = os.path.join(cache_dir, ART17_GDB_REL)
+    if not os.path.isdir(gdb):
+        marker = os.path.join(cache_dir, ART17_ROOT, ".unpacked")
+        if not os.path.exists(marker):
+            with zipfile.ZipFile(archive) as zf:
+                zf.extractall(cache_dir)
+            os.makedirs(os.path.dirname(marker), exist_ok=True)
+            with open(marker, "w") as fh:
+                fh.write(_utcnow() + "\n")
+    if not os.path.isdir(gdb):
+        raise RuntimeError("Article 17 FileGDB not found after extracting %s" % archive)
+    return gdb
+
+
+def _article17_species_counts(gdb, grid, bounds, working_crs, bbox_3035):
+    src = ogr.Open(gdb)
+    if src is None:
+        raise RuntimeError("OGR could not open Article 17 FileGDB %s" % gdb)
+    src_layer = src.GetLayerByName(ART17_SPECIES_LAYER)
+    if src_layer is None:
+        names = [src.GetLayer(i).GetName() for i in range(src.GetLayerCount())]
+        raise RuntimeError("Article 17 species layer not found; layers: %s" % names)
+
+    src_srs = src_layer.GetSpatialRef().Clone()
+    src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    dst_srs = _srs(working_crs)
+    transform = osr.CoordinateTransformation(src_srs, dst_srs)
+    mem_ds, mem_layer = _memory_species_layer(dst_srs)
+
+    pad = 10000.0
+    src_layer.SetSpatialFilterRect(
+        bbox_3035[0] - pad, bbox_3035[1] - pad,
+        bbox_3035[2] + pad, bbox_3035[3] + pad,
+    )
+    feature_count = 0
+    codes = set()
+    for feat in src_layer:
+        code = str(feat.GetField("code") or "").strip()
+        geom = feat.GetGeometryRef()
+        if not code or geom is None:
+            continue
+        geom = geom.Clone()
+        if geom.Transform(transform) != 0:
+            continue
+        out_feat = ogr.Feature(mem_layer.GetLayerDefn())
+        out_feat.SetField("code", code)
+        out_feat.SetGeometry(geom)
+        if mem_layer.CreateFeature(out_feat) == 0:
+            feature_count += 1
+            codes.add(code)
+        out_feat = None
+
+    width = int(grid["width"])
+    height = int(grid["height"])
+    counts = np.zeros((height, width), dtype=np.uint16)
+    contributing_codes = set()
+    if codes:
+        gt = (
+            bounds[0], (bounds[2] - bounds[0]) / width, 0,
+            bounds[3], 0, -(bounds[3] - bounds[1]) / height,
+        )
+        drv = gdal.GetDriverByName("MEM")
+        for code in sorted(codes):
+            mask = drv.Create("", width, height, 1, gdal.GDT_Byte)
+            mask.SetGeoTransform(gt)
+            mask.SetProjection(dst_srs.ExportToWkt())
+            mem_layer.SetAttributeFilter("code = '%s'" % code.replace("'", "''"))
+            mem_layer.ResetReading()
+            gdal.RasterizeLayer(
+                mask, [1], mem_layer, burn_values=[1], options=["ALL_TOUCHED=TRUE"]
+            )
+            arr = mask.GetRasterBand(1).ReadAsArray()
+            hit = arr > 0
+            if hit.any():
+                contributing_codes.add(code)
+            counts += hit.astype(np.uint16)
+            mask = None
+        mem_layer.SetAttributeFilter(None)
+
+    valid = counts != ART17_NODATA
+    vals = counts[valid]
+    summary = {
+        "source_features_in_spatial_filter": feature_count,
+        "distinct_species_in_spatial_filter": len(codes),
+        "distinct_species_in_grid": len(contributing_codes),
+        "valid_cells": int(valid.sum()),
+        "nonzero_cells": int((vals > 0).sum()) if vals.size else 0,
+        "max_richness": int(vals.max()) if vals.size else 0,
+    }
+    mem_ds = None
+    src = None
+    return counts, summary
+
+
+def _memory_species_layer(srs):
+    drv = ogr.GetDriverByName("MEM")
+    ds = drv.CreateDataSource("article17_species")
+    layer = ds.CreateLayer("species", srs=srs, geom_type=ogr.wkbUnknown)
+    field = ogr.FieldDefn("code", ogr.OFTString)
+    field.SetWidth(32)
+    layer.CreateField(field)
+    return ds, layer
+
+
+def _write_uint16_raster(out_path, arr, bounds, crs, nodata=None):
+    if _raster_ok(out_path):
+        return out_path
+    driver = gdal.GetDriverByName("GTiff")
+    ds = driver.Create(out_path, arr.shape[1], arr.shape[0], 1, gdal.GDT_UInt16,
+                       options=["COMPRESS=DEFLATE", "TILED=YES"])
+    ds.SetGeoTransform((
+        bounds[0], (bounds[2] - bounds[0]) / arr.shape[1], 0,
+        bounds[3], 0, -(bounds[3] - bounds[1]) / arr.shape[0],
+    ))
+    ds.SetProjection(_srs(crs).ExportToWkt())
+    band = ds.GetRasterBand(1)
+    band.WriteArray(arr)
+    if nodata is not None:
+        band.SetNoDataValue(nodata)
+    ds.FlushCache()
+    ds = None
+    return out_path
+
+
+def _raster_stats(path, positive=False):
+    ds = gdal.Open(path)
+    if ds is None:
+        return {"valid_px": 0}
+    band = ds.GetRasterBand(1)
+    arr = band.ReadAsArray().astype(float)
+    nodata = band.GetNoDataValue()
+    mask = np.isfinite(arr)
+    if nodata is not None and np.isfinite(nodata):
+        mask &= arr != float(nodata)
+    stats = {"valid_px": int(mask.sum())}
+    if stats["valid_px"]:
+        vals = arr[mask]
+        stats.update({
+            "min": round(float(vals.min()), 4),
+            "max": round(float(vals.max()), 4),
+            "mean": round(float(vals.mean()), 4),
+        })
+        if positive:
+            stats["positive_px"] = int((vals > 0).sum())
+    return stats
 
 
 def _export_image(endpoint, bbox, width, height, out_path, bbox_sr, image_sr,

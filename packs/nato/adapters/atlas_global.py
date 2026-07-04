@@ -8,6 +8,7 @@ rebuilding the whole pack.
 """
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -155,6 +156,12 @@ def fetch_hydrology_layers(out_dir, data_dir, alpha2="nato"):
 def fetch_species_layers(out_dir, data_dir, alpha2="nato"):
     os.makedirs(out_dir, exist_ok=True)
     layers = []
+    try:
+        layer = _fetch_gbif_species_richness(out_dir, data_dir, alpha2)
+        if layer:
+            layers.append(layer)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  optional GBIF species-richness layer skipped: {exc}")
     try:
         layer = _fetch_gbif_density(out_dir, data_dir, alpha2)
         if layer:
@@ -410,6 +417,229 @@ def _fetch_gbif_density(out_dir, data_dir, alpha2):
         "metadata": metadata,
         "attribution": ["GBIF occurrence density tiles, filtered to CC0/CC-BY where supported."],
     }
+
+
+def _fetch_gbif_species_richness(out_dir, data_dir, alpha2):
+    layer_id = "%s_gbif_species_richness" % (alpha2 or "nato").lower()
+    raw = os.path.join(out_dir, layer_id + "_wgs84.tif")
+    out = os.path.join(out_dir, layer_id + ".tif")
+    fetch_json = os.path.join(out_dir, layer_id + "_fetch.json")
+    refresh = os.environ.get("VEIL_GBIF_RICHNESS_REFRESH") == "1"
+
+    if refresh:
+        for path in (raw, out, fetch_json):
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass
+    if not refresh and _raster_ok(out) and os.path.exists(fetch_json):
+        metadata = json.load(open(fetch_json))
+        return _gbif_species_richness_layer(out, layer_id, metadata)
+
+    grid = _grid(data_dir)
+    bounds, working_crs = _grid_bounds_abs(data_dir, grid)
+    wgs_bbox = _pad_bbox(_transform_bounds(bounds, working_crs, "EPSG:4326"), 0.001)
+    cols, rows = _gbif_richness_grid_shape(wgs_bbox)
+    values, summary = _gbif_richness_grid(wgs_bbox, cols, rows)
+    _write_wgs84_uint16_grid(raw, values, wgs_bbox, nodata=65535)
+    _warp_raster_to_grid(
+        raw, out, grid, bounds, working_crs,
+        resample_alg="near", output_type=gdal.GDT_UInt16,
+        src_nodata=65535, dst_nodata=65535,
+    )
+    stats = _raster_stats(out, positive=True)
+    if stats.get("valid_px", 0) == 0:
+        raise RuntimeError("GBIF species-richness grid is empty over the AOI")
+    metadata = {
+        "status": "ok",
+        "theme": "species",
+        "source": "GBIF occurrence search speciesKey facets",
+        "provider": "GBIF",
+        "license_filter": ["CC0_1_0", "CC_BY_4_0"],
+        "filters": {
+            "hasCoordinate": True,
+            "facet": "speciesKey",
+            "limit": 0,
+        },
+        "endpoint": "https://api.gbif.org/v1/occurrence/search",
+        "bbox_wgs84": [round(v, 8) for v in wgs_bbox],
+        "facet_limit": summary["facet_limit"],
+        "facet_page_cap": summary["facet_page_cap"],
+        "source_grid": {"cols": cols, "rows": rows},
+        "raw": os.path.basename(raw),
+        "raster": os.path.basename(out),
+        "statistics": stats,
+        "cell_summary": summary,
+        "notes": (
+            "Each source cell stores the number of distinct GBIF speciesKey "
+            "facet buckets for licensed CC0/CC-BY occurrences with coordinates. "
+            "Cells reaching the configured facet page cap are marked in "
+            "capped_cells and should be treated as lower bounds."
+        ),
+        "fetched_at": _utcnow(),
+    }
+    _write_json(fetch_json, metadata)
+    return _gbif_species_richness_layer(out, layer_id, metadata)
+
+
+def _gbif_species_richness_layer(out, layer_id, metadata):
+    return {
+        "path": out,
+        "layer_id": layer_id,
+        "label": "Species richness (GBIF)",
+        "description": (
+            "Per-cell count of distinct GBIF speciesKey facets for licensed "
+            "CC0/CC-BY occurrence records."
+        ),
+        "uses": "Species-richness context analogous to GAP richness, derived from GBIF occurrences.",
+        "value_kind": "species richness",
+        "value_unit": "species",
+        "value_classification": "continuous",
+        "metadata": metadata,
+        "attribution": [
+            "GBIF occurrence search API, speciesKey facets filtered to CC0/CC-BY records with coordinates."
+        ],
+    }
+
+
+def _gbif_richness_grid_shape(wgs_bbox):
+    override = os.environ.get("VEIL_GBIF_RICHNESS_GRID")
+    if override:
+        parts = [p.strip() for p in override.lower().replace("x", ",").split(",") if p.strip()]
+        if len(parts) == 1:
+            cols = rows = int(parts[0])
+        elif len(parts) == 2:
+            cols, rows = int(parts[0]), int(parts[1])
+        else:
+            raise ValueError("VEIL_GBIF_RICHNESS_GRID must be N or COLSxROWS")
+        return (_clamp(cols, 2, 40), _clamp(rows, 2, 40))
+    del wgs_bbox
+    return 12, 12
+
+
+def _gbif_richness_grid(wgs_bbox, cols, rows):
+    nodata = np.uint16(65535)
+    values = np.full((rows, cols), nodata, dtype=np.uint16)
+    facet_limit = int(os.environ.get("VEIL_GBIF_RICHNESS_FACET_LIMIT", "1000"))
+    facet_page_cap = int(os.environ.get("VEIL_GBIF_RICHNESS_FACET_PAGES", "10"))
+    delay = float(os.environ.get("VEIL_GBIF_RICHNESS_DELAY", "0.15"))
+    lon0, lat0, lon1, lat1 = wgs_bbox
+    failed = []
+    capped = []
+    nonzero = 0
+    max_richness = 0
+    for row in range(rows):
+        north = lat1 - (lat1 - lat0) * row / rows
+        south = lat1 - (lat1 - lat0) * (row + 1) / rows
+        for col in range(cols):
+            west = lon0 + (lon1 - lon0) * col / cols
+            east = lon0 + (lon1 - lon0) * (col + 1) / cols
+            wkt = _bbox_wkt(west, south, east, north)
+            try:
+                count, was_capped = _gbif_species_facet_count(
+                    wkt, facet_limit=facet_limit, page_cap=facet_page_cap
+                )
+                values[row, col] = np.uint16(min(count, 65534))
+                if count > 0:
+                    nonzero += 1
+                    max_richness = max(max_richness, count)
+                if was_capped:
+                    capped.append({"row": row, "col": col, "count": count})
+            except Exception as exc:  # noqa: BLE001
+                failed.append({"row": row, "col": col, "error": str(exc)})
+            if delay > 0:
+                time.sleep(delay)
+    valid = values != nodata
+    return values, {
+        "cols": cols,
+        "rows": rows,
+        "cells": int(cols * rows),
+        "valid_cells": int(valid.sum()),
+        "nonzero_cells": int(nonzero),
+        "max_richness": int(max_richness),
+        "failed_cells": failed[:50],
+        "failed_cell_count": len(failed),
+        "capped_cells": capped[:50],
+        "capped_cell_count": len(capped),
+        "facet_limit": facet_limit,
+        "facet_page_cap": facet_page_cap,
+    }
+
+
+def _gbif_species_facet_count(wkt, facet_limit=1000, page_cap=10):
+    species = set()
+    capped = False
+    offset = 0
+    for _page in range(max(1, page_cap)):
+        payload = _gbif_species_facet_payload(wkt, facet_limit, offset)
+        counts = []
+        for facet in payload.get("facets") or []:
+            if (facet.get("field") or "").upper() == "SPECIES_KEY":
+                counts = facet.get("counts") or []
+                break
+        for item in counts:
+            name = item.get("name")
+            if name not in (None, "", "null"):
+                species.add(str(name))
+        if len(counts) < facet_limit:
+            return len(species), False
+        offset += facet_limit
+    if species:
+        capped = True
+    return len(species), capped
+
+
+def _gbif_species_facet_payload(wkt, facet_limit, offset):
+    cache_dir = os.path.join(CACHE_DIR, "gbif_species_richness")
+    os.makedirs(cache_dir, exist_ok=True)
+    key = hashlib.sha1(("%s|%s|%s" % (wkt, facet_limit, offset)).encode("utf-8")).hexdigest()
+    path = os.path.join(cache_dir, key + ".json")
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        return json.load(open(path))
+    params = [
+        ("geometry", wkt),
+        ("facet", "speciesKey"),
+        ("facetLimit", str(facet_limit)),
+        ("facetOffset", str(offset)),
+        ("limit", "0"),
+        ("hasCoordinate", "true"),
+        ("license", "CC0_1_0"),
+        ("license", "CC_BY_4_0"),
+    ]
+    url = "https://api.gbif.org/v1/occurrence/search?" + urllib.parse.urlencode(params)
+    payload = _read_json_url(url, timeout=120)
+    _write_json(path, payload)
+    return payload
+
+
+def _bbox_wkt(west, south, east, north):
+    return (
+        "POLYGON(("
+        "%.8f %.8f,%.8f %.8f,%.8f %.8f,%.8f %.8f,%.8f %.8f"
+        "))"
+    ) % (west, south, east, south, east, north, west, north, west, south)
+
+
+def _write_wgs84_uint16_grid(out_path, arr, wgs_bbox, nodata=65535):
+    if _raster_ok(out_path):
+        return out_path
+    west, south, east, north = wgs_bbox
+    driver = gdal.GetDriverByName("GTiff")
+    ds = driver.Create(out_path, arr.shape[1], arr.shape[0], 1, gdal.GDT_UInt16,
+                       options=["COMPRESS=DEFLATE", "TILED=YES"])
+    ds.SetGeoTransform((west, (east - west) / arr.shape[1], 0, north, 0,
+                        -(north - south) / arr.shape[0]))
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(4326)
+    srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    ds.SetProjection(srs.ExportToWkt())
+    band = ds.GetRasterBand(1)
+    band.WriteArray(arr)
+    band.SetNoDataValue(nodata)
+    ds.FlushCache()
+    ds = None
+    return out_path
 
 
 def _hydro_continents(wgs_bbox):
@@ -694,6 +924,33 @@ def _download_raster(url, out_path, service_name="remote raster"):
         raise RuntimeError("%s did not return a readable raster: %s" %
                            (service_name, snippet[:300]))
     return out_path
+
+
+def _read_json_url(url, timeout=180):
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    attempts = max(1, int(os.environ.get("VEIL_FETCH_RETRIES", "4")))
+    last = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.load(resp)
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            transient = isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError))
+            delay = min(30, 2 ** attempt)
+            if isinstance(exc, urllib.error.HTTPError):
+                transient = exc.code in {429, 500, 502, 503, 504}
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                if retry_after:
+                    try:
+                        delay = max(delay, int(retry_after))
+                    except ValueError:
+                        pass
+            if attempt >= attempts or not transient:
+                raise
+            print(f"  JSON fetch failed ({exc}); retrying in {delay}s ({attempt}/{attempts})")
+            time.sleep(delay)
+    raise last
 
 
 def _download_file(url, out_path, timeout=300):

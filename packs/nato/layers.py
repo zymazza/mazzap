@@ -54,6 +54,10 @@ class NatoLayers:
             return "Surface water occurrence (JRC GSW)"
         if name.endswith("_gbif_density"):
             return "GBIF observation density"
+        if name.endswith("_gbif_species_richness"):
+            return "Species richness (GBIF)"
+        if name.endswith("_eea_art17_species_richness"):
+            return "Protected species (EEA Article 17)"
         return {
             "nl_ahn_chm": "AHN Canopy Height",
             "nl_landcover": "Dutch Land Cover",
@@ -104,6 +108,18 @@ class NatoLayers:
                 (90.0, [209, 121, 83, 160], "moderate"),
                 (220.0, [244, 202, 99, 225], "high"),
             ], unit="intensity", transparent_zero=True)
+        if name.endswith("_gbif_species_richness"):
+            return _render_continuous(arr, nodata, [
+                (1.0, [76, 118, 166, 95], "low"),
+                (25.0, [75, 154, 120, 170], "moderate"),
+                (100.0, [236, 196, 83, 225], "high"),
+            ], unit="species", transparent_zero=True)
+        if name.endswith("_eea_art17_species_richness"):
+            return _render_continuous(arr, nodata, [
+                (1.0, [84, 126, 168, 95], "low"),
+                (10.0, [103, 166, 126, 170], "moderate"),
+                (30.0, [228, 158, 82, 225], "high"),
+            ], unit="species", transparent_zero=True)
         return None
 
 
@@ -224,6 +240,8 @@ def _render_continuous(arr, nodata, stops, unit="", transparent_zero=False):
             return "%.0f%% %s" % (v, text)
         if unit == "g/kg":
             return "%.0f g/kg %s" % (v, text)
+        if unit == "species":
+            return "%.0f species %s" % (v, text)
         return "%s %s" % (int(v), text)
 
     legend = {}

@@ -61,10 +61,16 @@ Implemented now:
 - Global atlas enrichment for every NATO twin build: ISRIC SoilGrids 250 m v2.0
   topsoil pH, organic carbon, clay, and sand layers; WWF HydroSHEDS
   HydroRIVERS and HydroLAKES vectors; JRC/EC Global Surface Water occurrence;
-  and GBIF observation-density tiles filtered to CC0/CC-BY where supported.
+  GBIF observation-density tiles; and a GBIF species-richness grid based on
+  distinct `speciesKey` occurrence-search facets, filtered to CC0/CC-BY records
+  with coordinates where supported.
   These layers are optional and graceful: failed fetches are logged and skipped.
   Large HydroSHEDS source archives and GBIF tiles are cached under
   `packs/nato/cache/`, which is gitignored.
+- Continental EEA protected-species enrichment for covered European NATO twins:
+  Habitats Directive Article 17 species distributions (2013-2018, 10 km grid)
+  are cached once from the EEA SDI download and rasterized as distinct
+  protected-species richness per terrain cell.
 
 Registered but national-stubbed: all other NATO members. `USA` is Tier S
 because the existing `packs/us-national` pack already covers the United States.
@@ -113,6 +119,12 @@ Global atlas attribution/provenance:
 - GBIF occurrence density tiles: GBIF Maps API, filtered to CC0/CC-BY where the
   API accepts license filters. Raster values are visualization intensity, not a
   raw occurrence count.
+- GBIF species richness: GBIF occurrence search API `speciesKey` facets,
+  filtered to records with coordinates and CC0/CC-BY licenses. Raster values are
+  distinct species-key counts per coarse query cell, warped to the twin grid.
+- EEA Article 17 protected-species richness: European Environment Agency,
+  Habitats Directive Article 17 species distribution 2013-2018 10 km grid,
+  source record `https://sdi.eea.europa.eu/data/9f71b3e3-f8ec-442b-a2d5-c3c190605ac4`.
 
 ## Build The Norwegian Demo
 
