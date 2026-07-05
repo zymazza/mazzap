@@ -71,13 +71,25 @@ def _parse_bbox(text):
         return None
 
 
-def _bbox_crs_for_values(bbox, explicit):
+_GEOGRAPHIC_CRS = {"EPSG:4326", "CRS84", "CRS:84", "OGC:CRS84", "URN:OGC:DEF:CRS:OGC:1.3:CRS84"}
+
+
+def _bbox_crs_for_values(bbox, explicit, native_crs):
     if explicit:
         return explicit
     if -180 <= bbox[0] <= 180 and -180 <= bbox[2] <= 180 \
             and -90 <= bbox[1] <= 90 and -90 <= bbox[3] <= 90:
         return "EPSG:4326"
-    return "EPSG:28992"
+    # A projected-looking bbox with no --aoi-crs: interpret it in the active
+    # adapter's own projected CRS (correct for that country — this pack is
+    # region-agnostic, so never assume one country's grid for another). If the
+    # adapter has no projected native CRS to fall back to, we can't guess.
+    if native_crs and native_crs.upper() not in _GEOGRAPHIC_CRS:
+        return native_crs
+    raise SystemExit(
+        "--aoi looks like a projected bbox but --aoi-crs was not given and the "
+        "active adapter has no projected native CRS to assume; pass --aoi-crs "
+        "EPSG:XXXX (or give the AOI in lon/lat degrees or as a GeoJSON file).")
 
 
 def _ring_from_bbox(bbox):
@@ -105,7 +117,7 @@ def parse_aoi(aoi_arg, adapter, source_dir, aoi_crs=None):
     native_crs = getattr(adapter, "native_crs", "EPSG:4326")
     bbox = _parse_bbox(aoi_arg)
     if bbox is not None:
-        src_crs = _bbox_crs_for_values(bbox, aoi_crs)
+        src_crs = _bbox_crs_for_values(bbox, aoi_crs, native_crs)
         if hasattr(adapter, "native_crs_for_aoi"):
             native_crs = adapter.native_crs_for_aoi({"bbox": bbox, "crs": src_crs})
         native_tag = native_crs.lower().replace(":", "")

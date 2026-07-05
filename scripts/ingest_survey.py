@@ -67,6 +67,10 @@ SURVEY_LAYERS = {
 }
 PLAIN_ATTRS = ("name", "status", "notes", "accuracy_m")
 CURSOR_KEY = "surveys_log_lines_ingested"
+# Decompression bounds for an uploaded survey zip (defense against zip bombs;
+# the HTTP layer separately caps the compressed body size).
+SURVEY_ZIP_MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB uncompressed
+SURVEY_ZIP_MAX_MEMBERS = 10000
 
 
 def _data_dir(arg=None):
@@ -121,13 +125,29 @@ def ingest_zip(store, zip_path, label=None, data_dir=None):
 
     with tempfile.TemporaryDirectory(prefix="survey-ingest-") as tmp:
         with zipfile.ZipFile(zip_path) as zf:
+            infos = zf.infolist()
             names = zf.namelist()
             gpkg_name = _find_member(names, "survey.gpkg") or _find_member(names, ".gpkg")
             if not gpkg_name:
                 raise SystemExit(f"no .gpkg inside {zip_path}")
-            for n in names:
-                if ".." not in n.split("/"):
-                    zf.extract(n, tmp)
+            # Bound decompression so a zip bomb can't exhaust the disk (the HTTP
+            # layer caps the compressed upload; this caps what it expands to).
+            if len(infos) > SURVEY_ZIP_MAX_MEMBERS:
+                raise SystemExit(f"survey zip has too many members "
+                                 f"({len(infos)} > {SURVEY_ZIP_MAX_MEMBERS})")
+            total = sum(max(0, zi.file_size) for zi in infos)
+            if total > SURVEY_ZIP_MAX_TOTAL_BYTES:
+                raise SystemExit(f"survey zip expands to {total} bytes "
+                                 f"(> {SURVEY_ZIP_MAX_TOTAL_BYTES} cap)")
+            extracted = 0
+            for zi in infos:
+                if ".." in zi.filename.split("/"):
+                    continue
+                out_path = zf.extract(zi, tmp)
+                if os.path.isfile(out_path):
+                    extracted += os.path.getsize(out_path)
+                if extracted > SURVEY_ZIP_MAX_TOTAL_BYTES:
+                    raise SystemExit("survey zip exceeded decompression cap during extract")
         gpkg_path = os.path.join(tmp, gpkg_name)
         project_root = os.path.dirname(gpkg_path)
 

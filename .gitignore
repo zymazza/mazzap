@@ -8,8 +8,9 @@ node_modules/
 .survey_token
 # Optional shared secret for live telemetry endpoints (also allowed under data/).
 .live_token
-# Deployment notes with account/domain infrastructure details.
-docs/automagics-hosting.md
+# Private deployment notes (account/domain/infrastructure details). Any doc a
+# maintainer keeps local-only: name it *.private.md and it stays untracked.
+docs/*.private.md
 # Local environment overrides (the chat docs mention OPENAI_API_KEY in a .env; never commit)
 .env
 .env.*

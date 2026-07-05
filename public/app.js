@@ -23,11 +23,6 @@
     return layerId !== 'parcels';
   }
 
-  // Layers whose polygons should each get their own stable color (categorical).
-  const COLOR_BY_LABEL = new Set([
-    'gssurgo_soils', 'hudson_mohawk_surficial_geology', 'apa_land_classification',
-  ]);
-
   const state = {
     viewer: null,
     scene: null,
@@ -143,7 +138,13 @@
     try {
       scene = await fetchJson('/data/scene.json');
     } catch (err) {
-      return fail('Could not load scene.json — is the server running?');
+      // A 404 here almost always means no twin has been built yet (a fresh
+      // clone ships code, not ground). Point the user at the build commands
+      // rather than a misleading "is the server running?".
+      const notBuilt = err && (err.status === 404 || /404/.test(String(err.message || err)));
+      return fail(notBuilt
+        ? 'No twin built yet. Build one with `npm run demo` (bundled Flatirons demo) or `npm run init` (guided setup for your own area), then reload.'
+        : 'Could not load the twin (data/scene.json). Check the server logs.');
     }
     state.scene = scene;
 
@@ -645,7 +646,9 @@
         ctx.restore();
         return;
       }
-      const perFeature = COLOR_BY_LABEL.has(layer.id);
+      // Categorical vector layers (flagged at registration / by a pack's
+      // vector_style) give each feature its own stable label-derived color.
+      const perFeature = layer.categorical === true;
       (data.features || []).forEach((f) => {
         if (filter && !featureMatchesFilter(f, filter)) return;
         const label = f.properties?.__label;
@@ -1238,6 +1241,12 @@
       console.warn(`VEIL coordinate readout is partially unavailable; missing optional element(s): ${missingReadouts.join(', ')}.`);
     }
     const { copyBtn } = readout;
+
+    // Label the projected-coordinate row for this twin's CRS (e.g. "UTM 13N").
+    const zoneLabel = document.getElementById('r-utm-label');
+    if (zoneLabel) {
+      try { zoneLabel.textContent = VEILGeoref.projectionLabel(); } catch (_e) { /* keep generic label */ }
+    }
 
     function placeMarker(point) {
       if (!marker) {

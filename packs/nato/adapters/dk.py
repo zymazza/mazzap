@@ -2,7 +2,7 @@
 
 The Danish DHM/Terraen and DHM/Overflade services are distributed through
 Dataforsyningen/Klimadatastyrelsen routes that require service-specific token
-access from this environment. This adapter records the checked national routes
+access (no anonymous route). This adapter records the checked national routes
 and builds a working twin through the pack fallback stack:
 
   * Copernicus GLO-30 terrain
@@ -43,7 +43,7 @@ class DenmarkAdapter:
     ]
     FALLBACK_NOTE = (
         "Danish DHM/Terraen and DHM/Overflade endpoints require Dataforsyningen/"
-        "Klimadatastyrelsen token access from this environment; using GLO-30 + "
+        "Klimadatastyrelsen token access (no anonymous route); using GLO-30 + "
         "forest-masked Meta/WRI canopy when covered, ETH fallback canopy, and Sentinel-2."
     )
 

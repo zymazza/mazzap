@@ -13,8 +13,8 @@ OPEN_BROWSER="${VEIL_OPEN_BROWSER:-1}"
 
 export CHAT_PROVIDER="${CHAT_PROVIDER:-ollama}"
 export OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
-export OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3.6-27b-ud-q4-k-xl-no-mmproj}"
-export OLLAMA_NUM_CTX="${OLLAMA_NUM_CTX:-90800}"
+export OLLAMA_MODEL="${OLLAMA_MODEL:-gpt-oss:20b}"
+export OLLAMA_NUM_CTX="${OLLAMA_NUM_CTX:-98304}"
 export HOST="$HOST_VALUE"
 export PORT="$PORT_VALUE"
 

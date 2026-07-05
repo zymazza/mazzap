@@ -32,5 +32,31 @@ Licensed under the MIT License.
 
 ---
 
-The full MIT License text is in [LICENSE](LICENSE); each project above is
-licensed by its own copyright holders under those same terms.
+## Other third-party components
+
+### Leaflet (setup map only)
+
+The new-twin setup page (`public/init.html`) loads **Leaflet 1.9.4** from the
+unpkg CDN (with Subresource Integrity hashes) to render the AOI locator map.
+It is the only frontend dependency that is not vendored locally, and it is used
+only by the optional setup flow — the twin viewer itself fetches nothing from
+the network. The setup map also requests basemap tiles from OpenStreetMap and
+ArcGIS World Imagery, so the setup page (unlike the viewer) does contact those
+services.
+Copyright © 2010–2024 Volodymyr Agafonkin, © 2010–2011 CloudMade.
+Licensed under the BSD 2-Clause License. <https://leafletjs.com>
+
+### Tree models (`public/assets/tree-library/*.obj`)
+
+The low-poly tree meshes (`beech`, `birch`, `elm`, `fir`, `maple`, `pine`,
+`spruce`) are original works created for this project by the author and are
+covered by this repository's MIT License. The viewer parses only their geometry
+and `usemtl` group names (`public/viewer/vegetation.js`); the vestigial `mtllib`
+header line in each `.obj` is ignored, and no companion `.mtl` file is shipped
+or required.
+
+---
+
+The full MIT License text is in [LICENSE](LICENSE). Each MIT-licensed project
+above is licensed by its own copyright holders under those same terms; Leaflet
+is under the BSD 2-Clause License linked above.

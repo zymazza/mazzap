@@ -7,7 +7,7 @@ Implemented path where the national services complete:
   * Sentinel-2 L2A NIR via Element84 Earth Search
 
 The GUGiK WCS advertises numeric Arc/Info ASCII Grid coverages, but GetCoverage
-can disconnect or stall from this environment. The adapter records the checked
+can disconnect or stall under unattended builds. The adapter records the checked
 national endpoints and falls back to shared GLO-30 terrain, forest-masked
 Meta/WRI canopy when covered, ETH fallback canopy, and Sentinel-2 when a
 national request does not finish promptly.
@@ -64,7 +64,7 @@ class PolandAdapter:
     )
     FALLBACK_NOTE = (
         "GUGiK NMT/NMPT WCS is open and was checked, but GetCoverage can "
-        "disconnect or exceed the unattended timeout from this environment; "
+        "disconnect or exceed the unattended timeout; "
         "using GLO-30 + forest-masked Meta/WRI canopy when covered, with ETH "
         "canopy as fallback when that occurs."
     )

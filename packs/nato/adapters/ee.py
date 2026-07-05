@@ -3,7 +3,7 @@
 Checked national sources:
   * Maa-amet / Maa- ja Ruumiamet WMS services at kaart.maaamet.ee.
   * Public `fotokaart` WMS exposes rendered nDSM/DSM-style products, but no
-    anonymous numeric DTM WCS was reachable from this environment.
+    anonymous numeric DTM WCS was reachable.
   * Public `alus` WMS exposes RGB orthophoto (`of10000`) and CIR-NGR
     orthophoto (`cir_ngr`).
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tier 2 of the hydrology system (HYDROLOGY-RESEARCH.md): the **scenario
+"""Tier 2 of the hydrology system: the **scenario
 engine** behind the viewer's Simulation window. Two event modes:
 
   snowmelt  a snowpack (inches of SWE) melting over N days, with optional

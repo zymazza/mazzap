@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>VEIL — new twin</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
   <link rel="stylesheet" href="/init.css" />
 </head>
 <body>
@@ -59,11 +60,18 @@
 
       <!-- Step 1 -->
       <section class="card" data-panel="locate">
+        <label class="field country-field" for="init-country">
+          <span>Country</span>
+          <select id="init-country" autocomplete="country">
+            <option value="US">United States</option>
+          </select>
+        </label>
+
         <form id="address-search-form" class="address-search" role="search">
           <label class="field" for="address-search">
-            <span>Find address</span>
+            <span>Find place or address</span>
             <div class="search-row">
-              <input id="address-search" type="search" placeholder="Street address, city, state" autocomplete="street-address" />
+              <input id="address-search" type="search" placeholder="Address, city, or landmark" autocomplete="street-address" />
               <button id="address-search-submit" type="submit" class="ghost">Search</button>
             </div>
           </label>
@@ -128,15 +136,15 @@
         <p id="build-current" class="build-current" hidden></p>
 
         <ul class="manifest-list" id="manifest-list">
-          <li data-match="3dep elevation|elevation">3DEP elevation</li>
-          <li data-match="lidar|lpc">3DEP LiDAR (LPC)</li>
-          <li data-match="naip|imagery">NAIP imagery</li>
-          <li data-match="evt">LANDFIRE EVT</li>
-          <li data-match="forest|fire|landfire">LANDFIRE forest / fire</li>
-          <li data-match="ssurgo|soil">gSSURGO soils</li>
-          <li data-match="daymet|climate">Daymet climate</li>
-          <li data-match="vegetation|tree|canopy">National vegetation</li>
-          <li data-match="optional|atlas|national layer">Selected optional layers</li>
+          <li data-match="elevation|terrain source|terrain dem|3dep">Terrain source</li>
+          <li data-match="lidar|lpc|dsm|dtm|chm|canopy">Surface / canopy inputs</li>
+          <li data-match="naip|imagery|rgb|nir|ortho">Imagery</li>
+          <li data-match="evt|landfire|leaf-type|forest type|context layers">Vegetation context</li>
+          <li data-match="ssurgo|soil|soilgrids">Soils</li>
+          <li data-match="hydrology|hydrorivers|hydrolakes|water">Hydrology</li>
+          <li data-match="daymet|climate">Climate forcing</li>
+          <li data-match="vegetation|tree|typing">Tree generation</li>
+          <li data-match="optional|atlas|national layer|global atlas">Atlas layers</li>
         </ul>
 
         <pre id="log" class="log" aria-live="polite"></pre>
@@ -148,7 +156,7 @@
     </div>
 
     <footer class="console-foot">
-      <span>Sources fetched live from USGS · USDA · USFS · NASA Daymet</span>
+      <span>Sources fetched live from US, NATO national, continental, and global open-data services</span>
     </footer>
   </aside>
 

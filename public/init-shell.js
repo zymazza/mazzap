@@ -46,11 +46,11 @@
   const buildElapsed = $('build-elapsed');
 
   const STEP_ORDER = ['locate', 'layers', 'build'];
-  const USA_BOUNDS = {
-    minLat: 24.396308,
-    maxLat: 49.384358,
-    minLon: -124.848974,
-    maxLon: -66.885444,
+  const WORLD_BOUNDS = {
+    minLat: -60,
+    maxLat: 85,
+    minLon: -180,
+    maxLon: 180,
   };
   const rawFetch = window.fetch ? window.fetch.bind(window) : null;
 
@@ -186,12 +186,12 @@
   let estimateTimer = null;
   let estimateSeq = 0;
 
-  function pointInsideSupportedUsa(point) {
+  function pointInsideSupportedMap(point) {
     const lat = Number(point && point.lat);
     const lng = Number(point && point.lng);
     return Number.isFinite(lat) && Number.isFinite(lng)
-      && lat >= USA_BOUNDS.minLat && lat <= USA_BOUNDS.maxLat
-      && lng >= USA_BOUNDS.minLon && lng <= USA_BOUNDS.maxLon;
+      && lat >= WORLD_BOUNDS.minLat && lat <= WORLD_BOUNDS.maxLat
+      && lng >= WORLD_BOUNDS.minLon && lng <= WORLD_BOUNDS.maxLon;
   }
   function estimateCoordinates() {
     return trackedPoints.map((point) => [
@@ -250,7 +250,7 @@
     if (window.L && window.L.Map && !window.L.Map.prototype._veilSafetyHooked) {
       const originalFire = window.L.Map.prototype.fire;
       window.L.Map.prototype.fire = function patchedFire(type, data, propagate) {
-        if (type === 'click' && data && pointInsideSupportedUsa(data.latlng)) {
+        if (type === 'click' && data && pointInsideSupportedMap(data.latlng)) {
           trackedPoints.push({ lat: Number(data.latlng.lat), lng: Number(data.latlng.lng) });
           scheduleEstimate();
         }

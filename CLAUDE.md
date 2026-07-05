@@ -41,7 +41,7 @@ The Python pipeline scripts need GDAL (`osgeo`), numpy, pyproj, and Pillow; `req
 
 **Containerized path** (`Dockerfile`, `docker-compose.yml`, `.devcontainer/`): the whole toolchain pinned and pre-built. The image is based on the official OSGeo GDAL `ubuntu-full` image (ships python3 + version-matched `osgeo` bindings + numpy + array support — the part that's painful to build), with Node (NodeSource, `NODE_MAJOR`) and the pip deps layered on; GDAL is pinned via the `GDAL_VERSION` build arg. server.js binds `HOST=0.0.0.0` in the container. `docker-compose.yml` bind-mounts `./data` and `./twins` so pipeline output persists to the host (and stays gitignored); `docker compose run --rm veil <cmd>` runs any pipeline step in the same image. The Dev Container reuses the Dockerfile for an editable environment. Local `npm`/`python3` use is unchanged — the container is purely an adoption convenience.
 
-Live Meshtastic/LoRA telemetry uses the repo-local `.venv-live` environment
+Live Meshtastic/LoRa telemetry uses the repo-local `.venv-live` environment
 (`VEIL_LIVE_PYTHON` overrides it). The viewer starts managed bridge processes
 from the Telemetry panel; terminal bridge commands in `docs/live-inputs.md` are
 for debug/manual mode.

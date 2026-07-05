@@ -48,7 +48,7 @@ Implemented now:
   or disconnects. NIR comes from Sentinel-2.
 - Slovakia (`SK`/`SVK`) working fallback adapter: checked UGKK SR / ZBGIS DMR,
   DMP, and orthophoto WCS/WMS/ImageServer routes, but anonymous probes timed
-  out from this environment; fallback terrain/CHM and Sentinel-2 are used.
+  out under anonymous probing; fallback terrain/CHM and Sentinel-2 are used.
 - Sweden (`SE`/`SWE`) working fallback adapter: checked Lantmateriet Min karta
   orthophoto and height-model WMS routes; no anonymous numeric DEM/DSM route
   was found, so fallback terrain/CHM are used. Lantmateriet orthophoto WMS
@@ -301,8 +301,8 @@ python3 packs/nato/fetch_nato.py \
 ## Build The Slovakia Demo
 
 The High Tatras demo uses a conifer-dominant forest AOI. The adapter records
-UGKK SR / ZBGIS routes, but this environment uses the fallback stack after
-anonymous probes timed out. Attribution: © UGKK SR (Slovakia) for checked
+UGKK SR / ZBGIS routes, but uses the fallback stack because anonymous probes
+time out. Attribution: © UGKK SR (Slovakia) for checked
 national sources; fallback data are Copernicus GLO-30, forest-masked ETH
 canopy, modified Copernicus Sentinel data, and Copernicus HRL DLT / EEA.
 
@@ -511,9 +511,9 @@ Imagery:
   `https://services.norgeibilder.no/wms/ortofoto?service=WMS&request=GetCapabilities`
 - Checked national Norge i bilder WMTS:
   `https://tilecache.norgeibilder.no/wmts/utm32_euref89?SERVICE=WMTS&REQUEST=GetCapabilities`
-- Both national orthophoto endpoints require token/Norway Digital access from
-  this environment, and the national WMS/WMTS catalog entries are marked
-  restricted. The Norway adapter therefore uses Sentinel-2 L2A RGB+NIR via
+- Both national orthophoto endpoints require token/Norway Digital access, and
+  the national WMS/WMTS catalog entries are marked restricted for anonymous
+  callers. The Norway adapter therefore uses Sentinel-2 L2A RGB+NIR via
   Element84 Earth Search for both visible drape and the NIR band required by
   `false_color.png`.
 
@@ -722,7 +722,7 @@ National status:
 - Height display WMS:
   `https://kaart.maaamet.ee/wms/fotokaart`
 - Checked DTM/DSM WCS routes did not expose an anonymous numeric terrain and
-  surface coverage from this environment. Terrain/CHM therefore use GLO-30 plus
+  surface coverage. Terrain/CHM therefore use GLO-30 plus
   forest-masked ETH canopy.
 
 Attribution:
@@ -956,7 +956,7 @@ Real in this pack:
 - Netherlands PDOK RGB+CIR imagery.
 - Norway Kartverket NHM DTM/DOM terrain and CHM.
 - Norway Sentinel-2 RGB+NIR imagery fallback because national Norge i bilder
-  WMS/WMTS access is restricted/tokened from this environment.
+  WMS/WMTS access is restricted/tokened for anonymous callers.
 - Spain IGN/CNIG PNOA-LiDAR MDT terrain, with ETH Global Canopy Height CHM
   fallback because no open national MDS/DSM WCS was reachable.
 - Spain PNOA RGB imagery plus Sentinel-2 NIR fallback for `false_color.png`.

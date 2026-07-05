@@ -5,13 +5,13 @@ set -euo pipefail
 # Mesa GPU instead of the NVIDIA PRIME offload GPU. This keeps CUDA VRAM free
 # for local Ollama models when using `npm run start:local`.
 #
-# By default, focus the HDMI-A-3 Hyprland monitor before launching so the VEIL
-# window appears in the usual place. Override with either:
-#   VEIL_TARGET_MONITOR=DP-7 scripts/open-veil-integrated-firefox.sh <url>
-#   scripts/open-veil-integrated-firefox.sh <url> DP-7
-# Disable monitor targeting with VEIL_TARGET_MONITOR=none.
+# Optionally focus a specific Hyprland monitor before launching so the VEIL
+# window lands where you want it. Monitor targeting is OFF by default; pass a
+# monitor name (from `hyprctl monitors`) via either:
+#   VEIL_TARGET_MONITOR=DP-1 scripts/open-veil-integrated-firefox.sh <url>
+#   scripts/open-veil-integrated-firefox.sh <url> DP-1
 URL="${1:-http://127.0.0.1:4173/}"
-TARGET_MONITOR="${2:-${VEIL_TARGET_MONITOR:-HDMI-A-3}}"
+TARGET_MONITOR="${2:-${VEIL_TARGET_MONITOR:-none}}"
 PROFILE_DIR="${VEIL_FIREFOX_PROFILE:-${XDG_CACHE_HOME:-$HOME/.cache}/veil-firefox-integrated-profile}"
 LOG_FILE="${VEIL_FIREFOX_LOG:-/tmp/veil-firefox-integrated.log}"
 DRY_RUN="${VEIL_DRY_RUN:-0}"

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Core terrain-hydrology engine for VEIL twins — pure numpy, no heavy deps.
 
-This is Tier 1 of the hydrology system proposed in HYDROLOGY-RESEARCH.md: the
+This is Tier 1 of the hydrology system: the
 deterministic terrain analysis that everything else stands on. It works directly
 on the twin's LiDAR-derived terrain grid (data/terrain/grid.json), in the scene's
 local-meter coordinates, and returns gridded fields:

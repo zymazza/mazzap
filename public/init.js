@@ -1,17 +1,64 @@
 (function () {
-  const USA_BOUNDS = L.latLngBounds(
-    L.latLng(24.396308, -124.848974),
-    L.latLng(49.384358, -66.885444),
+  const WORLD_BOUNDS = L.latLngBounds(
+    L.latLng(-60, -180),
+    L.latLng(85, 180),
   );
   const INITIAL_VIEW_BOUNDS = L.latLngBounds(
-    L.latLng(22.5, -151.0),
-    L.latLng(51.0, -66.5),
+    L.latLng(24.0, -168.0),
+    L.latLng(72.5, 45.5),
   );
+  const COUNTRY_BOUNDS = {
+    AL: [[39.55, 19.2], [42.75, 21.1]],
+    BE: [[49.45, 2.5], [51.55, 6.4]],
+    BG: [[41.15, 22.35], [44.35, 28.65]],
+    CA: [[41.65, -141.0], [83.2, -52.6]],
+    HR: [[42.25, 13.35], [46.6, 19.45]],
+    CZ: [[48.45, 12.0], [51.1, 18.9]],
+    DK: [[54.45, 8.0], [57.85, 15.3]],
+    EE: [[57.45, 21.5], [59.75, 28.25]],
+    FI: [[59.65, 20.5], [70.1, 31.6]],
+    FR: [[41.25, -5.3], [51.25, 9.7]],
+    DE: [[47.2, 5.8], [55.1, 15.1]],
+    GR: [[34.7, 19.2], [41.8, 29.7]],
+    HU: [[45.7, 16.0], [48.6, 22.9]],
+    IS: [[63.0, -25.0], [66.7, -13.0]],
+    IT: [[35.45, 6.6], [47.15, 18.6]],
+    LV: [[55.65, 20.8], [58.1, 28.25]],
+    LT: [[53.85, 20.9], [56.45, 26.9]],
+    LU: [[49.4, 5.65], [50.25, 6.55]],
+    ME: [[41.8, 18.4], [43.6, 20.4]],
+    MK: [[40.8, 20.4], [42.4, 23.1]],
+    NL: [[50.7, 3.3], [53.7, 7.3]],
+    NO: [[57.8, 4.4], [71.2, 31.2]],
+    PL: [[49.0, 14.1], [54.95, 24.2]],
+    PT: [[36.8, -9.7], [42.2, -6.0]],
+    RO: [[43.6, 20.2], [48.3, 29.7]],
+    SK: [[47.7, 16.8], [49.7, 22.7]],
+    SI: [[45.35, 13.35], [46.9, 16.6]],
+    ES: [[35.8, -9.4], [43.9, 4.4]],
+    SE: [[55.1, 10.6], [69.1, 24.2]],
+    TR: [[35.8, 25.6], [42.2, 44.9]],
+    GB: [[49.8, -8.7], [60.9, 1.8]],
+    US: [[24.396308, -124.848974], [49.384358, -66.885444]],
+  };
+  const NATO_COUNTRIES = [
+    ['AL', 'Albania'], ['BE', 'Belgium'], ['BG', 'Bulgaria'],
+    ['CA', 'Canada'], ['HR', 'Croatia'], ['CZ', 'Czechia'],
+    ['DK', 'Denmark'], ['EE', 'Estonia'], ['FI', 'Finland'],
+    ['FR', 'France'], ['DE', 'Germany'], ['GR', 'Greece'],
+    ['HU', 'Hungary'], ['IS', 'Iceland'], ['IT', 'Italy'],
+    ['LV', 'Latvia'], ['LT', 'Lithuania'], ['LU', 'Luxembourg'],
+    ['ME', 'Montenegro'], ['NL', 'Netherlands'], ['MK', 'North Macedonia'],
+    ['NO', 'Norway'], ['PL', 'Poland'], ['PT', 'Portugal'],
+    ['RO', 'Romania'], ['SK', 'Slovakia'], ['SI', 'Slovenia'],
+    ['ES', 'Spain'], ['SE', 'Sweden'], ['TR', 'Turkey'],
+    ['GB', 'United Kingdom'], ['US', 'United States'],
+  ];
   const map = L.map('map', {
     zoomControl: false,
-    maxBounds: INITIAL_VIEW_BOUNDS.pad(0.12),
+    maxBounds: WORLD_BOUNDS,
     maxBoundsViscosity: 1,
-    minZoom: 3,
+    minZoom: 2,
   });
   L.control.zoom({ position: 'bottomright' }).addTo(map);
 
@@ -21,18 +68,17 @@
     attribution: '&copy; OpenStreetMap contributors',
   });
   const orthoLayer = L.tileLayer(
-    'https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}',
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     {
       maxZoom: 19,
-      maxNativeZoom: 16,
       noWrap: true,
-      attribution: 'USGS The National Map: Orthoimagery',
+      attribution: 'Esri World Imagery',
     },
   );
-  orthoLayer.addTo(map);
+  streetLayer.addTo(map);
   L.control.layers({
-    'Ortho imagery': orthoLayer,
     Streets: streetLayer,
+    'World imagery': orthoLayer,
   }, null, {
     position: 'topright',
     collapsed: false,
@@ -42,6 +88,7 @@
     ? { padding: [12, 12] }
     : { paddingTopLeft: [410, 30], paddingBottomRight: [30, 30] });
 
+  const countrySelect = document.getElementById('init-country');
   const nameInput = document.getElementById('twin-name');
   const addressSearchForm = document.getElementById('address-search-form');
   const addressSearchInput = document.getElementById('address-search');
@@ -71,6 +118,43 @@
   let pendingCoordinates = null;
   let addressMarker = null;
   let addressSearchAbort = null;
+
+  function selectedCountryCode() {
+    return String((countrySelect && countrySelect.value) || 'US').trim().toUpperCase() || 'US';
+  }
+
+  function countryBounds(code) {
+    const raw = COUNTRY_BOUNDS[String(code || '').toUpperCase()];
+    return raw ? L.latLngBounds(L.latLng(raw[0][0], raw[0][1]), L.latLng(raw[1][0], raw[1][1])) : null;
+  }
+
+  function focusCountry(code, options = {}) {
+    const bounds = countryBounds(code);
+    if (!bounds) return;
+    const fitOptions = compactLayout
+      ? { padding: [12, 12] }
+      : { paddingTopLeft: [410, 30], paddingBottomRight: [30, 30] };
+    if (options.animate === false) fitOptions.animate = false;
+    map.fitBounds(bounds, fitOptions);
+  }
+
+  function initCountrySelect() {
+    if (!countrySelect) return;
+    const current = selectedCountryCode();
+    countrySelect.textContent = '';
+    NATO_COUNTRIES.forEach(([code, name]) => {
+      const option = document.createElement('option');
+      option.value = code;
+      option.textContent = name;
+      countrySelect.appendChild(option);
+    });
+    countrySelect.value = COUNTRY_BOUNDS[current] ? current : 'US';
+    countrySelect.addEventListener('change', () => {
+      clearAddressResults();
+      focusCountry(selectedCountryCode());
+      statusLabel.textContent = 'Choose points inside the selected country';
+    });
+  }
 
   function drawnCoordinates() {
     return points.map((p) => [Number(p.lng.toFixed(7)), Number(p.lat.toFixed(7))]);
@@ -135,17 +219,26 @@
     const lon = Number(result.lon);
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
     const latlng = L.latLng(lat, lon);
-    if (!USA_BOUNDS.contains(latlng)) {
-      statusLabel.textContent = 'Address is outside the supported USA map';
+    if (!WORLD_BOUNDS.contains(latlng)) {
+      statusLabel.textContent = 'Result is outside the supported map';
       return;
     }
     if (addressMarker) addressMarker.remove();
     addressMarker = L.marker(latlng, { title: result.label || 'Address match' })
       .addTo(map)
       .bindPopup(result.label || 'Address match');
-    map.flyTo(latlng, Math.max(map.getZoom(), 17), { duration: 0.7 });
+    if (Array.isArray(result.bbox) && result.bbox.length === 4) {
+      const bounds = L.latLngBounds(
+        L.latLng(Number(result.bbox[1]), Number(result.bbox[0])),
+        L.latLng(Number(result.bbox[3]), Number(result.bbox[2])),
+      );
+      if (bounds.isValid()) map.fitBounds(bounds.pad(0.2), { duration: 0.7, maxZoom: 17 });
+      else map.flyTo(latlng, Math.max(map.getZoom(), 17), { duration: 0.7 });
+    } else {
+      map.flyTo(latlng, Math.max(map.getZoom(), 17), { duration: 0.7 });
+    }
     addressMarker.openPopup();
-    statusLabel.textContent = 'Address located';
+    statusLabel.textContent = 'Place located';
     clearAddressResults();
   }
 
@@ -155,7 +248,7 @@
     if (!results.length) {
       const empty = document.createElement('div');
       empty.className = 'address-empty';
-      empty.textContent = 'No address matches found. Try a fuller street address with city and state.';
+      empty.textContent = 'No matches found. Try a fuller address, city, or landmark name.';
       addressSearchResults.appendChild(empty);
       addressSearchResults.hidden = false;
       return;
@@ -181,7 +274,7 @@
     if (!addressSearchInput) return;
     const query = addressSearchInput.value.trim();
     if (query.length < 3) {
-      statusLabel.textContent = 'Enter an address to search';
+      statusLabel.textContent = 'Enter a place or address to search';
       clearAddressResults();
       return;
     }
@@ -192,7 +285,8 @@
     statusLabel.textContent = 'Searching address';
     if (addressSearchSubmit) addressSearchSubmit.disabled = true;
     try {
-      const res = await fetch(`/api/init-address-search?q=${encodeURIComponent(query)}`, {
+      const country = selectedCountryCode();
+      const res = await fetch(`/api/init-address-search?q=${encodeURIComponent(query)}&country=${encodeURIComponent(country)}`, {
         signal: controller.signal,
       });
       const payload = await res.json();
@@ -309,12 +403,14 @@
     const manual = (scan.layers || []).filter((layer) => layer.status === 'manual' || layer.status === 'not_interactive').length;
     layerList.textContent = '';
     if (!layers.length) {
-      layerDialogSummary.textContent = (downloadable || manual)
+      layerDialogSummary.textContent = scan.note || ((downloadable || manual)
         ? `No interactive optional layers reported features in this AOI. ${downloadable} downloadable source${downloadable === 1 ? '' : 's'} and ${manual} manual source${manual === 1 ? '' : 's'} can be added later.`
-        : 'No optional national layers reported features in this AOI.';
+        : 'No optional national layers reported features in this AOI.');
       const empty = document.createElement('div');
       empty.className = 'empty-layers';
-      empty.textContent = 'Build the base twin, then drop downloaded files in manual_layers/ and run ingest-manual-layers if needed.';
+      empty.textContent = scan.note
+        ? 'Build the NATO twin now; country, continental, and global atlas sources are handled by the NATO build path.'
+        : 'Build the base twin, then drop downloaded files in manual_layers/ and run ingest-manual-layers if needed.';
       layerList.appendChild(empty);
     } else {
       layerDialogSummary.textContent = `${layers.length} optional national layer${layers.length === 1 ? '' : 's'} intersect this AOI. Select the ones to import as clickable atlas layers.`;
@@ -386,7 +482,7 @@
     const res = await fetch('/api/init-layer-scan-stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ coordinates }),
+      body: JSON.stringify({ coordinates, country: selectedCountryCode() }),
     });
     if (!res.ok || !res.body) throw new Error('scan stream unavailable');
     const reader = res.body.getReader();
@@ -407,7 +503,9 @@
         try { evt = JSON.parse(line); } catch (_e) { continue; }
         if (evt.event === 'start') emitScan('start', { total: evt.total });
         else if (evt.event === 'layer') emitScan('layer', { layer: evt.layer });
-        else if (evt.event === 'done') payload = { ok: evt.ok !== false, layers: evt.layers || [] };
+        else if (evt.event === 'done') {
+          payload = { ok: evt.ok !== false, layers: evt.layers || [], note: evt.note || null, country: evt.country || null };
+        }
         else if (evt.event === 'error') streamError = new Error(evt.error || 'layer scan failed');
       }
     }
@@ -429,7 +527,7 @@
       const res = await fetch('/api/init-layer-scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ coordinates }),
+        body: JSON.stringify({ coordinates, country: selectedCountryCode() }),
       });
       const payload = await res.json();
       if (!res.ok || !payload.ok) {
@@ -450,6 +548,7 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name: nameInput.value.trim() || 'VEIL twin',
+        country: selectedCountryCode(),
         coordinates: pendingCoordinates,
         national_layers: nationalLayers || [],
       }),
@@ -466,8 +565,8 @@
   }
 
   map.on('click', (event) => {
-    if (!USA_BOUNDS.contains(event.latlng)) {
-      statusLabel.textContent = 'Choose a point inside the USA';
+    if (!WORLD_BOUNDS.contains(event.latlng)) {
+      statusLabel.textContent = 'Choose a point inside the supported map';
       return;
     }
     points.push(event.latlng);
@@ -539,5 +638,6 @@
   });
 
   pollStatus();
+  initCountrySelect();
   redraw();
 }());
