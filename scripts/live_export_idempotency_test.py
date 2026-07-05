@@ -155,7 +155,7 @@ class LiveExportIdempotencyTest(unittest.TestCase):
             "label": "Device A",
             "observed_at": observed_at,
             "received_at": observed_at,
-            "position": {"lat": 44.0 + seq / 1000, "lon": -73.0 - seq / 1000},
+            "position": {"lat": 39.98 + seq / 1000, "lon": -105.27 - seq / 1000},
             "message": f"event-{seq}",
             "data": {"seq": seq},
             "source": {"protocol": "unit"},

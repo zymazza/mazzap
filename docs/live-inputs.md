@@ -120,7 +120,7 @@ The normal path is the viewer UI:
 
 1. Start VEIL with `npm start`.
 2. Open the `Telemetry` panel under Ask G.A.I.A.
-3. In `Telemetry > Meshtastic / LoRA`, enter a gateway name.
+3. In `Telemetry > Meshtastic / LoRa`, enter a gateway name.
 4. Pick Bluetooth, Serial, or Internet.
 5. For Bluetooth or Serial, click `Scan` / `Refresh` and choose the discovered
    device from the dropdown. If discovery finds exactly one device, the UI can

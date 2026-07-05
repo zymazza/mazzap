@@ -1,5 +1,5 @@
 /* "Simulation" window: the viewer-side home for twin simulations.
-   First resident: the hydrology system (HYDROLOGY-RESEARCH.md) —
+   First resident: the hydrology system —
      - Terrain hydrology toggles: the Tier-1 derived drape layers
        (flow paths, wetness, ponding, seep candidates) that
        analyze_hydrology.py exports into data/hydrology/.

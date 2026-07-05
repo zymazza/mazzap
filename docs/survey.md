@@ -101,6 +101,6 @@ token is the fallback for a LAN bind, not an internet-facing auth story.
 ## Querying
 
 Survey kinds are ordinary store kinds, so the MCP tools (`find_entities`,
-`aggregate_entities`, `summarize_region`) and "Ask the land" see them with
+`aggregate_entities`, `summarize_region`) and "Ask G.A.I.A." see them with
 no extra wiring. Known v1 gap: `identify_at` walks atlas layers only, so the
 chat agent won't see survey features in point-identify results.

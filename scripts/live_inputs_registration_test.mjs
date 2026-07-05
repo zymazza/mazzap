@@ -216,7 +216,7 @@ test('live freshness recomputes active, stale, and offline from position timesta
   const observed = Date.parse('2026-01-02T03:00:00Z');
   const device = {
     device_id: 'tracker-1',
-    position: { lat: 44, lon: -73 },
+    position: { lat: 39.98, lon: -105.27 },
     freshness: {
       state: 'active',
       position_observed_at: '2026-01-02T03:00:00Z',
@@ -342,7 +342,7 @@ test('live freshness preserves server gateway-offline state while still aging ti
   const api = loadLiveInputsTestApi();
   const device = {
     device_id: 'tracker-3',
-    position: { lat: 44, lon: -73 },
+    position: { lat: 39.98, lon: -105.27 },
     freshness: {
       state: 'offline',
       gateway_id: 'relay-1',

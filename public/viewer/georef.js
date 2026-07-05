@@ -82,6 +82,17 @@
   }
 
   /**
+   * Human label for the twin's projected CRS, derived from its proj4 string
+   * (e.g. "UTM 13N"); falls back to a generic label for non-UTM projections.
+   */
+  function projectionLabel() {
+    const def = loadProjDef();
+    const utm = /\+proj=utm\b/.test(def) && def.match(/\+zone=(\d+)/);
+    if (utm) return 'UTM ' + utm[1] + (/\+south\b/.test(def) ? 'S' : 'N');
+    return 'Easting / Northing';
+  }
+
+  /**
    * Build a converter bound to a scene's projected origin + terrain grid.
    * originUtm: [easting, northing, _] from the scene payload.
    */
@@ -110,6 +121,7 @@
     configure,
     projectedToGeographic,
     geographicToProjected,
+    projectionLabel,
     createSceneGeoref,
   };
 

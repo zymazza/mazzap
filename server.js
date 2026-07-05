@@ -63,11 +63,11 @@ const OPENAI_REASONING = process.env.OPENAI_REASONING_EFFORT || 'low';
 const OPENAI_REQUIRE_USER_KEY = process.env.OPENAI_REQUIRE_USER_KEY === '1';
 
 const OLLAMA_HOST = (process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/+$/, '');
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen3.6-27b-ud-q4-k-xl-no-mmproj';
-// Context window for the local model. Default to the local Qwen 3.6 27B UD Q4_K_XL
-// no-mmproj Ollama model at the 90.8k-token window chosen for stable VEIL
-// tool-chat runs; set OLLAMA_MODEL / OLLAMA_NUM_CTX explicitly to override.
-const OLLAMA_NUM_CTX = Number(process.env.OLLAMA_NUM_CTX) || 90800;
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'gpt-oss:20b';
+// Context window for the local model. gpt-oss:20b's KV cache is cheap, so a
+// large window fits comfortably on a 24 GB card and keeps a long tool session
+// from truncating; set OLLAMA_MODEL / OLLAMA_NUM_CTX explicitly to override.
+const OLLAMA_NUM_CTX = Number(process.env.OLLAMA_NUM_CTX) || 98304;
 // Sampling temperature for the local model. 0 keeps agentic tool use deterministic
 // and avoids truncated/malformed tool-call JSON or empty-answer turns; raise only
 // if you want more varied prose.
@@ -83,7 +83,7 @@ const MAX_TOOL_ROUNDS = 8; // OpenAI batches calls per round, so 8 is plenty
 // site-selection question (gather facts at 3 spots + draw 3 points) can spend
 // ~16-20 single-call turns, so the budget has to clear that or the model gets cut
 // off before it ever writes its answer.
-const MAX_TOOL_ROUNDS_OLLAMA = Number(process.env.OLLAMA_MAX_TOOL_ROUNDS) || 32;
+const MAX_TOOL_ROUNDS_OLLAMA = Number(process.env.OLLAMA_MAX_TOOL_ROUNDS) || 24;
 const MAX_PARSE_NUDGES = 4;
 const OLLAMA_NEAR_TOOL_CAP_WARNING = 3;
 const TOOL_RESULT_CAP = 60000; // chars per tool result sent to the model
@@ -101,8 +101,8 @@ function openaiKey() {
 const mcpClients = new Map(); // dataDir -> { proc, pending, nextId, tools, init }
 
 // The chat MCP server and hydrology simulation need the geospatial stack
-// (pyproj/GDAL/numpy). A bare `python3` — especially under the Hermes/GUI
-// profile that launches the server — can resolve to an interpreter without it,
+// (pyproj/GDAL/numpy). A bare `python3` — especially under a GUI-launched login
+// profile that starts the server — can resolve to an interpreter without it,
 // so tools or scenarios fail with "No module named ...". Resolve a Python that
 // has the stack: an explicit VEIL_MCP_PYTHON wins for MCP, else the project's
 // dedicated .venv-mcp, else python3. Hydrology can be overridden separately with
@@ -2221,7 +2221,7 @@ function handleInitAoi(req, res) {
 }
 
 // --------------------------------------------------------------- live inputs
-// Live telemetry is source-neutral at the HTTP boundary. Bridges for LoRA,
+// Live telemetry is source-neutral at the HTTP boundary. Bridges for LoRa,
 // BLE, serial, TCP, cameras, or edge models normalize into the same event
 // envelope and post here. The server keeps current state in memory for the
 // viewer, writes raw append-only logs under the active twin data directory, and
@@ -4049,7 +4049,7 @@ function runSurveyIngest(callback) {
 
 function handleSurveyUpload(req, res, query) {
   const token = surveyToken();
-  if (token && req.headers['x-survey-token'] !== token) {
+  if (token && !timingSafeTokenEqual(headerText(req.headers['x-survey-token']), token)) {
     return send(res, 403, JSON.stringify({ ok: false, error: 'bad survey token' }),
       { 'Content-Type': 'application/json' });
   }
@@ -4260,7 +4260,9 @@ function clearAnnotations(res, dataDir = DATA_DIR) {
 // spawning the hydrology/bridge processes, wiping annotations, spending the chat
 // key). Non-browser clients (curl, the MCP server, the live telemetry bridge)
 // send no Origin/Referer and are allowed through; token-gated routes keep their
-// token check on top of this.
+// token check on top of this. NOTE: Origin==Host does NOT stop DNS rebinding — a
+// rebound attacker host sends matching Origin and Host. Set VEIL_ALLOWED_HOSTS on
+// an exposed deployment to also pin the acceptable Host values (see hostAllowed).
 const CSRF_PROTECTED = new Set([
   '/api/building-placements',
   '/api/simulate',
@@ -4273,7 +4275,24 @@ const CSRF_PROTECTED = new Set([
   '/api/live/devices', '/api/live/devices/remove', '/api/live/devices/command',
   '/api/live/export', '/api/live/token',
   '/api/survey-upload',
+  // init-mode routes spawn build/scan subprocesses, so gate them too.
+  '/api/init-estimate', '/api/init-layer-scan',
+  '/api/init-layer-scan-stream', '/api/init-aoi',
 ]);
+
+// Optional Host allowlist (comma-separated hostnames, no port) to close the DNS-
+// rebinding gap the Origin==Host check alone leaves open. Off by default so
+// localhost/LAN/Tailscale binds keep working; set it for any exposed deployment.
+const ALLOWED_HOSTS = new Set(
+  (process.env.VEIL_ALLOWED_HOSTS || '')
+    .split(',').map((h) => h.trim().toLowerCase()).filter(Boolean)
+);
+
+function hostAllowed(hostHeader) {
+  if (ALLOWED_HOSTS.size === 0) return true;   // no allowlist configured
+  const host = String(hostHeader || '').toLowerCase().replace(/:\d+$/, '');
+  return ALLOWED_HOSTS.has(host);
+}
 
 function hostedUnsupported(pathname) {
   if (!HOSTED_MODE) return false;
@@ -4285,6 +4304,7 @@ function hostedUnsupported(pathname) {
 function sameOriginOk(req) {
   const host = req.headers.host;
   if (!host) return false;
+  if (!hostAllowed(host)) return false;   // pin Host when an allowlist is set (anti-rebinding)
   const matches = (value) => {
     if (!value) return null;
     try { return new URL(value).host === host; } catch (_err) { return false; }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tier 1 of the hydrology system (HYDROLOGY-RESEARCH.md): terrain hydrology
+"""Tier 1 of the hydrology system: terrain hydrology
 layers for the Simulation window.
 
 Runs the pure-numpy engine (scripts/twin_hydrology.py) over the twin's LiDAR
@@ -230,7 +230,7 @@ def soil_fields(grid):
 def seep_scores(fields, soils, grid):
     """0-100 spring/seep candidacy per cell.
 
-    Components (HYDROLOGY-RESEARCH.md A2): topographic wetness, flow
+    Components: topographic wetness, flow
     convergence, slope-break (toe-of-slope flattening), and a shallow
     restrictive layer forcing water laterally (bedrock at 74 cm under
     Berkshire-Tunbridge, the 52 cm perched table + 3 mm/hr fragipan on Skerry).

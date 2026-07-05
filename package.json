@@ -2,7 +2,16 @@
   "name": "mazzap",
   "version": "2.0.0",
   "description": "Mazzap v2 — a standalone, region-agnostic georeferenced 3D digital-twin engine.",
+  "private": true,
   "main": "server.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zymazza/mazzap.git"
+  },
+  "homepage": "https://github.com/zymazza/mazzap#readme",
+  "bugs": {
+    "url": "https://github.com/zymazza/mazzap/issues"
+  },
   "engines": {
     "node": ">=18"
   },
@@ -10,7 +19,7 @@
     "init": "node scripts/init.js",
     "start": "node server.js",
     "start:local": "scripts/start-local-integrated.sh",
-    "start:local:server": "CHAT_PROVIDER=ollama OLLAMA_HOST=http://127.0.0.1:11434 OLLAMA_MODEL=qwen3.6-27b-ud-q4-k-xl-no-mmproj OLLAMA_NUM_CTX=90800 VEIL_OPEN_BROWSER=0 scripts/start-local-integrated.sh",
+    "start:local:server": "CHAT_PROVIDER=ollama OLLAMA_HOST=http://127.0.0.1:11434 OLLAMA_MODEL=gpt-oss:20b OLLAMA_NUM_CTX=98304 VEIL_OPEN_BROWSER=0 scripts/start-local-integrated.sh",
     "add-layer": "python3 scripts/add_layer.py",
     "ingest-dem": "python3 scripts/ingest_dem.py",
     "ingest-imagery": "python3 scripts/ingest_imagery.py",

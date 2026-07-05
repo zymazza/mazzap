@@ -3,7 +3,7 @@
 Implemented sources:
   * IGN/CNIG MDT WCS 2.0.1, PNOA-LiDAR bare-earth terrain, 5 m
   * Meta/WRI 1 m modeled canopy-height fallback for CHM where no open national
-    PNOA-LiDAR MDS/DSM WCS is reachable from this environment, with ETH 10 m
+    PNOA-LiDAR MDS/DSM WCS is reachable anonymously, with ETH 10 m
     canopy as the last resort
   * IGN/CNIG PNOA maxima actualidad RGB WMS for visible imagery
   * Sentinel-2 L2A NIR via Element84 Earth Search for the fourth NIR band

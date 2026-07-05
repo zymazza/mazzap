@@ -24,10 +24,10 @@ x-veil-base: &veil-base
     # Which twin to serve / operate on. Point at /app/twins/<name>/data for
     # an alternate twin.
     TWIN_DATA_DIR: "${TWIN_DATA_DIR:-/app/data}"
-    # Meshtastic/LoRA live bridge deps are installed into this image venv.
+    # Meshtastic/LoRa live bridge deps are installed into this image venv.
     VEIL_LIVE_PYTHON: "${VEIL_LIVE_PYTHON:-/opt/veil-live/bin/python}"
     VEIL_LIVE_TOKEN: "${VEIL_LIVE_TOKEN:-}"
-    # "Ask the land" chat panel (optional). Set OPENAI_API_KEY in your shell
+    # "Ask G.A.I.A." chat panel (optional). Set OPENAI_API_KEY in your shell
     # or a .env file, or mount a .openai_key file (below).
     OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
     OPENAI_REQUIRE_USER_KEY: "${OPENAI_REQUIRE_USER_KEY:-}"
@@ -77,4 +77,11 @@ services:
       # Optional: provide the chat/live keys as files instead of env vars.
       # - ./.openai_key:/app/.openai_key:ro
       # - ./.live_token:/app/.live_token:ro
+    # SECURITY TRADEOFF: `privileged` + the whole /dev tree is the blunt way to
+    # reach arbitrary USB-serial/Bluetooth gateways, but it grants this container
+    # full host device access. This service is opt-in (the "live-hardware"
+    # profile) and meant for a trusted local host only. To tighten it, drop
+    # `privileged`, mount only the specific device(s) you use via `devices:`
+    # (e.g. `- /dev/ttyUSB0:/dev/ttyUSB0`), and add the `dialout`/`bluetooth`
+    # groups via `group_add` instead.
     privileged: true

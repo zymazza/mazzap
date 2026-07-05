@@ -358,6 +358,7 @@ def main():
         "file": "atlas/local/gssurgo_soils.geojson",
         "fill": "rgba(181,131,141,0.45)",
         "stroke": "#b5838d",
+        "categorical": True,
         "feature_count": len(features),
         "acquisition": "api_snapshot",
         "service": "USDA Soil Data Access (SSURGO)",

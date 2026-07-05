@@ -15,8 +15,16 @@ static server serves a Three.js viewer over a self-contained bundle of geospatia
 data. Nothing is fetched from the network when you view it.
 
 ```bash
+# A fresh clone ships the engine, not a place — build a twin first:
+npm run demo       # build the bundled Flatirons demo twin (needs internet + GDAL)
+npm run serve-demo # -> http://127.0.0.1:4174
+
+# ...or build your own area interactively, then serve it:
+npm run init       # guided setup: draw an AOI, fetch data, build the twin
 npm start          # -> http://127.0.0.1:4173
 ```
+
+(`npm start` with no twin built yet just tells you to run one of the above.)
 
 Requires Node ≥ 18 (the server uses the built-in `fetch`); the data pipeline
 scripts need Python 3 with GDAL (`osgeo`), numpy, pyproj, and Pillow. The
@@ -58,7 +66,7 @@ optional **regional pack**, never hardcoded in the engine.
   field, then upload the zipped project folder back through the viewer. Uploads
   become journaled `survey_*` entities, rendered as survey layers and queryable
   through MCP. See [docs/survey.md](docs/survey.md).
-- **Live telemetry** — register Meshtastic/LoRA gateways from the viewer,
+- **Live telemetry** — register Meshtastic/LoRa gateways from the viewer,
   render live tracker positions, replay recorded days with realtime/speed
   controls and tracker POV, then append selected samples into the curated twin
   store. See [docs/live-inputs.md](docs/live-inputs.md).
@@ -196,13 +204,17 @@ TWIN_DATA_DIR=./twins/mine/data npm start
 ```
 
 Coverage is **tiered, and the pack is honest about which tier you get**. 14
-members have a national-data adapter that pulls their own higher-resolution
-terrain/LiDAR — **BE, CZ, DK, EE, ES, FI, FR, LU, LV, NL, NO, PL, SE, SK**; the
-remaining members fall back to the **global stack**, which works for any land
-AOI on Earth. So every member resolves to a working fetch path — but *builds a
-twin* is not the same as *builds a great twin*: where a member relies on the
-global fallback, the terrain (30 m) and the canopy are **modeled, not surveyed**,
-and the quality of the free aerial imagery varies by location and date (see the
+members ship a national adapter, but the tier they deliver varies. Seven pull
+their own higher-resolution national terrain today (Tier A) — **BE, CZ, ES, FR,
+LU, NL, NO**; the other seven adapters (**DK, EE, FI, LV, PL, SE, SK**) are
+wired up and probe their national services, but currently fall back to the
+**global 30 m stack** where an anonymous/tokenless high-res route wasn't
+reachable (per-country specifics in [`packs/nato/README.md`](packs/nato/README.md)).
+Every remaining member also resolves through that global stack, which works for
+any land AOI on Earth. So every member resolves to a working fetch path — but
+*builds a twin* is not the same as *builds a great twin*: where a member relies
+on the global fallback, the terrain (30 m) and the canopy are **modeled, not
+surveyed**, and the quality of the free aerial imagery varies by location and date (see the
 note below). The US is served by its own richer `us-national` pack (3DEP LiDAR +
 NAIP + LANDFIRE), not this one. What the pack pulls, all as clickable atlas
 layers:
@@ -433,7 +445,7 @@ TWIN_DATA_DIR=./twins/mine/data python3 scripts/twin_query.py describe_twin
 ```
 
 You do **not** start the MCP server separately for the browser app. Open **Ask
-the land**, and the Node server lazily spawns `scripts/mcp_server.py` on the
+G.A.I.A.**, and the Node server lazily spawns `scripts/mcp_server.py` on the
 first chat request. Provide an OpenAI key either way:
 
 ```bash
@@ -573,9 +585,9 @@ npm run test:demo   # real data: the Flatirons demo twin
 `npm test` runs `scripts/twin_query_test.py` against a tiny **committed fixture
 twin** (`tests/fixtures/mini-twin/data`) — a synthetic, network-free twin built
 by `scripts/build_test_fixture.py`. It needs no internet and no GDAL (just
-Python + `pyproj`; Node for the proj4js cross-check), so CI runs the full query
-suite offline. Every expectation is derived from the twin under test, never
-hardcoded to a place.
+Python + `pyproj`; Node for the proj4js cross-check), so the full query suite
+runs offline anywhere — in CI or on a fresh clone. Every expectation is derived
+from the twin under test, never hardcoded to a place.
 
 `npm run test:demo` runs the same suite against the **Flatirons demo twin**
 (`twins/demo/data`), building it first from live national services if it isn't
@@ -608,5 +620,14 @@ open internet:
   its own key and every request must bring its own.
 - Survey uploads can be token-gated (a `.survey_token` file at the repo root
   enforces an `X-Survey-Token` header); without the file the route is open.
+- **The live-telemetry API (`/api/live/*`) is unauthenticated by default and can
+  spawn local processes.** Unless you set a `.live_token` (or `VEIL_LIVE_TOKEN`),
+  anyone who can reach the port can register/start Meshtastic bridge processes
+  and trigger serial/Bluetooth device scans. It is disabled entirely in hosted
+  mode; set a token before exposing the port on a LAN.
 - There is no TLS, no rate limiting, and no auth on the building-placement
   endpoint — by design, for a single-user posture.
+- State-changing routes require the request's `Origin`/`Referer` to match `Host`
+  (blocking ordinary cross-site drive-by POSTs). That check alone does **not**
+  stop DNS rebinding; on any exposed deployment set **`VEIL_ALLOWED_HOSTS`**
+  (comma-separated hostnames) to pin the acceptable `Host` values.

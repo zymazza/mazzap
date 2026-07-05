@@ -39,4 +39,3 @@ Dockerfile
 .dockerignore
 docker-compose.yml
 .devcontainer
-HYDROLOGY-RESEARCH.md

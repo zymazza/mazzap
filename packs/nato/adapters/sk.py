@@ -2,7 +2,7 @@
 
 National source status:
   * UGKK SR / ZBGIS DMR/DMP and orthophoto WCS/WMS routes were checked.
-  * Those hosts timed out from this environment during anonymous probes, so the
+  * Those hosts timed out during anonymous probes, so the
     unattended build uses the shared fallback stack:
 
       - Copernicus GLO-30 terrain
@@ -47,7 +47,7 @@ class SlovakiaAdapter:
     ]
     FALLBACK_NOTE = (
         "UGKK SR / ZBGIS DMR, DMP, and orthophoto service routes timed out "
-        "from this environment during anonymous probes; using GLO-30 + "
+        "during anonymous probes; using GLO-30 + "
         "forest-masked Meta/WRI canopy when covered, ETH fallback canopy, and Sentinel-2."
     )
 

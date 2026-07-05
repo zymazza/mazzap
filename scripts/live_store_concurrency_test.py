@@ -49,7 +49,7 @@ def make_event(i):
         "device_id": f"!dev{i:05x}",
         "observed_at": ts,
         "received_at": ts,
-        "position": {"lat": 43.5 + i * 1e-4, "lon": -74.3 - i * 1e-4},
+        "position": {"lat": 39.98 + i * 1e-4, "lon": -105.27 - i * 1e-4},
         "link": {"gateway_id": "gw-test"},
     }
 

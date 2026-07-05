@@ -30,7 +30,6 @@ from dataclasses import dataclass
 import numpy as np
 from osgeo import gdal, osr
 from pyproj import Transformer
-import requests
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PACK_DIR = os.path.dirname(HERE)
@@ -1295,10 +1294,12 @@ def _sentinel2_candidate_items(bbox, datetime_range):
         "sortby": [{"field": "properties.eo:cloud_cover", "direction": "asc"}],
     }
     url = EARTH_SEARCH.rstrip("/") + "/search"
-    resp = requests.post(url, json=body, headers={"User-Agent": "veil/1.0 (+packs/nato Sentinel-2)"},
-                         timeout=90)
-    resp.raise_for_status()
-    items = resp.json().get("features", [])
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST", headers={
+        "Content-Type": "application/json",
+        "User-Agent": "veil/1.0 (+packs/nato Sentinel-2)",
+    })
+    with urllib.request.urlopen(req, timeout=90) as resp:
+        items = json.loads(resp.read().decode("utf-8")).get("features", [])
     needed = {"red", "green", "blue", "nir"}
     usable = [it for it in items if needed.issubset(set(it.get("assets", {})))]
     usable.sort(key=lambda it: (

@@ -46,8 +46,8 @@ class FinlandAdapter:
     ]
     FALLBACK_NOTE = (
         "NLS/Maanmittauslaitos 2 m DEM and orthophoto interfaces are documented "
-        "as open-data channels, but anonymous WCS/WMS/OGC API calls returned 401 "
-        "from this environment; using GLO-30 + forest-masked Meta/WRI canopy when "
+        "as open-data channels, but anonymous WCS/WMS/OGC API calls return 401; "
+        "using GLO-30 + forest-masked Meta/WRI canopy when "
         "covered, ETH fallback canopy, and Sentinel-2."
     )
 

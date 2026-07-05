@@ -410,21 +410,30 @@ expect_error("unknown entity rejected", tq.get_entity, "tree:nope")
 
 
 print("== identify_at / sample_raster ==")
+# Every expectation below is derived from the twin under test — the layer
+# catalog, the terrain grid — never hardcoded to a place.
 a = tq.identify_at({"x": 50.0, "y": 100.0})
 ids = {r["layer_id"] for r in a["atlas"]}
-check("identify returns soils + geology + landfire + nlcd",
-      {"gssurgo_soils", "hudson_mohawk_surficial_geology",
-       "landfire_evt_2024", "nlcd_2019_landcover"} <= ids, str(ids))
-soil = next(r for r in a["atlas"] if r["layer_id"] == "gssurgo_soils")
-check("soil card carries drainage/hydrologic group",
-      "drclassdcd" in soil["properties"] and "hydgrpdcd" in soil["properties"])
+catalog_ids = {l["layer_id"] for l in tq.list_layers()["layers"]}
+check("identify returns atlas layers at an interior point",
+      len(ids) >= 2, str(ids))
+check("every identified layer exists in the twin's catalog",
+      ids <= catalog_ids, str(ids - catalog_ids))
+if "gssurgo_soils" in ids:
+    soil = next(r for r in a["atlas"] if r["layer_id"] == "gssurgo_soils")
+    check("soil card carries drainage/hydrologic group",
+          "drclassdcd" in soil["properties"] and "hydgrpdcd" in soil["properties"])
 check("identify provenance on every atlas fact",
       all(r["provenance"].get("acquisition") for r in a["atlas"]))
-check("species habitat list present",
-      a["species_habitat"] and a["species_habitat"]["count"] > 0)
+if a.get("species_habitat"):
+    check("species habitat list present", a["species_habitat"]["count"] > 0)
 check("containing parcel reported",
       any(c["kind"] == "parcel" for c in a["entities_here"]))
-check("elevation sampled", 280 < (a["elevation_m"] or 0) < 400)
+with open(os.path.join(os.environ["TWIN_DATA_DIR"], "terrain", "grid.json")) as fh:
+    _grid = json.load(fh)
+check("elevation sampled within the twin's terrain range",
+      _grid["minElevation"] - 1.0 <= (a["elevation_m"] or float("-inf"))
+      <= _grid["maxElevation"] + 1.0)
 
 b = tq.identify_at({"lat": a["point"]["lat"], "lon": a["point"]["lon"]})
 check("identify identical via lat/lon and x/y (acceptance 8)",

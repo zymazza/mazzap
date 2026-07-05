@@ -6,7 +6,7 @@ Implemented sources:
   * Sentinel-2 L2A RGB+NIR via Element84 Earth Search for imagery
 
 The public Norge i bilder national WMS/WMTS services require Norway Digital
-authorization or a token from this environment, including the orthophoto/CIR
+authorization or a token (no anonymous route), including the orthophoto/CIR
 routes. This adapter therefore uses the open national height model for terrain
 and canopy structure, and the existing open Sentinel-2 path for RGB+NIR.
 """
@@ -64,7 +64,7 @@ class NorwayAdapter:
     NIB_WMTS_UTM32 = "https://tilecache.norgeibilder.no/wmts/utm32_euref89"
     NIB_RESTRICTION = (
         "Norge i bilder national WMS/WMTS requires Norway Digital authorization "
-        "or token access from this environment; Sentinel-2 supplies RGB+NIR."
+        "or token access (no anonymous route); Sentinel-2 supplies RGB+NIR."
     )
 
     nodata_fill_search_distances_px = (256, 512, 1024)

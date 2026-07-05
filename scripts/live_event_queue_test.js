@@ -246,7 +246,7 @@ test('normalizeLiveEvent canonicalizes timestamp formats and rejects invalid tim
     device_id: 'dev-time',
     observed_at: '2026-01-02T03:04:05.987+00:00',
     received_at: '2026-01-02T03:04:07.123Z',
-    position: { lat: 44, lon: -73 },
+    position: { lat: 39.98, lon: -105.27 },
   });
 
   assert.equal(event.observed_at, '2026-01-02T03:04:05Z');
@@ -257,7 +257,7 @@ test('normalizeLiveEvent canonicalizes timestamp formats and rejects invalid tim
       kind: 'position',
       device_id: 'dev-time',
       observed_at: '2026-01-02T03:04:05',
-      position: { lat: 44, lon: -73 },
+      position: { lat: 39.98, lon: -105.27 },
     }),
     /observed_at must include an explicit timezone/,
   );
@@ -266,7 +266,7 @@ test('normalizeLiveEvent canonicalizes timestamp formats and rejects invalid tim
       kind: 'position',
       device_id: 'dev-time',
       observed_at: 'not-a-time',
-      position: { lat: 44, lon: -73 },
+      position: { lat: 39.98, lon: -105.27 },
     }),
     /observed_at must include an explicit timezone|observed_at must be an ISO timestamp/,
   );
@@ -276,7 +276,7 @@ test('normalizeLiveEvent canonicalizes timestamp formats and rejects invalid tim
       device_id: 'dev-time',
       observed_at: '2026-01-02T03:04:05Z',
       received_at: 'not-a-time',
-      position: { lat: 44, lon: -73 },
+      position: { lat: 39.98, lon: -105.27 },
     }),
     /received_at must include an explicit timezone|received_at must be an ISO timestamp/,
   );
@@ -308,13 +308,13 @@ test('liveSnapshot filters explicit gateway self-node ids without BLE address in
       device_id: '!ccddeeff',
       observed_at: '2026-01-02T03:04:05Z',
       received_at: '2026-01-02T03:04:06Z',
-      position: { lat: 44, lon: -73 },
+      position: { lat: 39.98, lon: -105.27 },
     });
     liveApi.liveLatest.set('!11223344', {
       device_id: '!11223344',
       observed_at: '2026-01-02T03:04:05Z',
       received_at: '2026-01-02T03:04:06Z',
-      position: { lat: 44.1, lon: -73 },
+      position: { lat: 40.08, lon: -105.27 },
     });
     for (let i = 0; i < 25; i += 1) {
       const deviceId = `device-${i}`;
@@ -323,7 +323,7 @@ test('liveSnapshot filters explicit gateway self-node ids without BLE address in
         device_id: deviceId,
         observed_at: '2026-01-02T03:04:05Z',
         received_at: '2026-01-02T03:04:06Z',
-        position: { lat: 44 + i * 0.001, lon: -73 },
+        position: { lat: 39.98 + i * 0.001, lon: -105.27 },
       });
     }
 
@@ -366,7 +366,7 @@ test('liveSnapshot hides unconfigured Meshtastic node defaults unless discovery 
       label: 'Khadijah Tracker',
       observed_at: '2026-01-02T03:04:05Z',
       received_at: '2026-01-02T03:04:06Z',
-      position: { lat: 44, lon: -73 },
+      position: { lat: 39.98, lon: -105.27 },
       link: { gateway_id: 'gateway-a' },
     });
     liveApi.liveLatest.set('!050da23c', {
@@ -374,7 +374,7 @@ test('liveSnapshot hides unconfigured Meshtastic node defaults unless discovery 
       label: 'Meshtastic a23c',
       observed_at: '2026-01-02T03:04:05Z',
       received_at: '2026-01-02T03:04:06Z',
-      position: { lat: 42, lon: -73 },
+      position: { lat: 39.80, lon: -105.27 },
       link: { gateway_id: 'gateway-a' },
     });
 
@@ -419,7 +419,7 @@ test('rememberLiveEvent streams unconfigured devices only to discovery clients',
       device_id: '!050da23c',
       label: 'Meshtastic a23c',
       observed_at: '2026-01-02T03:04:05Z',
-      position: { lat: 42, lon: -73 },
+      position: { lat: 39.80, lon: -105.27 },
     }));
 
     assert.equal(normalClient.writes.length, 0);
@@ -432,7 +432,7 @@ test('rememberLiveEvent streams unconfigured devices only to discovery clients',
       device_id: '!050da23c',
       label: 'Meshtastic a23c',
       observed_at: '2026-01-02T03:04:06Z',
-      position: { lat: 42.1, lon: -73 },
+      position: { lat: 39.90, lon: -105.27 },
     }));
 
     assert.equal(normalClient.writes.length, 1);
@@ -539,7 +539,7 @@ test('queued live persistence preserves event file order and serializes DB appen
       label: 'Device A',
       message,
       observed_at: new Date(base + idx * 1000).toISOString(),
-      position: { lat: 44 + idx * 0.001, lon: -73 },
+      position: { lat: 39.98 + idx * 0.001, lon: -105.27 },
     });
     liveApi.rememberLiveEvent(event);
   }

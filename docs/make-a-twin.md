@@ -144,7 +144,7 @@ locally-correct species, write a region pack (`packs/<name>/vegetation.py` —
 > your default `./data`.
 
 ## 6. (Optional) deeper features
-- **The twin store + "Ask the land" chat**: `npm run migrate` seeds the store
+- **The twin store + "Ask G.A.I.A." chat**: `npm run migrate` seeds the store
   for a twin; the chat panel and MCP query tools then work against it. See
   [mcp.md](mcp.md).
 - **A regional pack**: to get place-specific styling, attribute enrichment, and

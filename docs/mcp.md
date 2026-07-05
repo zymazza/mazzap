@@ -241,8 +241,7 @@ Natural-language questions and the tool calls they become:
 
 ## Hydrology simulation
 
-The Simulation window's engine is on the MCP server (see
-"Hydrology simulation" in CLAUDE.md and the sibling `HYDROLOGY-RESEARCH.md`):
+The Simulation window's engine is on the MCP server:
 
 - `hydrology_at(point)` samples every Tier-1 derived layer (upslope
   contributing area, TWI wetness percentile, ponding depth, the spring/seep
@@ -278,7 +277,7 @@ were already queryable via `find_entities` / `summarize_region` /
 
 ## The viewer chat panel
 
-The viewer ships an "Ask the land" panel (above the coordinate readout) that
+The viewer ships an "Ask G.A.I.A." panel (above the coordinate readout) that
 exposes this MCP server through an LLM: `POST /api/chat` in `server.js`
 spawns `scripts/mcp_server.py` once, speaks MCP over stdio, and hands the
 tool catalog to OpenAI `gpt-5.5` (Responses API function calling; override

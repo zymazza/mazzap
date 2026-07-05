@@ -31,7 +31,7 @@ class LiveStoreTimestampTest(unittest.TestCase):
             "message": "middle-z",
             "observed_at": "2026-01-02T03:04:06Z",
             "received_at": "2026-01-02T03:04:07+00:00",
-            "position": {"lat": 44.0, "lon": -73.0},
+            "position": {"lat": 39.98, "lon": -105.27},
         })
         live_store.append_event({
             "kind": "position",
@@ -39,7 +39,7 @@ class LiveStoreTimestampTest(unittest.TestCase):
             "message": "first-offset",
             "observed_at": "2026-01-02T03:04:05+00:00",
             "received_at": "2026-01-02T03:04:06.250Z",
-            "position": {"lat": 44.1, "lon": -73.0},
+            "position": {"lat": 39.99, "lon": -105.27},
         })
         live_store.append_event({
             "kind": "position",
@@ -47,7 +47,7 @@ class LiveStoreTimestampTest(unittest.TestCase):
             "message": "last-millis",
             "observed_at": "2026-01-02T03:04:07.999Z",
             "received_at": "2026-01-02T03:04:08.999+00:00",
-            "position": {"lat": 44.2, "lon": -73.0},
+            "position": {"lat": 40.00, "lon": -105.27},
         })
 
         history = live_store.telemetry_history(since="2026-01-02T03:04:06+00:00", limit=10)
@@ -85,7 +85,7 @@ class LiveStoreTimestampTest(unittest.TestCase):
                 "device_id": "bad",
                 "observed_at": "not-a-time",
                 "received_at": "2026-01-02T03:04:06Z",
-                "position": {"lat": 44.0, "lon": -73.0},
+                "position": {"lat": 39.98, "lon": -105.27},
             })
         with self.assertRaises(ValueError):
             live_store.append_event({
@@ -93,7 +93,7 @@ class LiveStoreTimestampTest(unittest.TestCase):
                 "device_id": "bad",
                 "observed_at": "2026-01-02T03:04:06",
                 "received_at": "2026-01-02T03:04:06Z",
-                "position": {"lat": 44.0, "lon": -73.0},
+                "position": {"lat": 39.98, "lon": -105.27},
             })
 
         with live_store.connect() as conn:
