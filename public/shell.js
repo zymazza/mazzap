@@ -20,6 +20,7 @@
     layers: 'Layers',
     explore: 'Explore',
     simulate: 'Simulate water',
+    fire: 'Simulate fire',
     survey: 'Field surveys',
     telemetry: 'Live telemetry',
   };

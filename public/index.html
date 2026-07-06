@@ -36,6 +36,10 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3s6 6.5 6 10.5A6 6 0 016 13.5C6 9.5 12 3 12 3z"/><path d="M9.5 14a2.5 2.5 0 002.5 2.5"/></svg>
       <span>Simulate</span>
     </button>
+    <button class="rail-btn" data-mode="fire" title="Simulate fire">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3c2.7 3 5 5.8 5 9a5 5 0 01-10 0c0-1.8 1-3.4 2.3-4.9.1 1.7.8 2.8 2 3.5-.1-2.4.8-4.9.7-7.6z"/><path d="M12 20c-1.7-.8-2.6-2-2.6-3.5 0-1.3.8-2.4 1.8-3.5.2 1.3.8 2.3 1.8 3 .4-.9.5-1.8.4-2.9 1.1 1.2 1.7 2.4 1.7 3.5 0 1.5-1 2.7-3.1 3.4z"/></svg>
+      <span>Fire</span>
+    </button>
     <button class="rail-btn" data-mode="survey" title="Field surveys">
       <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V3h6v1"/><path d="M8.5 10h7M8.5 14h7M8.5 18h4"/></svg>
       <span>Survey</span>
@@ -185,6 +189,65 @@
           <p class="group-label">Scenario layers</p>
           <div id="sim-scenario-toggles" class="toggle-list"></div>
           <div id="sim-results" class="sim-results"></div>
+        </div>
+      </section>
+
+      <!-- ---------- FIRE ---------- -->
+      <section class="pane" data-pane="fire" id="fire-panel">
+        <div class="group">
+          <p class="group-label">Fire environment</p>
+          <p class="hint">Static fire behavior computed from fuel model + canopy + terrain; weather-independent.</p>
+          <div id="fire-tier1-toggles" class="toggle-list">
+            <p class="hint">Run <code>npm run analyze-fuels</code> to build the Tier-1 wildfire layers.</p>
+          </div>
+        </div>
+
+        <div class="group">
+          <p class="group-label">Fire scenario</p>
+          <p class="hint">Pick an ignition + weather; the engine spreads fire and derives fuel moisture.</p>
+          <form id="fire-form" class="sim-form">
+            <button id="fire-pick" type="button" class="wide-btn">Pick ignition</button>
+            <p id="fire-ignition-readout" class="readout-hint">none - pick a point on the terrain</p>
+            <div class="preset-list" id="fire-presets"></div>
+            <div id="fire-custom-weather" class="sim-form">
+              <div class="sim-field-row">
+                <label>Date <input id="fire-custom-date" type="date" /></label>
+                <label>Temp <input id="fire-custom-temp" type="number" min="-20" max="130" step="1" /> F</label>
+                <label>Relative humidity <input id="fire-custom-rh" type="number" min="1" max="100" step="1" /> %</label>
+              </div>
+              <div class="sim-field-row">
+                <label>Wind <input id="fire-custom-wind" type="number" min="0" max="120" step="1" /> mph</label>
+                <label>Downwind dir <input id="fire-custom-wind-dir" type="number" min="0" max="359" step="1" /> deg</label>
+                <label>Rain age <input id="fire-custom-days-rain" type="number" min="0" max="120" step="1" /> d</label>
+              </div>
+              <div class="sim-field-row">
+                <label>Drought <select id="fire-custom-drought">
+                  <option value="normal">normal</option>
+                  <option value="dry">dry</option>
+                  <option value="severe">severe</option>
+                  <option value="extreme">extreme</option>
+                </select></label>
+              </div>
+            </div>
+            <div class="sim-field-row">
+              <label>Fuel source <select id="fire-fuel-source" title="National 30 m; may miss parcel-scale conifer">
+                <option value="landfire" selected title="National 30 m; may miss parcel-scale conifer">LANDFIRE 2024</option>
+                <option value="computed" title="LiDAR + LANDFIRE crosswalk; local, higher uncertainty">Computed from local vegetation</option>
+              </select></label>
+              <label><input id="fire-hydrology" type="checkbox" checked title="Use this twin's streams, wetlands, ponding, and wetness layers" /> Hydrology influence</label>
+              <label>Duration <input id="fire-duration" type="number" min="1" max="1440" step="1" value="240" /> minutes</label>
+            </div>
+            <p class="hint" title="LANDFIRE is national 30 m; Computed derives conifer fuels from this twin's LiDAR canopy where LANDFIRE may under-map them (screening-grade).">LANDFIRE is national 30 m; Computed derives conifer fuels from LiDAR where LANDFIRE may under-map them (screening-grade).</p>
+            <p class="hint">Streams, wetlands &amp; wet ground slow or block fire from this twin's hydrology; wetlands can still burn in drought.</p>
+            <button id="fire-run" type="submit" class="primary-btn" disabled>Run fire scenario</button>
+          </form>
+          <p id="fire-status" class="sim-status"></p>
+        </div>
+
+        <div class="group" id="fire-scenario-group" hidden>
+          <p class="group-label">Scenario result</p>
+          <div id="fire-scenario-toggles" class="toggle-list"></div>
+          <div id="fire-results" class="sim-results"></div>
         </div>
       </section>
 
@@ -375,6 +438,7 @@
   <script src="/chat.js"></script>
   <script src="/survey.js"></script>
   <script src="/simulation.js"></script>
+  <script src="/wildfire.js"></script>
   <script src="/live-inputs.js"></script>
   <script src="/layer-upload.js"></script>
   <!-- boot (shared) -->

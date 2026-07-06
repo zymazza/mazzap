@@ -61,6 +61,10 @@ HYDRO_DIR = os.path.join(DATA, "hydrology")
 HYDRO_SIM_CATALOG = os.path.join(HYDRO_DIR, "simulation-layers.json")
 HYDRO_SUMMARY = os.path.join(HYDRO_DIR, "summary.json")
 HYDRO_LAST_SCENARIO = os.path.join(HYDRO_DIR, "last-scenario.json")
+FIRE_DIR = os.path.join(DATA, "fire")
+FIRE_SIM_CATALOG = os.path.join(FIRE_DIR, "fire-layers.json")
+FIRE_SUMMARY = os.path.join(FIRE_DIR, "summary.json")
+FIRE_LAST_SCENARIO = os.path.join(FIRE_DIR, "last-fire-scenario.json")
 SOILS_FEATURES = os.path.join(DATA, "soils", "features.geojson")
 SOILS_TABULAR = os.path.join(DATA, "soils", "tabular.json")
 
@@ -1006,6 +1010,23 @@ class TwinQuery:
             with open(os.path.join(DATA, layer["grid"])) as fh:
                 return json.load(fh)
         return self._cache(("hydro_grid", layer["id"]), build)
+
+    def _fire_catalog(self):
+        """fire-layers.json entries (Tier-1 fuels + any scenario layers), or
+        [] when `npm run analyze-fuels` hasn't run."""
+        def build():
+            try:
+                with open(FIRE_SIM_CATALOG) as fh:
+                    return json.load(fh).get("layers", [])
+            except (OSError, ValueError):
+                return []
+        return self._cache("fire_catalog", build)
+
+    def _fire_grid(self, layer):
+        def build():
+            with open(os.path.join(DATA, layer["grid"])) as fh:
+                return json.load(fh)
+        return self._cache(("fire_grid", layer["id"]), build)
 
     @staticmethod
     def _read_json(path):
@@ -3016,6 +3037,388 @@ class TwinQuery:
         if frozen is True:
             argv += ["--frozen"]
         return argv
+
+    # -- wildfire simulation (the Fire pane) ---------------------------------
+
+    def fire_at(self, point):
+        """The wildfire read at one point: Tier-1 fuelscape plus latest
+        scenario layers, with the same plain-language style as the viewer."""
+        cat = self._fire_catalog()
+        if not cat:
+            raise TwinQueryError(
+                "no fire layers — run `npm run analyze-fuels` first",
+                path=FIRE_SIM_CATALOG)
+        x, y = resolve_point(point, self.georef)
+        echo = self.georef.echo(x, y)
+        layers = {}
+        sampled_values = {}
+        any_value = False
+        for layer in cat:
+            grid = self._fire_grid(layer)
+            s = sample_grid(grid, layer["bounds_local"], x, y)
+            row = col = None
+            value = None
+            if s:
+                row, col, value = s
+                if value is not None and value == grid.get("nodata"):
+                    value = None
+            if value is not None:
+                any_value = True
+            shown = round(value, 3) if isinstance(value, (int, float)) else value
+            legend = None
+            if value is not None:
+                key = str(int(round(value))) if isinstance(value, (int, float)) else str(value)
+                legend = (grid.get("legend") or {}).get(key)
+            layers[layer["id"]] = {
+                "value": shown,
+                "row": row,
+                "col": col,
+                "label": layer.get("label"),
+                "group": layer.get("group"),
+                "description": layer.get("description"),
+                "value_kind": grid.get("value_kind") or layer.get("value_kind"),
+                "value_unit": grid.get("value_unit") or layer.get("value_unit"),
+                "cell_area_m2": grid.get("cell_area_m2") or layer.get("cell_area_m2"),
+                "legend": legend,
+                "acquisition": layer.get("acquisition"),
+            }
+            sampled_values[layer["id"]] = shown
+        provenance = self._fire_provenance()
+        if not any_value:
+            return {
+                "error": "no fire data at this point — it is outside the analyzed terrain footprint",
+                "point": echo,
+                "layers": layers,
+                "sampled_values": sampled_values,
+                "provenance": provenance,
+            }
+        last = self._read_json(FIRE_LAST_SCENARIO)
+        return {
+            "point": echo,
+            "layers": layers,
+            "sampled_values": sampled_values,
+            "summary": self._fire_sentences(layers, last),
+            "last_scenario": self._fire_last_scenario_brief(last),
+            "provenance": provenance,
+        }
+
+    def fire_summary(self):
+        """The headline wildfire read for the whole property."""
+        summ = self._read_json(FIRE_SUMMARY)
+        if not summ:
+            raise TwinQueryError(
+                "no fire summary — run `npm run analyze-fuels` first",
+                path=FIRE_SUMMARY)
+        last = self._read_json(FIRE_LAST_SCENARIO)
+        return {
+            "summary": summ,
+            "fuel_model_breakdown": summ.get("fuel_model_breakdown"),
+            "canopy_stats": summ.get("canopy_stats"),
+            "crown_potential_fractions": summ.get("crown_potential_fractions"),
+            "TI_baseline": summ.get("TI_baseline"),
+            "CI_baseline": summ.get("CI_baseline"),
+            "last_scenario": last,
+            "provenance": self._fire_provenance(),
+        }
+
+    def run_fire_scenario(self, ignition_x, ignition_y, weather_class=None,
+                          temp_f=None, rh_min=None, wind_mph=None,
+                          wind_dir=None, days_since_rain=None, drought=None,
+                          exposure=None, date=None, duration_min=None,
+                          fmc_override=None):
+        """Run scripts/fire_scenario.py with the same clamping as the viewer."""
+        if not os.path.isdir(FIRE_DIR):
+            return {"error": "fire not initialized — run `npm run analyze-fuels` first",
+                    "path": FIRE_DIR}
+        try:
+            argv = self._fire_scenario_argv(
+                ignition_x, ignition_y, weather_class=weather_class,
+                temp_f=temp_f, rh_min=rh_min, wind_mph=wind_mph,
+                wind_dir=wind_dir, days_since_rain=days_since_rain,
+                drought=drought, exposure=exposure, date=date,
+                duration_min=duration_min, fmc_override=fmc_override)
+        except TwinQueryError as e:
+            return e.payload
+        try:
+            self.conn.commit()
+        except Exception:
+            pass
+        import subprocess
+        try:
+            proc = subprocess.run(
+                [sys.executable, os.path.join(PROJECT, "scripts", "fire_scenario.py"),
+                 "--json"] + argv,
+                cwd=PROJECT, env={**os.environ, "TWIN_DATA_DIR": DATA},
+                timeout=180, capture_output=True, text=True)
+        except subprocess.TimeoutExpired:
+            return {"error": "fire scenario timed out after 180 s"}
+        if proc.returncode != 0:
+            return {"error": "fire scenario run failed",
+                    "detail": proc.stderr.strip()[-400:]}
+        lines = [ln for ln in proc.stdout.strip().split("\n") if ln]
+        try:
+            result = json.loads(lines[-1])
+        except (ValueError, IndexError):
+            return {"error": "fire scenario produced no parseable result",
+                    "stdout": proc.stdout[-400:]}
+        self._caches = {}
+        return result
+
+    @staticmethod
+    def _fire_scenario_argv(ignition_x, ignition_y, weather_class=None,
+                            temp_f=None, rh_min=None, wind_mph=None,
+                            wind_dir=None, days_since_rain=None, drought=None,
+                            exposure=None, date=None, duration_min=None,
+                            fmc_override=None):
+        """Validate + clamp fire scenario params into fire_scenario.py argv.
+
+        wind_dir is the downwind / maximum-spread azimuth in degrees clockwise
+        from north, not the meteorological wind-from bearing.
+        """
+        def num(v):
+            return (float(v) if type(v) in (int, float) and math.isfinite(float(v))
+                    else None)
+        def js_number(v):
+            v = float(v)
+            if v == 0:
+                return "0"
+            if v.is_integer():
+                return str(int(v))
+            return repr(v)
+        def clamp(v, lo, hi):
+            return js_number(min(hi, max(lo, float(v))))
+
+        ix = num(ignition_x)
+        iy = num(ignition_y)
+        if ix is None or iy is None:
+            raise TwinQueryError("ignition_x and ignition_y must be finite numbers")
+        try:
+            with open(TERRAIN_GRID) as fh:
+                grid = json.load(fh)
+            bounds = {
+                "minX": float(grid["minX"]),
+                "maxX": float(grid["maxX"]),
+                "minY": float(grid["minY"]),
+                "maxY": float(grid["maxY"]),
+            }
+        except (OSError, ValueError, KeyError) as e:
+            raise TwinQueryError(f"could not read terrain grid bounds: {e}")
+        if (ix < bounds["minX"] or ix > bounds["maxX"]
+                or iy < bounds["minY"] or iy > bounds["maxY"]):
+            raise TwinQueryError(
+                "ignition outside grid bounds "
+                f"[{js_number(bounds['minX'])}, {js_number(bounds['maxX'])}] x "
+                f"[{js_number(bounds['minY'])}, {js_number(bounds['maxY'])}]")
+        argv = ["--ignition-x", js_number(ix), "--ignition-y", js_number(iy)]
+
+        weather_classes = {
+            "normal_spring", "high_spring", "extreme_redflag",
+            "summer_drought", "dormant_fall",
+        }
+        droughts = {"normal", "dry", "severe", "extreme"}
+        exposures = {"shaded", "mixed", "open"}
+        if weather_class is not None:
+            if weather_class not in weather_classes:
+                raise TwinQueryError("invalid weather_class")
+            argv += ["--weather-class", weather_class]
+        if drought is not None:
+            if drought not in droughts:
+                raise TwinQueryError("invalid drought")
+            argv += ["--drought", drought]
+        if exposure is not None:
+            if exposure not in exposures:
+                raise TwinQueryError("invalid exposure")
+            argv += ["--exposure", exposure]
+
+        if TwinQuery._valid_iso_date(date):
+            argv += ["--date", date]
+        if num(wind_mph) is not None:
+            argv += ["--wind-mph", clamp(wind_mph, 0, 120)]
+        if num(wind_dir) is not None:
+            argv += ["--wind-dir", js_number(((float(wind_dir) % 360) + 360) % 360)]
+        if num(temp_f) is not None:
+            argv += ["--temp-f", clamp(temp_f, -20, 130)]
+        if num(rh_min) is not None:
+            argv += ["--rh-min", clamp(rh_min, 1, 100)]
+        if num(days_since_rain) is not None:
+            argv += ["--days-since-rain", clamp(days_since_rain, 0, 120)]
+        if num(duration_min) is not None:
+            argv += ["--duration-min", clamp(duration_min, 1, 1440)]
+        if num(fmc_override) is not None:
+            argv += ["--fmc-override", clamp(fmc_override, 75, 140)]
+        return argv
+
+    @staticmethod
+    def _valid_iso_date(value):
+        if not isinstance(value, str) or not re.match(r"^\d{4}-\d{2}-\d{2}$", value):
+            return False
+        import datetime
+        try:
+            dt = datetime.datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            return False
+        return dt.strftime("%Y-%m-%d") == value
+
+    def _fire_provenance(self):
+        last = self._read_json(FIRE_LAST_SCENARIO) or {}
+        run = self._runs_by_id().get(last.get("run_id"))
+        if run is None:
+            run = max((r for r in self._runs_by_id().values()
+                       if r.get("script") in ("analyze_fuels.py", "fire_scenario.py")),
+                      key=lambda r: r.get("started_at") or "", default=None)
+        layers = []
+        for layer in self._fire_catalog():
+            layers.append({
+                "id": layer.get("id"),
+                "group": layer.get("group"),
+                "acquisition": layer.get("acquisition"),
+                "grid": layer.get("grid"),
+            })
+        return {
+            "source": "twin_fire.py (Rothermel surface + Van Wagner/Scott-Reinhardt crown screen)",
+            "acquisition": "derived",
+            "run_id": last.get("run_id") or (run.get("run_id") if run else None),
+            "observed_at": (run.get("finished_at") or run.get("started_at")) if run else None,
+            "scenario_file": FIRE_LAST_SCENARIO if last else None,
+            "layers": layers,
+            "caveat": "scenario-grade spread screen, not a forecast; wind, fuels, and moisture dominate uncertainty",
+        }
+
+    def _fire_sentences(self, layers, last):
+        def rec(lid):
+            return layers.get(lid) or {}
+        def val(lid):
+            v = rec(lid).get("value")
+            return v if isinstance(v, (int, float)) else None
+        def fmt_measure(value, unit):
+            n = float(value)
+            rounded = f"{n:.1f}" if abs(n) < 10 else f"{round(n):.0f}"
+            return f"{rounded} {unit}"
+        def fmt_arrival(value):
+            minutes = float(value)
+            return f"{round(minutes)} min" if minutes < 90 else f"{minutes / 60:.1f} hr"
+        def crown_sentence(cls, context):
+            suffix = ("under this scenario" if context == "scenario"
+                      else "under the reference worst-case day")
+            if cls == 0:
+                return "Modeled as a surface fire here " + suffix + " — the canopy is not predicted to ignite."
+            if cls == 1:
+                return "Passive crown fire (torching) is modeled here " + suffix + " — individual trees or clumps candle."
+            if cls == 2:
+                return "Active crown fire is modeled here " + suffix + " — fire carries through the canopy."
+            return None
+
+        out = []
+        fuel = val("fuel_model")
+        if fuel is not None:
+            key = str(int(round(fuel)))
+            legend = rec("fuel_model").get("legend") or {}
+            short = legend.get("short_name") or legend.get("name") or key
+            out.append(f"Fuel here: {short}.")
+
+        base = val("base_ros")
+        slope = val("slope_hazard")
+        if base is not None:
+            slope_part = (f", ~{fmt_measure(slope, 'm/min')} with this slope"
+                          if slope is not None else "")
+            out.append("On a moderate day this fuel carries fire at "
+                       f"~{fmt_measure(base, 'm/min')} on flat ground{slope_part}.")
+        elif slope is not None:
+            out.append("On a moderate day this slope-adjusted fuel carries fire "
+                       f"at ~{fmt_measure(slope, 'm/min')}.")
+
+        arrival = val("fire_arrival")
+        duration = (((last or {}).get("scenario") or {}).get("duration_min")
+                    if isinstance(last, dict) else None)
+        if arrival is not None:
+            if isinstance(duration, (int, float)) and arrival > duration:
+                out.append("The fire never reaches this spot in this scenario "
+                           f"(within its {round(duration)}-minute window).")
+            else:
+                out.append(f"Fire reaches this spot ~{fmt_arrival(arrival)} "
+                           "after ignition (+/- class; one wind guess).")
+        elif rec("fire_arrival"):
+            suffix = (f" within the {round(duration)}-minute window"
+                      if isinstance(duration, (int, float)) else "")
+            out.append(f"The fire does not reach this spot in the last scenario{suffix}.")
+
+        flame = val("flame_length")
+        intensity = val("fireline_intensity")
+        if flame is not None:
+            intensity_part = (f" (~{fmt_measure(intensity, 'kW/m')})"
+                              if intensity is not None else "")
+            out.append(f"~{fmt_measure(flame, 'm')} flames here{intensity_part}.")
+        elif intensity is not None:
+            out.append(f"Fireline intensity is ~{fmt_measure(intensity, 'kW/m')} here.")
+
+        crown = val("crown_class")
+        if crown is not None:
+            s = crown_sentence(int(round(crown)), "scenario")
+            if s:
+                out.append(s)
+        else:
+            crown = val("crown_potential")
+            if crown is not None:
+                s = crown_sentence(int(round(crown)), "reference")
+                if s:
+                    out.append(s)
+
+        if val("ember_exposure") is not None:
+            out.append("This spot is in the downwind ember-exposure band; firebrands can cross water, wetlands, roads, and cleared gaps.")
+        recap = self._fire_scenario_recap_sentence(last)
+        if recap:
+            out.append(recap)
+        return out
+
+    @staticmethod
+    def _fire_scenario_recap_sentence(last):
+        if not isinstance(last, dict):
+            return None
+        scenario = last.get("scenario") if isinstance(last.get("scenario"), dict) else {}
+        moist = (last.get("derived_moistures")
+                 if isinstance(last.get("derived_moistures"), dict) else {})
+        label = str(scenario.get("weather_label") or scenario.get("label")
+                    or scenario.get("weather_class") or "Scenario")
+        label = re.sub(r"\s+-\s+", " — ", label)
+        facts = []
+        date = TwinQuery._month_day(scenario.get("date"))
+        if date:
+            facts.append(date)
+        if isinstance(scenario.get("rh_min"), (int, float)):
+            facts.append(f"RH {float(scenario['rh_min']):.0f}%")
+        if isinstance(scenario.get("wind_mph"), (int, float)):
+            facts.append(f"{float(scenario['wind_mph']):.0f} mph wind")
+        moisture_bits = []
+        if isinstance(moist.get("dead_1h_pct"), (int, float)):
+            moisture_bits.append(f"1h {float(moist['dead_1h_pct']):.1f}%")
+        if isinstance(moist.get("fmc_pct"), (int, float)):
+            moisture_bits.append(f"FMC {float(moist['fmc_pct']):.0f}%")
+        fact_text = f" ({', '.join(facts)})" if facts else ""
+        moist_text = f" - moistures {' / '.join(moisture_bits)}" if moisture_bits else ""
+        return f"Scenario: {label}{fact_text}{moist_text}."
+
+    @staticmethod
+    def _month_day(date_text):
+        m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", str(date_text or ""))
+        if not m:
+            return ""
+        names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        idx = int(m.group(2)) - 1
+        month = names[idx] if 0 <= idx < len(names) else m.group(2)
+        return f"{month} {int(m.group(3))}"
+
+    @staticmethod
+    def _fire_last_scenario_brief(last):
+        if not isinstance(last, dict):
+            return None
+        return {
+            "run_id": last.get("run_id"),
+            "scenario": last.get("scenario"),
+            "derived_moistures": last.get("derived_moistures"),
+            "ros_at_ignition": last.get("ros_at_ignition"),
+            "burned_area": last.get("burned_area"),
+        }
 
     def _hydro_provenance(self):
         runs = [r for r in self._runs_by_id().values()

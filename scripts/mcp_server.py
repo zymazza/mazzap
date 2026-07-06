@@ -52,10 +52,13 @@ mcp = FastMCP(
         "geology, land cover, wetlands and species-habitat layers, live telemetry "
         "from field devices and gateways, a terrain-"
         "hydrology model (flow, wetness, ponding, springs/seeps, snowmelt and "
-        "storm scenarios), and any field-survey uploads. The store is read-only; "
-        "run_scenario, the draw_* tools and the layer-view tools "
+        "storm scenarios), a wildfire fuels/scenario model (fuel model, ROS, "
+        "crown potential, arrival/flame/intensity scenario drapes), and any "
+        "field-survey uploads. The store is read-only; run_scenario, "
+        "run_fire_scenario, the draw_* tools and the layer-view tools "
         "(set_layer_visibility / filter_layer / reset_layer_views) are the only "
-        "writers. "
+        "writers; run_fire_scenario is a store-WRITING scenario/fire pipeline "
+        "run, the same run the viewer's Fire pane launches. "
         "Use describe_place for lightweight location/coordinate context; use "
         "describe_twin only when broader inventory counts or run history matter. "
         "Points are {lat,lon} degrees or {x,y} scene-local meters; every result "
@@ -65,7 +68,10 @@ mcp = FastMCP(
         "for the temporary replay database; live_device entities in the twin store "
         "only exist after live telemetry has been exported/materialized. "
         "For water questions use hydrology_at / hydrology_summary, and run_scenario "
-        "for 'what if it …' events. For field observations use list_survey_layers "
+        "for 'what if it …' events. For fire questions use fire_at / fire_summary, "
+        "and run_fire_scenario for ignition/weather scenarios; fire scenario layers "
+        "are viewer-toggled, while WRC reference drapes are ordinary atlas layers "
+        "reachable with set_layer_visibility / filter_layer. For field observations use list_survey_layers "
         "then the survey_* kinds. "
         "When an answer is about a place, show it on the user's live 3D map "
         "instead of reciting coordinates: draw_polygon / draw_point put orange "
@@ -437,6 +443,55 @@ def run_scenario(mode: str = "snowmelt", swe_in: float | None = None,
     return _run(_query().run_scenario, mode=mode, swe_in=swe_in, preset=preset,
                 melt_days=melt_days, rain_in=rain_in, storm_hours=storm_hours,
                 antecedent=antecedent, frozen=frozen)
+
+
+@mcp.tool()
+def fire_at(point: dict) -> dict:
+    """The wildfire read at one point (the Fire pane's click-to-identify,
+    server-side): fuel model, reference and slope-adjusted rate of spread,
+    crown potential, and — if a fire scenario has been run — arrival time,
+    flame length, fireline intensity, and crown class, plus a plain-language
+    reading matching the viewer. point: {"lat","lon"} or {"x","y"}
+    scene-local meters. Needs `npm run analyze-fuels` to have run."""
+    return _run(_query().fire_at, point)
+
+
+@mcp.tool()
+def fire_summary() -> dict:
+    """Property-wide wildfire summary: fuel-model breakdown, canopy stats,
+    crown-potential fractions, TI/CI baseline, and the last scenario result
+    (weather, derived moistures/FMC, ROS at ignition, burned area, and layer
+    outputs). The headline "what does fire do here" call."""
+    return _run(_query().fire_summary)
+
+
+@mcp.tool()
+def run_fire_scenario(ignition_x: float, ignition_y: float,
+                      weather_class: str | None = None,
+                      temp_f: float | None = None,
+                      rh_min: float | None = None,
+                      wind_mph: float | None = None,
+                      wind_dir: float | None = None,
+                      days_since_rain: float | None = None,
+                      drought: str | None = None,
+                      exposure: str | None = None,
+                      date: str | None = None,
+                      duration_min: float | None = None,
+                      fmc_override: float | None = None) -> dict:
+    """Run a wildfire ignition/weather scenario and return the result. This
+    WRITES — it rewrites the viewer's fire scenario drape layers and records a
+    `scenario` pipeline run in the store (past scenarios stay queryable). Use
+    it when the user asks a fire "what if it starts here under this weather"
+    question. `wind_dir`, when supplied, is the downwind / maximum-spread
+    azimuth in degrees clockwise from north, not the meteorological wind-from
+    bearing. Parameters are clamped exactly like the viewer Fire pane's
+    /api/fire-simulate route."""
+    return _run(_query().run_fire_scenario, ignition_x=ignition_x,
+                ignition_y=ignition_y, weather_class=weather_class,
+                temp_f=temp_f, rh_min=rh_min, wind_mph=wind_mph,
+                wind_dir=wind_dir, days_since_rain=days_since_rain,
+                drought=drought, exposure=exposure, date=date,
+                duration_min=duration_min, fmc_override=fmc_override)
 
 
 @mcp.tool()
