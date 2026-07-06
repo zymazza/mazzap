@@ -177,6 +177,11 @@
     viewer.setVegetationDensity('trees', 1);
     viewer.setVegetationDensity('shrubs', 1);
     await viewer.setTerrainRenderMode('ortho');
+    window.__twin.vapor = window.VEILVapor?.create(viewer.scene, {
+      onFrame: viewer.onFrame?.bind(viewer),
+      sampleGrid,
+      terrainGrid: viewer.terrainGrid,
+    });
 
     // 3D building models on their footprints (part of the buildings layer).
     window.VEILBuildings3D
@@ -211,7 +216,9 @@
     setupPicking(viewer, scene);
     setupPOV(viewer, scene);
     window.__twin.applyLayerViews = applyLayerViews;
+    window.__twin.ensureLayerData = ensureLayerDataById;
     window.__twin.refreshAtlasLayers = refreshAtlasLayers;
+    window.__twin.syncVaporField = syncVaporField;
     window.__twin.annotations = window.VEILAnnotations?.create(viewer, scene);
     window.__twin.chat = window.VEILChat?.create(viewer, scene);
     window.__twin.survey = window.VEILSurvey?.create(refreshSurveyLayers);
@@ -232,6 +239,18 @@
         await setDrapeLayerEnabled(layer, on);
       },
       refresh: refreshWildfireLayers,
+    });
+    // Evapotranspiration tab: the water_balance drape lives in the shared
+    // simulation catalog; et.js filters it out and owns the ET readouts.
+    window.__twin.et = window.VEILET?.create({
+      catalog: () => state.simulation,
+      isEnabled: (id) => !!state.enabled.get(id),
+      isLoading: (id) => isLayerLoading(id),
+      setEnabled: async (layer, on) => {
+        await setDrapeLayerEnabled(layer, on);
+      },
+      ensureData: ensureLayerDataById,
+      refresh: refreshSimulationLayers,
     });
     window.__twin.live = state.hosted?.hosted ? null : window.VEILLiveInputs?.create(viewer, scene);
     renderKey();
@@ -281,14 +300,26 @@
     return state.atlas;
   }
 
-  /* ---------------- simulation layers (Simulation window — hydrology) ----- */
+  /* ------------- simulation layers (Simulation window — hydrology + ET) --- */
 
   async function loadSimulationCatalog() {
-    try {
-      return await fetchJson('/data/hydrology/simulation-layers.json');
-    } catch (_e) {
-      return { layers: [] }; // analyze_hydrology.py hasn't been run yet
-    }
+    // The Simulation window shows every derived process layer: terrain hydrology
+    // (analyze_hydrology.py / hydro_scenario.py) and the ET/water-balance layers
+    // (et_water_balance.py). Each catalog is optional and independently absent
+    // until its pipeline has run.
+    const fetchLayers = async (url) => {
+      try {
+        return (await fetchJson(url)).layers || [];
+      } catch (_e) {
+        return [];
+      }
+    };
+    const [hydro, et, etScenario] = await Promise.all([
+      fetchLayers('/data/hydrology/simulation-layers.json'),
+      fetchLayers('/data/et/et-layers.json'),
+      fetchLayers('/data/et/et-scenario-layers.json'),
+    ]);
+    return { layers: [...hydro, ...et, ...etScenario] };
   }
 
   // Called by the Simulation window after a scenario run: refetch the catalog
@@ -530,6 +561,7 @@
       try {
         const data = await loadLayerData(layer);
         state.layerData.set(layer.id, data);
+        if (layer.id === 'aet_annual' || layer.id === 'scenario_aet') syncVaporField();
         state.layerErrors.delete(layer.id);
         return data;
       } catch (err) {
@@ -553,6 +585,31 @@
     const active = layers.filter((l) => state.enabled.get(l.id));
     const results = await Promise.allSettled(active.map((l) => ensureLayerData(l)));
     return results.every((r) => r.status === 'fulfilled');
+  }
+
+  function syncVaporField() {
+    const vapor = window.__twin?.vapor;
+    if (!vapor) return null;
+    const scenarioLayer = layerById('scenario_aet');
+    const scenarioData = scenarioLayer ? state.layerData.get(scenarioLayer.id) : null;
+    const annualLayer = layerById('aet_annual');
+    const annualData = annualLayer ? state.layerData.get(annualLayer.id) : null;
+    const layer = scenarioData?.grid ? scenarioLayer : annualLayer;
+    const data = scenarioData?.grid ? scenarioData : annualData;
+    const grid = data?.grid;
+    if (grid && Array.isArray(layer.bounds_local) && !Array.isArray(grid.bounds_local)) {
+      grid.bounds_local = layer.bounds_local;
+    }
+    vapor.setField(grid || null, state.viewer?.terrainGrid || null);
+    return data || null;
+  }
+
+  async function ensureLayerDataById(id) {
+    const layer = layerById(id);
+    if (!layer) return null;
+    const data = await ensureLayerData(layer);
+    if (id === 'aet_annual' || id === 'scenario_aet') syncVaporField();
+    return data;
   }
 
   function drawPolygonPath(ctx, rings) {
@@ -1251,9 +1308,10 @@
     }
   }
 
-  function identifyResultsHtml(results, speciesHtml, simHtml, fireHtml) {
+  function identifyResultsHtml(results, speciesHtml, simHtml, fireHtml, etHtml) {
     return (simHtml ? `<div class="info-card sim-info-card">${simHtml}</div>` : '') +
       (fireHtml ? `<div class="info-card sim-info-card">${fireHtml}</div>` : '') +
+      (etHtml ? `<div class="info-card sim-info-card">${etHtml}</div>` : '') +
       results.map((r) => {
         const layerLabel = r.layer?.label || 'Layer';
         const title = r.title || layerLabel;
@@ -1323,6 +1381,7 @@
     const results = [];
     const simSamples = []; // simulation layers speak in sentences, not rows
     const fireSamples = [];
+    const etSamples = [];
     const hitRadius = Number.isFinite(hitRadiusMeters)
       ? clampNumber(hitRadiusMeters, IDENTIFY_HIT_RADIUS.minMeters, IDENTIFY_HIT_RADIUS.maxMeters)
       : IDENTIFY_HIT_RADIUS.fallbackMeters;
@@ -1344,6 +1403,10 @@
         }
         if (layer.group === 'fire' || layer.group === 'fire_scenario') {
           fireSamples.push({ layer, grid, value: s.value });
+          return;
+        }
+        if (layer.group === 'water_balance' || layer.group === 'et_scenario') {
+          etSamples.push({ layer, grid, value: s.value });
           return;
         }
         const leg = grid.legend && grid.legend[String(s.value)];
@@ -1394,7 +1457,10 @@
     const fireHtml = fireSamples.length
       ? (window.__twin?.wildfire?.interpretAt?.(x, y, fireSamples) || '')
       : '';
-    return { results, speciesHtml, simHtml, fireHtml };
+    const etHtml = etSamples.length
+      ? (window.__twin?.et?.interpretAt?.(x, y, etSamples) || '')
+      : '';
+    return { results, speciesHtml, simHtml, fireHtml, etHtml };
   }
 
   let warnedMissingIdentifyHost = false;
@@ -1408,13 +1474,13 @@
       }
       return;
     }
-    const { results, speciesHtml, simHtml, fireHtml } = identify(x, y, hitRadiusMeters);
-    if (!results.length && !speciesHtml && !simHtml && !fireHtml) {
+    const { results, speciesHtml, simHtml, fireHtml, etHtml } = identify(x, y, hitRadiusMeters);
+    if (!results.length && !speciesHtml && !simHtml && !fireHtml && !etHtml) {
       host.innerHTML = '<p class="readout-hint">No active layer has a feature at that spot.</p>';
       notifyInspect('identify');
       return;
     }
-    host.innerHTML = identifyResultsHtml(results, speciesHtml, simHtml, fireHtml);
+    host.innerHTML = identifyResultsHtml(results, speciesHtml, simHtml, fireHtml, etHtml);
     notifyInspect('identify');
   }
 

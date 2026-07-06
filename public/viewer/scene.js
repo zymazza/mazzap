@@ -221,6 +221,7 @@
       };
       this.loadToken = 0;
       this.animationFrame = null;
+      this.frameCallbacks = new Set();
       this.activeFetchControllers = new Set();
       this.keyboardPanState = VEILCamera.createKeyboardPanState();
       this.unbindKeyboardPan = VEILCamera.bindKeyboardPan(this.keyboardPanState);
@@ -1043,13 +1044,37 @@
       if (this.povController?.active) {
         this.povController.update(deltaSeconds);
         this.overlayRenderer.tick(deltaSeconds);
+        this.runFrameCallbacks(deltaSeconds);
         this.renderer.render(this.scene, this.camera);
         return;
       }
       VEILCamera.applyKeyboardPan(this.camera, this.controls, this.keyboardPanState, deltaSeconds);
       this.overlayRenderer.tick(deltaSeconds);
+      this.runFrameCallbacks(deltaSeconds);
       this.controls.update();
       this.renderer.render(this.scene, this.camera);
+    }
+
+    onFrame(fn) {
+      if (typeof fn !== 'function' || this.destroyed) {
+        return () => {};
+      }
+      this.frameCallbacks.add(fn);
+      return () => this.frameCallbacks.delete(fn);
+    }
+
+    runFrameCallbacks(deltaSeconds) {
+      if (!this.frameCallbacks.size) {
+        return;
+      }
+      Array.from(this.frameCallbacks).forEach((fn) => {
+        try {
+          fn(deltaSeconds);
+        } catch (err) {
+          this.frameCallbacks.delete(fn);
+          console.error('viewer frame callback failed:', err);
+        }
+      });
     }
 
     destroy() {
@@ -1065,6 +1090,7 @@
         this.animationFrame = null;
       }
       window.removeEventListener('resize', this.resize);
+      this.frameCallbacks.clear();
       this.unbindKeyboardPan?.();
       this.unbindKeyboardPan = null;
       this.clearScene();

@@ -6,9 +6,12 @@ https://github.com/user-attachments/assets/deb9e860-abf8-4e34-ab9b-88b3c7a2643f
 
 
 
-Mazzap v2 turns a patch of real ground into a standalone, fully **georeferenced** 3D
-digital twin you can open in a browser, click to read true GPS coordinates, drape
-your own map layers onto the terrain, and ask questions about in natural language.
+Mazzap v2 turns a patch of real ground into a **VEIL — a Virtually Embodied
+Intelligent Land**: a standalone, fully **georeferenced** 3D digital twin that
+Mazzap models and instantiates from open geospatial data. Open it in a browser,
+click to read true GPS coordinates, drape your own map layers onto the terrain,
+**simulate** the processes that move water and fire across it, and ask questions
+about it in natural language.
 
 No database, no cloud, no build step at view time: one tiny zero-dependency Node
 static server serves a Three.js viewer over a self-contained bundle of geospatial
@@ -57,7 +60,12 @@ optional **regional pack**, never hardcoded in the engine.
   **`us-national`** pack types them evergreen/deciduous and names their
   community from LANDFIRE — no regional setup (see "Vegetation" under
   [docs/make-a-twin.md](docs/make-a-twin.md)).
-- **G.A.I.A. (Geospatial Agroecological Intelligent Agent)** — an in-viewer chat
+- **Simulation** — model the processes that move across the land, not just what's
+  on it: terrain **hydrology** (flow, wetness, ponding, seeps, and snowmelt/storm
+  runoff scenarios), **evapotranspiration & water balance** (FAO-56 reference and
+  actual ET, closing the land's water budget), and an early **wildfire** behavior
+  model. Each renders as draped, clickable layers in the viewer's Simulation
+  window, and is honest about its uncertainty. See ["Simulation"](#simulation).
   panel that talks to an LLM wired to the twin's read-only query tools (the MCP
   server), scoped to the whole twin, a polygon you draw, or a point you pick.
   See [docs/mcp.md](docs/mcp.md).
@@ -70,6 +78,80 @@ optional **regional pack**, never hardcoded in the engine.
   render live tracker positions, replay recorded days with realtime/speed
   controls and tracker POV, then append selected samples into the curated twin
   store. See [docs/live-inputs.md](docs/live-inputs.md).
+
+## Simulation
+
+Mapping shows what's *on* the land; **simulation** models the processes that move
+*across* it. Mazzap runs these inside the viewer's collapsible **Simulation**
+window, each rendered as draped, clickable layers that conform to the topography —
+and each is explicit about what it can and cannot tell you.
+
+### Hydrology
+
+Mazzap models where water moves and pools across the land, in two tiers. **Tier 1**
+(`analyze_hydrology.py`) works the bare LiDAR/DEM surface: priority-flood depression
+filling, D8 flow direction with O(n) flow accumulation, Horn slope, and a
+Topographic Wetness Index. It produces draped, clickable layers for flow paths
+(upslope contributing area, ha), wetness index (TWI percentile), ponding depth in
+closed depressions (m), and spring/seep candidates (wetness × flow convergence ×
+slope-break × shallow restrictive layer from SSURGO soils). **Tier 2**
+(`hydro_scenario.py`) runs event scenarios — snowmelt (inches of SWE over N melt
+days, optional rain-on-snow, antecedent moisture, frozen ground) or a rainstorm
+(depth over a duration) — partitioning each soil cell into runoff versus
+infiltration via the SCS Curve-Number method (SSURGO hydrologic soil groups, AMC
+I/II/III), then routing down the Tier-1 D8 graph for per-cell runoff, routed
+event-flow volumes, and a peak-discharge estimate at the AOI outlet. Honest
+framing: the geometry — *where* water concentrates — is the reliable output;
+discharge magnitude carries a ±50% class band because the catchment is ungauged.
+
+![Mazzap hydrology simulation: topographic wetness index and flow paths draped on the terrain of the Flatirons demo VEIL](docs/img/sim-hydrology.png)
+
+**Use cases:**
+- **Agriculture** — locate wet-index hollows and ponding cells that drown crops or bog down equipment, to guide tile-drainage and field-traffic planning.
+- **Ecology** — map spring/seep candidates and convergent flow paths that mark seasonal wetland and riparian habitat across the land.
+- **Conservation** — target erosion-control and buffer plantings along the routed high-runoff channels a modeled storm concentrates.
+
+### Wildfire (work in progress)
+
+Mazzap is growing a fire-behavior simulation on top of the LANDFIRE fuel layers a
+US VEIL already carries — surface fuel models (FBFM13/40), canopy cover, height,
+base height, and bulk density. Combined with the land's terrain (slope, aspect) and
+a chosen weather/wind scenario, it models surface fire spread rate, fireline
+intensity, and crown-fire potential across the land, reusing the same
+Simulation-window and draped-layer machinery as the hydrology scenarios. This is
+early and experimental — not yet calibrated or validated against real fires — so
+treat every output as scenario exploration, not an operational forecast.
+
+**Use cases:**
+- **Agriculture** — compare wind scenarios to see where crown fire could reach a woodlot or shelterbelt bordering cropland, informing defensible-space clearing.
+- **Ecology** — explore how fuel and canopy structure shape modeled fire intensity across a habitat mosaic.
+- **Conservation** — rehearse where a prescribed burn might spread or spot before committing to a burn plan.
+
+### Evapotranspiration & water balance
+
+Mazzap simulates how much water the land actually loses to the atmosphere. From the
+VEIL's Daymet climate forcing it derives daily reference ET (ET0) with an ensemble
+of standard methods — FAO-56 Penman-Monteith (reduced-data form), Priestley-Taylor,
+Hargreaves-Samani, and Oudin (`derive_et0_daily.py`) — and reports the spread
+between methods as an explicit uncertainty band rather than a single false-precise
+number. A FAO-56 root-zone soil-water-balance (`et_water_balance.py`) then converts
+that reference demand into **actual** ET (AET) using basal crop coefficients from
+land cover and canopy, a water-stress coefficient from SSURGO available-water
+capacity, canopy interception, and a self-contained temperature-index snow model
+(robust where gridded SWE is unreliable). This closes the land's water balance —
+P = ET + runoff + Δstorage + recharge — the loss term the hydrology model previously
+left open, and feeds antecedent soil moisture back into the runoff scenarios. Honest
+framing: ET0 is FAO-56-correct, but absolute annual AET is only ±20–35% without
+local flux-tower or gauge validation; relative timing, seasonality, and wet/dry
+antecedent state are far more trustworthy than the absolute totals. Queryable over
+MCP via `et_summary`, `et_at`, and `water_balance`.
+
+![Mazzap evapotranspiration simulation: modeled annual actual ET draped across the Flatirons demo VEIL](docs/img/sim-evapotranspiration.png)
+
+**Use cases:**
+- **Agriculture** — read the modeled crop-coefficient AET and soil-water-stress signal to see when and where the root zone draws down, flagging the seasonal windows most exposed to irrigation deficit.
+- **Ecology** — use the daily AET and antecedent soil-moisture series to characterize drought stress and growing-season water availability across the VEIL's vegetation communities.
+- **Conservation** — combine the closed water balance's runoff and recharge terms with wet/dry antecedent state to compare how land-cover scenarios shift where water leaves versus infiltrates.
 
 ## Run with Docker
 
@@ -193,7 +275,7 @@ npm run demo && npm run serve-demo
 ```
 
 **Build a twin anywhere (global open data)** — the paths above are US-only. The
-bundled `nato` pack (`packs/nato/`) extends VEIL to **any of the 32 NATO member
+bundled `nato` pack (`packs/nato/`) extends Mazzap to **any of the 32 NATO member
 nations**, assembling a twin from worldwide open datasets with no national
 account or portal needed. Give it an ISO country code and a lon/lat AOI:
 
@@ -244,7 +326,7 @@ layers:
 > aerial imagery can come out dark or tinted. See `packs/nato/README.md` for the
 > per-country data tiers and full source list.
 
-During `npm run init`, VEIL also probes an optional national-layer catalog
+During `npm run init`, Mazzap also probes an optional national-layer catalog
 against the drawn AOI before the build starts. The setup dialog lists only
 interactive sources that report an AOI intersection, explains what each layer is
 useful for, and passes the checked layer IDs into the build. Those selected
@@ -256,7 +338,7 @@ current/historic WFIGS fire perimeters, NCED easements, National Inventory of
 Dams, USDA CDL, NRCS MLRA/LRR, PAD-US, current U.S. Drought Monitor polygons,
 USDA plant hardiness zones, USFS Wildfire Hazard Potential, and LCMS landscape
 change layers, plus selected USGS RCMAP WCS rasters. Some sources use direct
-archive downloads instead of service-side AOI clipping: VEIL checks the
+archive downloads instead of service-side AOI clipping: Mazzap checks the
 advertised file size, requires 20 GB of local free headroom, refuses sources
 over 1 GB, downloads the source archive, clips it locally, and discards the raw
 archive. Direct downloads are tagged in the setup menu as light under 100 MB,
@@ -271,7 +353,7 @@ The catalog also records self-service download sources such as NLCD, GAP species
 habitat species beyond the starter menu, TreeMap, PRISM/gridMET, POLARIS/SOLUS,
 MTBS/RAVG, and others. Those are not one-click AOI services yet, but the catalog
 includes official download links and notes so users can fetch a product, drop it
-into `manual_layers/`, and let VEIL clip/register it locally.
+into `manual_layers/`, and let Mazzap clip/register it locally.
 
 CLI equivalents:
 
@@ -342,7 +424,7 @@ For those, use the drop-directory workflow:
    ```
 
 Supported inputs include GeoTIFF, GeoJSON, Shapefile, GeoPackage, KML/KMZ, GPX,
-CSV with coordinates, File Geodatabase directories, and many zip archives. VEIL
+CSV with coordinates, File Geodatabase directories, and many zip archives. Mazzap
 clips each layer to the twin terrain footprint, reprojects it, styles it, and
 registers it in the viewer.
 
@@ -388,7 +470,7 @@ terrain consumer depends on; don't change it silently.
 
 ## QField survey companion
 
-VEIL has a built-in field loop for QField: the app generates the survey package
+Mazzap has a built-in field loop for QField: the app generates the survey package
 from the current twin, QField records edits against that package, and the viewer
 uploads the finished package back into the twin store.
 
@@ -516,9 +598,9 @@ and status). Full tool semantics and examples: [docs/mcp.md](docs/mcp.md).
 
 ## Architecture: engine vs. regional pack
 
-VEIL is a **region-agnostic engine** (`scripts/`, `public/`, `server.js`) plus an
-optional **regional content pack** (`packs/<name>/`). Nothing in the engine names
-a CRS, a layer, or a species.
+Mazzap is a **region-agnostic engine** (`scripts/`, `public/`, `server.js`) plus an
+optional **regional content pack** (`packs/<name>/`). It models and instantiates a
+VEIL from data; nothing in the engine names a CRS, a layer, or a species.
 
 - **Coordinates are data.** `<data>/georef.json` carries the projected CRS (EPSG +
   a proj4 string), the geographic CRS, and the scene origin. Python reads it

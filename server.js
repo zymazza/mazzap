@@ -4172,6 +4172,85 @@ function handleSimulate(req, res, dataDir = DATA_DIR) {
   });
 }
 
+function handleEtScenario(req, res, dataDir = DATA_DIR) {
+  readBodyJson(req, LIVE_MAX_BODY, (err, params) => {
+    if (err) {
+      const tooLarge = /too large/i.test(String(err.message || ''));
+      return send(res, tooLarge ? 413 : 400,
+        JSON.stringify({ error: tooLarge ? 'request body too large' : 'invalid JSON body' }),
+        { 'Content-Type': 'application/json' });
+    }
+    const argv = [path.join(ROOT, 'scripts', 'et_scenario.py'), '--json'];
+    const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const validIsoDate = (s) => {
+      if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+      const d = new Date(`${s}T00:00:00Z`);
+      return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+    };
+    if (validIsoDate(params.date)) argv.push('--date', params.date);
+
+    const tmax = num(params.tmax_c);
+    const tmin = num(params.tmin_c);
+    if (tmax !== null || tmin !== null) {
+      const hi = tmax !== null ? tmax : 30;
+      const lo = tmin !== null ? tmin : 15;
+      argv.push('--tmax-c', String(Math.min(60, Math.max(-60, Math.max(hi, lo)))));
+      argv.push('--tmin-c', String(Math.min(60, Math.max(-60, Math.min(hi, lo)))));
+    }
+    if (['clear', 'partly', 'cloudy', 'overcast'].includes(params.sky)) {
+      argv.push('--sky', params.sky);
+    }
+    if (num(params.srad_w_m2) !== null) {
+      argv.push('--srad-w-m2', String(Math.min(1200, Math.max(0, params.srad_w_m2))));
+    }
+    if (num(params.dewpoint_c) !== null) {
+      argv.push('--dewpoint-c', String(Math.min(40, Math.max(-80, params.dewpoint_c))));
+    } else if (num(params.rh_pct) !== null) {
+      argv.push('--rh-pct', String(Math.min(100, Math.max(1, params.rh_pct))));
+    }
+    if (num(params.wind_m_s) !== null) {
+      argv.push('--wind-m-s', String(Math.min(30, Math.max(0, params.wind_m_s))));
+    }
+    if (num(params.rain_mm) !== null) {
+      argv.push('--rain-mm', String(Math.min(300, Math.max(0, params.rain_mm))));
+    }
+    if (['current', 'dry', 'wet', 'auto'].includes(params.soil_state)) {
+      argv.push('--soil-state', params.soil_state);
+    }
+    if (num(params.days) !== null) {
+      argv.push('--days', String(Math.min(60, Math.max(1, Math.round(params.days)))));
+    }
+
+    const py = spawn(HYDRO_PYTHON, argv,
+      { cwd: ROOT, env: { ...process.env, TWIN_DATA_DIR: dataDir } });
+    let stdout = '';
+    let stderr = '';
+    let done = false;
+    const finish = (status, payload) => {
+      if (done) return;
+      done = true;
+      send(res, status, JSON.stringify(payload), { 'Content-Type': 'application/json' });
+    };
+    py.stdout.on('data', (c) => { stdout += c; });
+    py.stderr.on('data', (c) => { stderr += c; });
+    py.on('error', (err2) => finish(500, { error: `could not run ET scenario: ${err2.message}` }));
+    py.on('close', (code) => {
+      if (code !== 0) {
+        return finish(500, { error: `ET scenario exited ${code}: ${stderr.slice(-400).trim()}` });
+      }
+      const lines = stdout.trim().split('\n').filter(Boolean);
+      try {
+        finish(200, JSON.parse(lines[lines.length - 1]));
+      } catch (_err) {
+        finish(500, { error: `unparseable ET scenario output: ${stdout.slice(-400).trim()}` });
+      }
+    });
+    setTimeout(() => {
+      if (!done) { py.kill(); finish(504, { error: 'ET scenario timed out' }); }
+    }, SIMULATE_TIMEOUT_MS);
+  });
+}
+
 function fireGridBounds(dataDir = DATA_DIR) {
   const gridPath = path.join(dataDir, 'terrain', 'grid.json');
   const grid = JSON.parse(fs.readFileSync(gridPath, 'utf8'));
@@ -4414,6 +4493,7 @@ function clearAnnotations(res, dataDir = DATA_DIR) {
 const CSRF_PROTECTED = new Set([
   '/api/building-placements',
   '/api/simulate',
+  '/api/et-scenario',
   '/api/fire-simulate',
   '/api/annotations/clear',
   '/api/chat',
@@ -4599,6 +4679,10 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && pathname === '/api/simulate') {
     return handleSimulate(req, res, requestDataDir(req, res));
+  }
+
+  if (req.method === 'POST' && pathname === '/api/et-scenario') {
+    return handleEtScenario(req, res, requestDataDir(req, res));
   }
 
   if (req.method === 'GET' && pathname === '/api/fire-presets') {

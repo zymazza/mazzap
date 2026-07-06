@@ -67,6 +67,11 @@ FIRE_SUMMARY = os.path.join(FIRE_DIR, "summary.json")
 FIRE_LAST_SCENARIO = os.path.join(FIRE_DIR, "last-fire-scenario.json")
 SOILS_FEATURES = os.path.join(DATA, "soils", "features.geojson")
 SOILS_TABULAR = os.path.join(DATA, "soils", "tabular.json")
+ET_DIR = os.path.join(DATA, "et")
+ET0_SUMMARY = os.path.join(ET_DIR, "et0-summary.json")
+ET_SUMMARY = os.path.join(ET_DIR, "summary.json")
+ET_SOIL_WATER_DAILY = os.path.join(ET_DIR, "soil_water_daily.csv")
+ET_LAYER_CATALOG = os.path.join(ET_DIR, "et-layers.json")
 
 # Pad (degrees) added around the twin's extent to form the geographic window
 # used to auto-detect lon/lat polygon vertices. Scene-local meters never look
@@ -1027,6 +1032,30 @@ class TwinQuery:
             with open(os.path.join(DATA, layer["grid"])) as fh:
                 return json.load(fh)
         return self._cache(("fire_grid", layer["id"]), build)
+
+    def _et_catalog(self):
+        def build():
+            try:
+                with open(ET_LAYER_CATALOG) as fh:
+                    return json.load(fh).get("layers", [])
+            except (OSError, ValueError):
+                return []
+        return self._cache("et_catalog", build)
+
+    def _et_grid(self, layer):
+        def build():
+            with open(os.path.join(DATA, layer["grid"])) as fh:
+                return json.load(fh)
+        return self._cache(("et_grid", layer["id"]), build)
+
+    def _soil_water_daily(self):
+        def build():
+            import csv
+            try:
+                return list(csv.DictReader(open(ET_SOIL_WATER_DAILY)))
+            except OSError:
+                return []
+        return self._cache("soil_water_daily", build)
 
     @staticmethod
     def _read_json(path):
@@ -2970,7 +2999,7 @@ class TwinQuery:
 
     def run_scenario(self, mode="snowmelt", swe_in=None, preset=None,
                      melt_days=None, rain_in=None, storm_hours=None,
-                     antecedent=None, frozen=False, dry_run=False):
+                     antecedent=None, frozen=False, as_of=None, dry_run=False):
         """Run a snowmelt or rainstorm scenario (scripts/hydro_scenario.py) and
         return the result. This WRITES: it rewrites the viewer's scenario drape
         layers and records a `scenario` pipeline run in the store (history stays
@@ -2978,14 +3007,15 @@ class TwinQuery:
         window. mode: "snowmelt" (swe_in inches 0-40 or preset
         median|p90|max; melt_days 0.5-30) or "rain" (storm_hours 0.5-240).
         rain_in: rain-on-snow / storm rain inches 0-15. antecedent:
-        dry|normal|wet. frozen: frozen-ground floor. dry_run returns the argv
-        that would run, without executing."""
+        dry|normal|wet|auto. auto uses ET water-balance antecedent state when
+        present. frozen: frozen-ground floor. dry_run returns the argv that
+        would run, without executing."""
         if not os.path.isdir(HYDRO_DIR):
             raise TwinQueryError(
                 "hydrology not initialized — run `npm run analyze-hydrology` first",
                 path=HYDRO_DIR)
         argv = self._scenario_argv(mode, swe_in, preset, melt_days, rain_in,
-                                   storm_hours, antecedent, frozen)
+                                   storm_hours, antecedent, frozen, as_of)
         if dry_run:
             return {"would_run": ["hydro_scenario.py"] + argv}
         import subprocess
@@ -3014,7 +3044,7 @@ class TwinQuery:
 
     @staticmethod
     def _scenario_argv(mode, swe_in, preset, melt_days, rain_in, storm_hours,
-                       antecedent, frozen):
+                       antecedent, frozen, as_of=None):
         """Validate + clamp scenario params into hydro_scenario.py argv, byte
         for byte the same ranges server.js applies to /api/simulate."""
         def clamp(v, lo, hi):
@@ -3032,8 +3062,10 @@ class TwinQuery:
             argv += ["--storm-hours", clamp(storm_hours, 0.5, 240)]
         if isinstance(rain_in, (int, float)):
             argv += ["--rain-in", clamp(rain_in, 0, 15)]
-        if antecedent in ("dry", "normal", "wet"):
+        if antecedent in ("dry", "normal", "wet", "auto"):
             argv += ["--antecedent", antecedent]
+        if as_of:
+            argv += ["--as-of", str(as_of)]
         if frozen is True:
             argv += ["--frozen"]
         return argv
@@ -3125,7 +3157,7 @@ class TwinQuery:
                           temp_f=None, rh_min=None, wind_mph=None,
                           wind_dir=None, days_since_rain=None, drought=None,
                           exposure=None, date=None, duration_min=None,
-                          fmc_override=None):
+                          fmc_override=None, fuel_source=None, hydrology=None):
         """Run scripts/fire_scenario.py with the same clamping as the viewer."""
         if not os.path.isdir(FIRE_DIR):
             return {"error": "fire not initialized — run `npm run analyze-fuels` first",
@@ -3136,7 +3168,8 @@ class TwinQuery:
                 temp_f=temp_f, rh_min=rh_min, wind_mph=wind_mph,
                 wind_dir=wind_dir, days_since_rain=days_since_rain,
                 drought=drought, exposure=exposure, date=date,
-                duration_min=duration_min, fmc_override=fmc_override)
+                duration_min=duration_min, fmc_override=fmc_override,
+                fuel_source=fuel_source, hydrology=hydrology)
         except TwinQueryError as e:
             return e.payload
         try:
@@ -3169,7 +3202,7 @@ class TwinQuery:
                             temp_f=None, rh_min=None, wind_mph=None,
                             wind_dir=None, days_since_rain=None, drought=None,
                             exposure=None, date=None, duration_min=None,
-                            fmc_override=None):
+                            fmc_override=None, fuel_source=None, hydrology=None):
         """Validate + clamp fire scenario params into fire_scenario.py argv.
 
         wind_dir is the downwind / maximum-spread azimuth in degrees clockwise
@@ -3213,10 +3246,12 @@ class TwinQuery:
 
         weather_classes = {
             "normal_spring", "high_spring", "extreme_redflag",
-            "summer_drought", "dormant_fall",
+            "summer_drought", "dormant_fall", "custom",
         }
         droughts = {"normal", "dry", "severe", "extreme"}
         exposures = {"shaded", "mixed", "open"}
+        fuel_sources = {"landfire", "computed"}
+        hydrology_modes = {"on", "off"}
         if weather_class is not None:
             if weather_class not in weather_classes:
                 raise TwinQueryError("invalid weather_class")
@@ -3229,6 +3264,14 @@ class TwinQuery:
             if exposure not in exposures:
                 raise TwinQueryError("invalid exposure")
             argv += ["--exposure", exposure]
+        if fuel_source is not None:
+            if fuel_source not in fuel_sources:
+                raise TwinQueryError("invalid fuel_source")
+            argv += ["--fuel-source", fuel_source]
+        if hydrology is not None:
+            if hydrology not in hydrology_modes:
+                raise TwinQueryError("invalid hydrology")
+            argv += ["--hydrology", hydrology]
 
         if TwinQuery._valid_iso_date(date):
             argv += ["--date", date]
@@ -3431,6 +3474,148 @@ class TwinQuery:
             "run_id": latest["run_id"] if latest else None,
             "caveat": "geometry (where water concentrates) is reliable; "
                       "discharge magnitude is scenario-grade, not a forecast",
+        }
+
+    # -- evapotranspiration / water balance ----------------------------------
+
+    def et_summary(self):
+        """Annual/monthly ET0 and AET with uncertainty and Budyko sanity check."""
+        et0 = self._read_json(ET0_SUMMARY)
+        wb = self._read_json(ET_SUMMARY)
+        if not et0 and not wb:
+            raise TwinQueryError(
+                "no ET outputs — run `npm run derive-et0` and `npm run et-water-balance` first",
+                paths=[ET0_SUMMARY, ET_SUMMARY])
+        return {
+            "et0": et0,
+            "water_balance": wb,
+            "provenance": self._et_provenance(),
+            "uncertainty": (
+                "Reduced-data ET0 uses modeled Daymet humidity when available and "
+                "assumed u2=2 m/s for FAO-56 PM. Annual AET is +/-20-35% absent "
+                "local validation; timing/relative wetness are more reliable."
+            ),
+        }
+
+    def et_at(self, point):
+        """Sample annual AET raster plus latest root-zone state at a point."""
+        cat = self._et_catalog()
+        if not cat:
+            raise TwinQueryError(
+                "no ET layers — run `npm run et-water-balance` first",
+                path=ET_LAYER_CATALOG)
+        x, y = resolve_point(point, self.georef)
+        echo = self.georef.echo(x, y)
+        layers = {}
+        for layer in cat:
+            grid = self._et_grid(layer)
+            s = sample_grid(grid, layer["bounds_local"], x, y)
+            v = s[2] if s else None
+            if v is not None and v == grid.get("nodata"):
+                v = None
+            layers[layer["id"]] = {
+                "value": round(v, 3) if isinstance(v, (int, float)) else v,
+                "label": layer.get("label"),
+                "group": layer.get("group"),
+                "description": layer.get("description"),
+                "value_kind": grid.get("value_kind") or layer.get("value_kind"),
+                "value_unit": grid.get("value_unit") or layer.get("value_unit"),
+            }
+        daily = self._soil_water_daily()
+        latest = daily[-1] if daily else None
+
+        def f(row, key):
+            try:
+                return float(row.get(key)) if row and row.get(key) not in (None, "") else None
+            except ValueError:
+                return None
+
+        return {
+            "point": echo,
+            "layers": layers,
+            "latest_soil_water": None if latest is None else {
+                "date": latest.get("date"),
+                "aet_mm_day": f(latest, "aet_mm"),
+                "deficit_proxy_mm_day": (
+                    round(max(0.0, f(latest, "et0_mm") - f(latest, "aet_mm")), 3)
+                    if f(latest, "et0_mm") is not None and f(latest, "aet_mm") is not None else None),
+                "root_zone_depletion_fraction": f(latest, "root_zone_depletion_fraction"),
+                "Ks": f(latest, "Ks"),
+                "wetness_5d": f(latest, "wetness_5d"),
+                "wetness_14d": f(latest, "wetness_14d"),
+                "wetness_30d": f(latest, "wetness_30d"),
+                "recharge_residual_mm_day": f(latest, "recharge_residual_mm"),
+            },
+            "soil": self._soil_at(x, y),
+            "provenance": self._et_provenance(),
+        }
+
+    def water_balance(self, region=None):
+        """Aggregate P, ET, runoff, storage-change and recharge over a region."""
+        summ = self._read_json(ET_SUMMARY)
+        if not summ:
+            raise TwinQueryError(
+                "no ET water-balance summary — run `npm run et-water-balance` first",
+                path=ET_SUMMARY)
+        reg = resolve_region(region or {"aoi": True}, self.georef)
+        samples, spacing = self._region_samples(reg, target=2500)
+        layer = next((l for l in self._et_catalog() if l.get("id") == "aet_annual"), None)
+        aet_vals = []
+        if layer:
+            grid = self._et_grid(layer)
+            for x, y in samples:
+                s = sample_grid(grid, layer["bounds_local"], x, y)
+                if s and isinstance(s[2], (int, float)):
+                    aet_vals.append(float(s[2]))
+        years = summ.get("annual") or {}
+        latest_year = sorted(years)[-1] if years else None
+        a = years.get(latest_year, {}) if latest_year else {}
+        area_m2 = reg.area_m2
+        mm_to_m3 = area_m2 / 1000.0
+        aet_mm = (sum(aet_vals) / len(aet_vals)) if aet_vals else a.get("aet_mm")
+        return {
+            "region": {"shape": reg.shape, "description": reg.description,
+                       "area_m2": round(area_m2, 1), "sample_count": len(samples),
+                       "sample_spacing_m": round(spacing, 2)},
+            "year": latest_year,
+            "annual_mm": {
+                "precip": a.get("precip_mm"),
+                "et0": a.get("et0_mm"),
+                "aet": round(aet_mm, 1) if aet_mm is not None else None,
+                "modeled_runoff": a.get("modeled_runoff_mm"),
+                "delta_storage_proxy": 0.0,
+                "recharge_residual": a.get("recharge_residual_mm"),
+            },
+            "annual_m3": {
+                "precip": round(a.get("precip_mm", 0.0) * mm_to_m3, 1) if a else None,
+                "aet": round(aet_mm * mm_to_m3, 1) if aet_mm is not None else None,
+                "modeled_runoff": round(a.get("modeled_runoff_mm", 0.0) * mm_to_m3, 1) if a else None,
+                "recharge_residual": round(a.get("recharge_residual_mm", 0.0) * mm_to_m3, 1) if a else None,
+            },
+            "checks": {
+                "aet_over_p": a.get("aet_over_p"),
+                "budyko_aridity_index": a.get("budyko_aridity_index"),
+                "budyko_expected_aet_over_p": a.get("budyko_expected_aet_over_p"),
+                "budyko_position": a.get("budyko_position"),
+            },
+            "provenance": self._et_provenance(),
+            "uncertainty": "Annual AET +/-20-35% absent local validation; regional aggregation samples the modeled AET raster.",
+        }
+
+    def _et_provenance(self):
+        runs = [r for r in self._runs_by_id().values()
+                if r.get("script") in ("derive_et0_daily.py", "et_water_balance.py")]
+        latest = max(runs, key=lambda r: r.get("started_at") or "", default=None)
+        return {
+            "source": "derive_et0_daily.py + et_water_balance.py",
+            "acquisition": "derived",
+            "run_id": latest["run_id"] if latest else None,
+            "files": {
+                "et0_summary": os.path.relpath(ET0_SUMMARY, DATA),
+                "water_balance_summary": os.path.relpath(ET_SUMMARY, DATA),
+                "soil_water_daily": os.path.relpath(ET_SOIL_WATER_DAILY, DATA),
+                "layers": os.path.relpath(ET_LAYER_CATALOG, DATA),
+            },
         }
 
     def _hydrology_sentences(self, layers, soil):

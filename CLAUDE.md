@@ -65,6 +65,25 @@ The canonical artifact is the **write journal**: `<data>/journal/NNNNNN-<script>
 `scripts/mcp_server.py` (Python, official `mcp` SDK from `requirements.txt`, stdio) is the agent-facing query surface over the store — the store is **read-only**; the only write tools are the map drawings (below), which never touch the store. All logic lives in `scripts/twin_query.py`, tested by `scripts/twin_query_test.py`; the MCP tools are thin wrappers. Register with `claude mcp add veil-twin -- python3 <repo>/scripts/mcp_server.py`. Conventions: points in `{lat,lon}` or scene-local `{x,y}` (outputs echo both; the pyproj transform agrees with `viewer/georef.js` to ~0.1 mm); one `region` abstraction with four shapes (`aoi` / `bbox` / `within_m`+`point` / `polygon`, resolved solely by `twin_query.resolve_region`); provenance (`source`/`confidence`/`run_id`/`observed_at`, or layer `acquisition`/`service`) on every fact; structured `{"error": …}` payloads. The point-identify tools are a port of app.js click-to-identify (same point-in-polygon / 8 m line-hit / grid-legend / species-grid-bitmask logic); `canopy_change` is the canopy_density.py query as a tool, region-scopable. Tool list and example sessions: `docs/mcp.md`.
 
 **Survey companion on MCP:** the `survey_*` kinds are first-class for `find_entities`/`summarize_region`/`aggregate_entities`; `list_survey_layers` is the discovery tool (uploaded layers, kinds, fields, photo presence), and `identify_at` now includes survey features (photo + status) — closing the old atlas-only gap. All read straight from `<data>/surveys/` (no `server.js` involvement).
+
+**Evapotranspiration:** ET is a pack-neutral hydrology extension under
+`scripts/`, with optional US gap-fill acquisition in the pack. `npm run
+derive-et0` reads local Daymet forcing (`data/climate/daymet_daily.csv`) and
+georef/elevation to write `data/et/et0_daily.csv` plus
+`data/et/et0-summary.json` using Oudin, Hargreaves-Samani, Priestley-Taylor and
+reduced-data FAO-56 PM; Daymet `vp` is used when present, otherwise humidity is
+estimated from Tmin, and PM assumes `u2=2 m/s`. `npm run et-water-balance` writes
+`data/et/soil_water_daily.csv`, `data/et/summary.json` and a draped
+`data/et/local/aet_annual.*` layer cataloged in `data/et/et-layers.json`
+(`group: "water_balance"`). Both scripts register runs and output files/layers
+in the twin store with `content_sha1`. `npm run fetch-gridmet` is the offline-safe
+gridMET gap-fill fetcher scaffold; it does not call the network unless explicitly
+run with `--fetch`. MCP exposes `et_summary`, `et_at` and `water_balance`; each
+returns a structured `{"error": ...}` when ET files are absent. Frame all ET
+answers honestly: reduced-data ET0 and ungauged forest AET are not validation
+products; annual AET is ±20-35% absent local validation, while relative timing
+and antecedent wetness are more reliable. Research context: `docs/Evapotranspiration-research.md`.
+
 **Map drawings:** `draw_polygon` / `draw_point` / `clear_drawings` let the LLM put labeled **orange** shapes on the live 3D map instead of reciting coordinates — they append to `<data>/annotations.json` (scene-local meters, atomic rewrite; never the store/journal), which `public/annotations.js` polls every 4 s and renders as terrain-hugging outlines, markers, and label sprites. Works identically for the built-in chat and any external MCP client on the same twin. The chat panel's "Clear drawings" button posts to `/api/annotations/clear` (`server.js` empties only the drawings, preserving layer views); chat.js also refreshes annotations as soon as a reply lands.
 
 **Layer views:** the same channel lets the LLM drive the twin's *own* atlas layers, written into `annotations.json` under a `layer_views` list (validated by `twin_query.py` against the atlas catalog; never the store). `set_layer_visibility(layer_id, visible)` toggles a layer's drape; `filter_layer(layer_id, values, field?)` turns a layer on but reveals **only** the selected regions — legend class names for categorical rasters (re-rendered from the value grid in legend colors), modeled-habitat species for the GAP richness grid (an orange habitat mask from `gap_species_grids`, e.g. "where could I find wild turkey"), or `__label`/attribute values for vectors. `reset_layer_views` drops every override. `public/annotations.js` hands the `layer_views` array to `public/app.js` (which owns the drape) via `window.__twin.applyLayerViews`; it's **edge-triggered** — applied on file change, with manual user toggles winning in between and reclaiming a layer from the agent. `filter_layer` reports `matched_values`/`unmatched_values` (case-insensitive), and `layer_summary` exposes the filterable class/label/`filterable_species` values for discovery.

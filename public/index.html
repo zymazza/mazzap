@@ -32,13 +32,9 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5 5-2z"/></svg>
       <span>Explore</span>
     </button>
-    <button class="rail-btn" data-mode="simulate" title="Simulate water">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3s6 6.5 6 10.5A6 6 0 016 13.5C6 9.5 12 3 12 3z"/><path d="M9.5 14a2.5 2.5 0 002.5 2.5"/></svg>
-      <span>Simulate</span>
-    </button>
-    <button class="rail-btn" data-mode="fire" title="Simulate fire">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3c2.7 3 5 5.8 5 9a5 5 0 01-10 0c0-1.8 1-3.4 2.3-4.9.1 1.7.8 2.8 2 3.5-.1-2.4.8-4.9.7-7.6z"/><path d="M12 20c-1.7-.8-2.6-2-2.6-3.5 0-1.3.8-2.4 1.8-3.5.2 1.3.8 2.3 1.8 3 .4-.9.5-1.8.4-2.9 1.1 1.2 1.7 2.4 1.7 3.5 0 1.5-1 2.7-3.1 3.4z"/></svg>
-      <span>Fire</span>
+    <button class="rail-btn" data-mode="simulation" title="Simulation — wildfire, hydrology &amp; ET">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6M10 3v6l-4.6 8A1.6 1.6 0 006.8 19.5h10.4a1.6 1.6 0 001.4-2.5L14 9V3"/><path d="M8.4 15h7.2"/></svg>
+      <span>Simulation</span>
     </button>
     <button class="rail-btn" data-mode="survey" title="Field surveys">
       <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V3h6v1"/><path d="M8.5 10h7M8.5 14h7M8.5 18h4"/></svg>
@@ -140,8 +136,14 @@
         </div>
       </section>
 
-      <!-- ---------- SIMULATE ---------- -->
-      <section class="pane" data-pane="simulate" id="simulation-panel">
+      <!-- ---------- SIMULATION (Wildfire + Hydrology + ET tabs) ---------- -->
+      <section class="pane" data-pane="simulation">
+        <div class="seg sim-tabs" role="tablist">
+          <button type="button" role="tab" data-simtab="fire" class="active">Wildfire</button>
+          <button type="button" role="tab" data-simtab="simulate">Hydrology</button>
+          <button type="button" role="tab" data-simtab="et" title="Evapotranspiration &amp; water balance">Water &amp; ET</button>
+        </div>
+        <div class="sim-view" data-simview="simulate" id="simulation-panel">
         <div class="group">
           <p class="group-label">Terrain hydrology</p>
           <div id="sim-hydro-toggles" class="toggle-list">
@@ -190,10 +192,8 @@
           <div id="sim-scenario-toggles" class="toggle-list"></div>
           <div id="sim-results" class="sim-results"></div>
         </div>
-      </section>
-
-      <!-- ---------- FIRE ---------- -->
-      <section class="pane" data-pane="fire" id="fire-panel">
+        </div>
+        <div class="sim-view" data-simview="fire" id="fire-panel">
         <div class="group">
           <p class="group-label">Fire environment</p>
           <p class="hint">Static fire behavior computed from fuel model + canopy + terrain; weather-independent.</p>
@@ -248,6 +248,77 @@
           <p class="group-label">Scenario result</p>
           <div id="fire-scenario-toggles" class="toggle-list"></div>
           <div id="fire-results" class="sim-results"></div>
+        </div>
+        </div>
+        <div class="sim-view" data-simview="et" id="et-panel">
+        <div class="group">
+          <p class="group-label">ET layers</p>
+          <div id="et-layer-toggles" class="toggle-list">
+            <p class="hint">Run <code>npm run derive-et0</code> then <code>npm run et-water-balance</code> to build the ET layers.</p>
+            <label id="et-vapor-row" class="toggle-row" hidden>
+              <input id="et-vapor-toggle" type="checkbox" />
+              <span class="swatch" style="background:#c9f7ff"></span>
+              <span class="toggle-label">Water vapor (rising)</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="group" id="et-et0-group" hidden>
+          <p class="group-label">Reference ET&#8320; &middot; annual</p>
+          <div id="et-et0-methods" class="et-methods"></div>
+          <p id="et-et0-ensemble" class="et-ensemble"></p>
+          <div id="et-clim" class="et-clim" hidden></div>
+          <p id="et-et0-note" class="readout-hint"></p>
+        </div>
+
+        <div class="group" id="et-wb-group" hidden>
+          <p class="group-label">Water balance</p>
+          <div class="sim-field-row">
+            <label>Year <select id="et-year"></select></label>
+          </div>
+          <div id="et-wb-results" class="sim-results"></div>
+        </div>
+
+        <div class="group" id="et-antecedent-group" hidden>
+          <p class="group-label">Root-zone moisture</p>
+          <div id="et-antecedent" class="sim-results"></div>
+        </div>
+
+        <div class="group" id="et-scenario-group">
+          <p class="group-label">ET scenario</p>
+          <div class="preset-list" id="et-scenario-presets"></div>
+          <form id="et-scenario-form" class="sim-form">
+            <div class="sim-field-row">
+              <label>Date <input id="et-scenario-date" type="date" value="2024-07-15" /></label>
+              <label>Tmax <input id="et-scenario-tmax" type="number" min="-60" max="60" step="0.5" value="30" /> C</label>
+              <label>Tmin <input id="et-scenario-tmin" type="number" min="-60" max="60" step="0.5" value="15" /> C</label>
+            </div>
+            <div class="sim-field-row">
+              <label>Sky <select id="et-scenario-sky">
+                <option value="clear" selected>clear</option>
+                <option value="partly">partly</option>
+                <option value="cloudy">cloudy</option>
+                <option value="overcast">overcast</option>
+              </select></label>
+              <label>RH <input id="et-scenario-rh" type="number" min="1" max="100" step="1" value="45" /> %</label>
+              <label>Wind <input id="et-scenario-wind" type="number" min="0" max="30" step="0.1" value="2" /> m/s</label>
+            </div>
+            <div class="sim-field-row">
+              <label>Rain <input id="et-scenario-rain" type="number" min="0" max="300" step="0.5" value="0" /> mm</label>
+              <label>Soil <select id="et-scenario-soil">
+                <option value="current" selected>current</option>
+                <option value="dry">dry</option>
+                <option value="wet">wet</option>
+              </select></label>
+              <label>Days <input id="et-scenario-days" type="number" min="1" max="60" step="1" value="1" /></label>
+            </div>
+            <button id="et-scenario-run" type="submit" class="primary-btn">Run ET scenario</button>
+          </form>
+          <p id="et-scenario-status" class="sim-status"></p>
+          <div id="et-scenario-results" class="sim-results"></div>
+        </div>
+
+        <p id="et-status" class="sim-status"></p>
         </div>
       </section>
 
@@ -428,6 +499,7 @@
   <script src="/viewer/terrain.js"></script>
   <script src="/viewer/vegetation.js"></script>
   <script src="/viewer/overlays.js"></script>
+  <script src="/viewer/vapor.js"></script>
   <script src="/viewer/buildings3d.js"></script>
   <script src="/viewer/building-editor.js"></script>
   <script src="/viewer/georef.js"></script>
@@ -438,6 +510,7 @@
   <script src="/chat.js"></script>
   <script src="/survey.js"></script>
   <script src="/simulation.js"></script>
+  <script src="/et.js"></script>
   <script src="/wildfire.js"></script>
   <script src="/live-inputs.js"></script>
   <script src="/layer-upload.js"></script>
