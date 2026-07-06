@@ -1,9 +1,11 @@
 # Wildfire simulation — architecture & implementation spec
 
-> Status: **design, not yet built** (2026-07-05). This is the canonical spec the
-> implementation follows; pin any interface change here, never edit code silently
-> against it. It is the fire-side companion to the hydrology stack and mirrors it
-> part-for-part. Modeling choices are physics-based and were validated by a
+> Status: **built and operational** (2026-07-06): Tier-1 fuels, Tier-2 ignition
+> scenarios, viewer layers, server route, MCP tools, hydrology-fire coupling, and
+> regression checks are implemented. This is the canonical spec the implementation
+> follows; pin any interface change here, never edit code silently against it. It is
+> the fire-side companion to the hydrology stack and mirrors it part-for-part.
+> Modeling choices are physics-based and were validated by a
 > 16-agent SOTA research + adversarial-feasibility workflow, and the fuel-moisture
 > scenario model by a GPT-5.5 (xhigh) study that cross-checked the CFFDRS R
 > source, the NFDRS4 C++ source, and BehavePlus-derived implementations. See
@@ -74,7 +76,7 @@ Tiered exactly like hydrology's static-Tier-1 / event-Tier-2 split.
   **Andrews (2013) wind-limit cap** is applied before `Φ_w` — load-bearing, or a
   high demo wind yields a runaway ROS.
 - **Fireline intensity & flame length — Byram (1959).** `I = H·w·R` (kW/m);
-  `L = 0.0775·I^0.46` (m). Thomas' `L ∝ I^0.67` where a cell is crown fire.
+  `L = 0.0775·I^0.46` (m). Thomas' `L ∝ I^0.667` where a cell is crown fire.
 - **Crown fire — Van Wagner (1977) / Scott & Reinhardt (2001).**
   initiation `I₀ = (0.010·CBH·(460+25.9·FMC))^1.5`; active-crowning
   `R_active = 3.0/CBD`. `CBH/CBD/CH` from LANDFIRE canopy layers (on disk). `FMC`
@@ -84,7 +86,13 @@ Tiered exactly like hydrology's static-Tier-1 / event-Tier-2 split.
   8-neighbor graph, edge cost = directional travel time = distance / `ROS(θ)`,
   with the Anderson/Finney elliptical anisotropy
   `ROS(θ) = a(1−e²)/(1 − e·cos θ)`, `L/W = min(0.936·e^{0.2566U} + 0.461·e^{−0.1548U} − 0.397, 8)`.
-  Returns `T(x,y)` in minutes; isochrone perimeters are `T ≤ t` contours.
+  Reported flank ROS uses the ellipse semi-minor rate, not the 90-degree polar
+  radius: `flank = head·√((1−e)/(1+e))`; back ROS is `head·(1−e)/(1+e)`.
+  The effective wind that shapes the ellipse is capped against the current
+  reaction intensity with the same Andrews-style wind-limit guard used by the
+  surface ROS engine, preventing high-wind ellipse blowups after moisture and
+  hydrology damping. Returns `T(x,y)` in minutes; isochrone perimeters are
+  `T ≤ t` contours.
 
 **Why MTT over the alternatives.** MTT reuses the exact `heapq` priority-flood +
 topological-sweep machinery and the `_NB` 8-neighbor table already in
@@ -463,6 +471,19 @@ Store/journal: reuse existing journal op kinds — `rebuild_store.py` replays fi
 unchanged. Any ignition-marker entity uses the deterministic
 `"<kind>:"+sha1(source|round(x,1)|round(y,1))[:12]` id and 0–1 confidence.
 
+### 6.1 Hydrology-to-fire coupling — `scripts/hydro_fire.py`
+
+Tier-2 can apply `scripts/hydro_fire.py` before spread. It returns a
+`hydro_barrier_mask` plus per-cell moisture arrays. Open-water polygons, NWI
+open-water classes, wide waterbody/stream coverage, soil water table at the
+surface, snow/SWE, and normal-moisture saturated ponding can force ROS to zero.
+Wetlands are moisture dampers rather than automatic hard barriers; TWI, ponding,
+seep candidates, contributing-area flow paths, wetland polygons/edges, and mapped
+stream corridors lift 1-hour, 10-hour, 100-hour, herbaceous, and woody moistures
+toward riparian/wet/very-wet/saturated targets. Drought scales that uplift down,
+and no-width stream centerlines are treated as wet corridors rather than hard
+firebreaks.
+
 ## 7. Server — `POST /api/fire-simulate`
 
 Add `handleFireScenario()` in `server.js`, a copy of `handleSimulate()` (L2781):
@@ -482,7 +503,8 @@ Clamps (mirroring the hydrology clamps at L2790–2811):
   not meteorological wind-from direction.
 - `temp_f`: `min(130, max(-20, x))`; `rh_min`: `min(100, max(1, x))`.
 - `days_since_rain`: `min(120, max(0, x))`.
-- `weather_class` / `drought` / `exposure`: enum allowlists.
+- `fuel_source`: `landfire|computed`; `hydrology`: `on|off`.
+- `weather_class` / `drought` / `exposure`: enum allowlists; `weather_class` includes `custom`.
 - `date`: ISO `YYYY-MM-DD`, else default today.
 - `duration_min`: `min(1440, max(1, x))`; `ensemble`: `min(200, max(0, x|0))`.
 
@@ -518,7 +540,7 @@ The Simulation surface is a **left rail-driven flyout pane** (`shell.css .flyout
 `index.html section.pane[data-pane]`); outputs land in the right `#inspector`
 (`#key-list` + `#identify-results`). The Fire feature is **another left flyout pane**.
 
-- **`public/wildfire.js`** — IIFE → `window.VEILWildfire.create(api)` with the same
+- **`public/wildfire.js`** — IIFE → `window.ADKLRWildfire.create(api)` with the same
   `api` contract `simulation.js` uses (`{catalog, isEnabled, isLoading, setEnabled,
   refresh}`). Owns no pixels; all drape/identify/key flow through `app.js`. It owns:
   a `fire-*` els map; `renderPresets` (the §2.5 weather presets); `buildParams()`;
@@ -536,7 +558,7 @@ The Simulation surface is a **left rail-driven flyout pane** (`shell.css .flyout
 - **`app.js` wiring** — `allLayers()` (L51) concat `state.wildfire?.layers`;
   `main()` `state.wildfire = await loadWildfireCatalog()` + seed each fire layer
   `enabled=false` (mandatory or toggles break) + `window.__twin.wildfire =
-  VEILWildfire.create(...)`; clone `loadSimulationCatalog`/`refreshSimulationLayers`
+  ADKLRWildfire.create(...)`; clone `loadSimulationCatalog`/`refreshSimulationLayers`
   → `loadWildfireCatalog`/`refreshWildfireLayers` (refetch, drop stale `layerData`,
   `ensureEnabledLayerData`, `redrawDrape`, `renderKey`). `renderKey()` (L836) already
   surfaces `description`/`group` generically. Raster<polygon<line<point draw order at

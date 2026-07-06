@@ -52,10 +52,11 @@ mcp = FastMCP(
         "geology, land cover, wetlands and species-habitat layers, live telemetry "
         "from field devices and gateways, a terrain-"
         "hydrology model (flow, wetness, ponding, springs/seeps, snowmelt and "
-        "storm scenarios), a wildfire fuels/scenario model (fuel model, ROS, "
-        "crown potential, arrival/flame/intensity scenario drapes), and any "
-        "field-survey uploads. The store is read-only; run_scenario, "
-        "run_fire_scenario, the draw_* tools and the layer-view tools "
+        "storm scenarios), an evapotranspiration/water-balance model, a wildfire "
+        "fuels/scenario model (fuel model, ROS, crown potential, arrival/flame/"
+        "intensity scenario drapes), and any field-survey uploads. The store is "
+        "read-only; run_scenario, run_fire_scenario, the draw_* tools and the "
+        "layer-view tools "
         "(set_layer_visibility / filter_layer / reset_layer_views) are the only "
         "writers; run_fire_scenario is a store-WRITING scenario/fire pipeline "
         "run, the same run the viewer's Fire pane launches. "
@@ -425,10 +426,37 @@ def hydrology_summary() -> dict:
 
 
 @mcp.tool()
+def et_summary() -> dict:
+    """Evapotranspiration and water-balance summary: annual/monthly ET0,
+    AET, method spread, ET/P, Budyko sanity-check position and explicit
+    uncertainty. Returns {"error": ...} if ET outputs are absent."""
+    return _run(_query().et_summary)
+
+
+@mcp.tool()
+def et_at(point: dict) -> dict:
+    """Sample ET/water-balance outputs at a point. point is {"lat","lon"} or
+    {"x","y"} scene-local meters; output echoes both forms and includes annual
+    AET plus latest modeled depletion, wetness and recharge state. Returns
+    {"error": ...} if ET layers are absent."""
+    return _run(_query().et_at, point)
+
+
+@mcp.tool()
+def water_balance(region: dict | None = None) -> dict:
+    """Aggregate annual P, ET0, AET, modeled runoff, storage-change proxy and
+    recharge/residual over a region. region uses the standard four-shape VEIL
+    object; omitted defaults to the AOI. Returns {"error": ...} if ET outputs
+    are absent."""
+    return _run(_query().water_balance, region=region)
+
+
+@mcp.tool()
 def run_scenario(mode: str = "snowmelt", swe_in: float | None = None,
                  preset: str | None = None, melt_days: float | None = None,
                  rain_in: float | None = None, storm_hours: float | None = None,
-                 antecedent: str | None = None, frozen: bool = False) -> dict:
+                 antecedent: str | None = None, frozen: bool = False,
+                 as_of: str | None = None) -> dict:
     """Run a snowmelt or rainstorm hydrology scenario and return the result.
     This WRITES — it rewrites the viewer's scenario drape layers and records a
     `scenario` pipeline run in the store (past scenarios stay queryable). Use
@@ -436,13 +464,15 @@ def run_scenario(mode: str = "snowmelt", swe_in: float | None = None,
     exactly like the Simulation window. mode="snowmelt": swe_in (snow water
     equivalent, inches 0-40) OR preset ("median"|"p90"|"max" from the 44-year
     climatology); melt_days 0.5-30. mode="rain": storm_hours 0.5-240. rain_in:
-    rain (or rain-on-snow) inches 0-15. antecedent: "dry"|"normal"|"wet" soil
-    moisture. frozen: frozen-ground floor (higher runoff). After running, draw
-    on the map or cite hydrology_summary numbers; the geometry is reliable,
-    discharge magnitude is scenario-grade (±50%), not a forecast."""
+    rain (or rain-on-snow) inches 0-15. antecedent: "dry"|"normal"|"wet"|"auto"
+    soil moisture; auto uses ET root-zone depletion/wetness when available.
+    as_of: YYYY-MM-DD for auto antecedent. frozen: frozen-ground floor (higher
+    runoff). After running, draw on the map or cite hydrology_summary numbers;
+    the geometry is reliable, discharge magnitude is scenario-grade (±50%), not
+    a forecast."""
     return _run(_query().run_scenario, mode=mode, swe_in=swe_in, preset=preset,
                 melt_days=melt_days, rain_in=rain_in, storm_hours=storm_hours,
-                antecedent=antecedent, frozen=frozen)
+                antecedent=antecedent, frozen=frozen, as_of=as_of)
 
 
 @mcp.tool()
@@ -477,21 +507,26 @@ def run_fire_scenario(ignition_x: float, ignition_y: float,
                       exposure: str | None = None,
                       date: str | None = None,
                       duration_min: float | None = None,
-                      fmc_override: float | None = None) -> dict:
+                      fmc_override: float | None = None,
+                      fuel_source: str | None = None,
+                      hydrology: str | None = None) -> dict:
     """Run a wildfire ignition/weather scenario and return the result. This
     WRITES — it rewrites the viewer's fire scenario drape layers and records a
     `scenario` pipeline run in the store (past scenarios stay queryable). Use
     it when the user asks a fire "what if it starts here under this weather"
     question. `wind_dir`, when supplied, is the downwind / maximum-spread
     azimuth in degrees clockwise from north, not the meteorological wind-from
-    bearing. Parameters are clamped exactly like the viewer Fire pane's
-    /api/fire-simulate route."""
+    bearing. `weather_class` may be normal_spring, high_spring,
+    extreme_redflag, summer_drought, dormant_fall, or custom. `fuel_source`
+    may be landfire or computed. `hydrology` may be on or off. Parameters are
+    clamped exactly like the viewer Fire pane's /api/fire-simulate route."""
     return _run(_query().run_fire_scenario, ignition_x=ignition_x,
                 ignition_y=ignition_y, weather_class=weather_class,
                 temp_f=temp_f, rh_min=rh_min, wind_mph=wind_mph,
                 wind_dir=wind_dir, days_since_rain=days_since_rain,
                 drought=drought, exposure=exposure, date=date,
-                duration_min=duration_min, fmc_override=fmc_override)
+                duration_min=duration_min, fmc_override=fmc_override,
+                fuel_source=fuel_source, hydrology=hydrology)
 
 
 @mcp.tool()

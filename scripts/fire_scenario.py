@@ -723,7 +723,8 @@ def main():
     if hydro_enabled and hydro_barrier_mask.any():
         crown_ros = np.where(hydro_barrier_mask, 0.0, crown_ros)
     crown = twin_fire.crown_class(
-        surface_intensity, crown_ros, canopy["cbh_m"], canopy["cbd_kg_m3"], fmc_pct)
+        surface_intensity, crown_ros, canopy["cbh_m"], canopy["cbd_kg_m3"],
+        canopy["fmc_pct"])
     spread_ros = np.where(crown >= 2, np.maximum(ros, crown_ros), ros)
     intensity = twin_fire.byram_intensity(spread_ros, consumed, fuelbed["heat"])
     flame = twin_fire.flame_length(intensity, crown_mask=(crown >= 2))
@@ -870,6 +871,9 @@ def main():
         "a valid conifer-compatible canopy; other cells are forced to surface class.",
         "Active crown cells use Scott-Reinhardt/Rothermel active crown ROS "
         "for spread; passive crown cells remain a torching overlay.",
+        "Crown fireline intensity and flame length use the surface fuel load "
+        "with crown ROS; canopy fuel is not added, so crown intensity is a "
+        "conservative screening value.",
         "Hydrology influence is screening-grade: open water, snow, surface "
         "water-table, and normal-moisture ponding cells are barriers; wetlands, "
         "wet ground, dry-weather ponding, and no-width streams damp fuels.",

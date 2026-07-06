@@ -810,15 +810,15 @@ def byram_intensity(ros_m_min, fuel_consumed_kg_m2, heat_kJ_kg):
 def flame_length(intensity_kW_m, crown_mask=None):
     """Flame length in m from Byram surface-fire intensity.
 
-    Surface fire uses Byram's ``L = 0.0775 * I^0.46``.  If a future crown-fire
-    caller passes ``crown_mask``, those cells use a Thomas-style
-    ``L = 0.0266 * I^0.67`` relation.
+    Surface fire uses Byram's ``L = 0.0775 * I^0.46``.  If a crown-fire caller
+    passes ``crown_mask``, those cells use Thomas'
+    ``L = 0.0266 * I^0.667`` relation.
     """
     intensity = np.maximum(0.0, np.asarray(intensity_kW_m, dtype=float))
     surface = 0.0775 * np.power(intensity, 0.46)
     if crown_mask is None:
         return np.where(np.isfinite(surface), surface, 0.0)
-    crown = 0.0266 * np.power(intensity, 0.67)
+    crown = 0.0266 * np.power(intensity, 0.667)
     mask = np.asarray(crown_mask, dtype=bool)
     out = np.where(mask, crown, surface)
     return np.where(np.isfinite(out), out, 0.0)

@@ -30,8 +30,11 @@ def main():
     intensity = np.array([[10000.0]])
     passive = twin_fire.crown_class(intensity, np.array([[10.0]]), cbh, cbd, fmc)
     active = twin_fire.crown_class(intensity, np.array([[40.0]]), cbh, cbd, fmc)
+    masked = twin_fire.crown_class(
+        intensity, np.array([[40.0]]), cbh, cbd, np.array([[np.nan]]))
     check("crown class passive below Ractive", int(passive[0, 0]) == 1)
     check("crown class active uses crown ROS", int(active[0, 0]) == 2)
+    check("masked non-conifer FMC forces surface", int(masked[0, 0]) == 0)
 
     moisture = {
         "dead_1h": 0.06,
@@ -65,6 +68,23 @@ def main():
     capped = fire_scenario._capped_effective_wind(
         np.array([[1000.0]]), np.array([[1.0]]))
     check("ellipse wind cap", float(capped[0, 0]) < 1000.0)
+
+    footprint = np.ones((9, 9), dtype=bool)
+    burned = np.zeros((9, 9), dtype=bool)
+    burned[7, 4] = True
+    burned[6, 4] = True
+    flame = np.zeros((9, 9), dtype=float)
+    flame[7, 4] = 1.3
+    intensity_grid = np.zeros((9, 9), dtype=float)
+    crown_grid = np.zeros((9, 9), dtype=np.int8)
+    exposed, ember_summary = fire_scenario._ember_exposure(
+        {"cellsize": 10.0}, footprint, burned, flame, intensity_grid,
+        crown_grid, {"wind_mph": 20.0, "wind_dir": 0.0})
+    check("ember exposure excludes burned cells", not bool(exposed[6, 4]))
+    check("ember exposure is downwind", bool(exposed[5, 4]) and not bool(exposed[8, 4]))
+    check("ember exposure respects distance clamp",
+          bool(exposed[1, 4]) and not bool(exposed[0, 4])
+          and ember_summary["max_downwind_distance_m"] == 60.0)
 
     shaded = twin_fire.dead_moisture(80.0, 30.0, 3.0, exposure="shaded")[0]
     open_ = twin_fire.dead_moisture(80.0, 30.0, 3.0, exposure="open")[0]
