@@ -63,8 +63,8 @@ optional **regional pack**, never hardcoded in the engine.
 - **Simulation** — model the processes that move across the land, not just what's
   on it: terrain **hydrology** (flow, wetness, ponding, seeps, and snowmelt/storm
   runoff scenarios), **evapotranspiration & water balance** (FAO-56 reference and
-  actual ET, closing the land's water budget), and an early **wildfire** behavior
-  model. Each renders as draped, clickable layers in the viewer's Simulation
+  actual ET, closing the land's water budget), and **wildfire** behavior
+  scenarios. Each renders as draped, clickable layers in the viewer's Simulation
   window, and is honest about its uncertainty. See ["Simulation"](#simulation).
   panel that talks to an LLM wired to the twin's read-only query tools (the MCP
   server), scoped to the whole twin, a polygon you draw, or a point you pick.
@@ -111,16 +111,19 @@ discharge magnitude carries a ±50% class band because the catchment is ungauged
 - **Ecology** — map spring/seep candidates and convergent flow paths that mark seasonal wetland and riparian habitat across the land.
 - **Conservation** — target erosion-control and buffer plantings along the routed high-runoff channels a modeled storm concentrates.
 
-### Wildfire (work in progress)
+### Wildfire
 
-Mazzap is growing a fire-behavior simulation on top of the LANDFIRE fuel layers a
-US VEIL already carries — surface fuel models (FBFM13/40), canopy cover, height,
-base height, and bulk density. Combined with the land's terrain (slope, aspect) and
-a chosen weather/wind scenario, it models surface fire spread rate, fireline
-intensity, and crown-fire potential across the land, reusing the same
-Simulation-window and draped-layer machinery as the hydrology scenarios. This is
-early and experimental — not yet calibrated or validated against real fires — so
-treat every output as scenario exploration, not an operational forecast.
+Mazzap runs fire-behavior scenarios on top of the LANDFIRE fuel layers a US VEIL
+already carries — surface fuel models (FBFM13/40), canopy cover, height, base
+height, and bulk density. Combined with the land's terrain (slope, aspect), local
+hydrology influence, an ignition point, and a chosen weather/wind scenario, it
+models arrival time, flame length, fireline intensity, ember exposure, and
+crown-fire class across the land, reusing the same Simulation-window and
+draped-layer machinery as the hydrology scenarios. Treat the result as
+scenario-grade exploration, not an operational forecast: where fire spreads is
+more reliable than exact times, flame lengths, or intensities.
+
+![Mazzap wildfire simulation: modeled fire arrival footprint draped on the terrain of the Sawtooth demo VEIL](docs/img/sim-wildfire.png)
 
 **Use cases:**
 - **Agriculture** — compare wind scenarios to see where crown fire could reach a woodlot or shelterbelt bordering cropland, informing defensible-space clearing.
