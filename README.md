@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/zymazza-mazzap-badge.png)](https://mseep.ai/app/zymazza-mazzap)
+
 # Mazzap v2 — a georeferenced 3D digital-twin engine
 
 
