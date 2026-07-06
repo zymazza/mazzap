@@ -120,6 +120,7 @@ function resolveMcpPython() {
 
 const MCP_PYTHON = resolveMcpPython();
 const HYDRO_PYTHON = (process.env.VEIL_HYDRO_PYTHON || '').trim() || MCP_PYTHON;
+const FIRE_PYTHON = (process.env.VEIL_FIRE_PYTHON || '').trim() || HYDRO_PYTHON;
 
 function mcpSpawn(dataDir = DATA_DIR) {
   const proc = spawn(MCP_PYTHON, [path.join(ROOT, 'scripts', 'mcp_server.py')], {
@@ -4171,6 +4172,232 @@ function handleSimulate(req, res, dataDir = DATA_DIR) {
   });
 }
 
+function handleEtScenario(req, res, dataDir = DATA_DIR) {
+  readBodyJson(req, LIVE_MAX_BODY, (err, params) => {
+    if (err) {
+      const tooLarge = /too large/i.test(String(err.message || ''));
+      return send(res, tooLarge ? 413 : 400,
+        JSON.stringify({ error: tooLarge ? 'request body too large' : 'invalid JSON body' }),
+        { 'Content-Type': 'application/json' });
+    }
+    const argv = [path.join(ROOT, 'scripts', 'et_scenario.py'), '--json'];
+    const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const validIsoDate = (s) => {
+      if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+      const d = new Date(`${s}T00:00:00Z`);
+      return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+    };
+    if (validIsoDate(params.date)) argv.push('--date', params.date);
+
+    const tmax = num(params.tmax_c);
+    const tmin = num(params.tmin_c);
+    if (tmax !== null || tmin !== null) {
+      const hi = tmax !== null ? tmax : 30;
+      const lo = tmin !== null ? tmin : 15;
+      argv.push('--tmax-c', String(Math.min(60, Math.max(-60, Math.max(hi, lo)))));
+      argv.push('--tmin-c', String(Math.min(60, Math.max(-60, Math.min(hi, lo)))));
+    }
+    if (['clear', 'partly', 'cloudy', 'overcast'].includes(params.sky)) {
+      argv.push('--sky', params.sky);
+    }
+    if (num(params.srad_w_m2) !== null) {
+      argv.push('--srad-w-m2', String(Math.min(1200, Math.max(0, params.srad_w_m2))));
+    }
+    if (num(params.dewpoint_c) !== null) {
+      argv.push('--dewpoint-c', String(Math.min(40, Math.max(-80, params.dewpoint_c))));
+    } else if (num(params.rh_pct) !== null) {
+      argv.push('--rh-pct', String(Math.min(100, Math.max(1, params.rh_pct))));
+    }
+    if (num(params.wind_m_s) !== null) {
+      argv.push('--wind-m-s', String(Math.min(30, Math.max(0, params.wind_m_s))));
+    }
+    if (num(params.rain_mm) !== null) {
+      argv.push('--rain-mm', String(Math.min(300, Math.max(0, params.rain_mm))));
+    }
+    if (['current', 'dry', 'wet', 'auto'].includes(params.soil_state)) {
+      argv.push('--soil-state', params.soil_state);
+    }
+    if (num(params.days) !== null) {
+      argv.push('--days', String(Math.min(60, Math.max(1, Math.round(params.days)))));
+    }
+
+    const py = spawn(HYDRO_PYTHON, argv,
+      { cwd: ROOT, env: { ...process.env, TWIN_DATA_DIR: dataDir } });
+    let stdout = '';
+    let stderr = '';
+    let done = false;
+    const finish = (status, payload) => {
+      if (done) return;
+      done = true;
+      send(res, status, JSON.stringify(payload), { 'Content-Type': 'application/json' });
+    };
+    py.stdout.on('data', (c) => { stdout += c; });
+    py.stderr.on('data', (c) => { stderr += c; });
+    py.on('error', (err2) => finish(500, { error: `could not run ET scenario: ${err2.message}` }));
+    py.on('close', (code) => {
+      if (code !== 0) {
+        return finish(500, { error: `ET scenario exited ${code}: ${stderr.slice(-400).trim()}` });
+      }
+      const lines = stdout.trim().split('\n').filter(Boolean);
+      try {
+        finish(200, JSON.parse(lines[lines.length - 1]));
+      } catch (_err) {
+        finish(500, { error: `unparseable ET scenario output: ${stdout.slice(-400).trim()}` });
+      }
+    });
+    setTimeout(() => {
+      if (!done) { py.kill(); finish(504, { error: 'ET scenario timed out' }); }
+    }, SIMULATE_TIMEOUT_MS);
+  });
+}
+
+function fireGridBounds(dataDir = DATA_DIR) {
+  const gridPath = path.join(dataDir, 'terrain', 'grid.json');
+  const grid = JSON.parse(fs.readFileSync(gridPath, 'utf8'));
+  return {
+    minX: Number(grid.minX),
+    maxX: Number(grid.maxX),
+    minY: Number(grid.minY),
+    maxY: Number(grid.maxY),
+  };
+}
+
+function handleFirePresets(res, dataDir = DATA_DIR) {
+  const proc = spawnSync(FIRE_PYTHON,
+    [path.join(ROOT, 'scripts', 'fire_scenario.py'), '--dump-presets'],
+    { cwd: ROOT, env: { ...process.env, TWIN_DATA_DIR: dataDir }, encoding: 'utf8', timeout: 10000 });
+  if (proc.error) {
+    return send(res, 500, JSON.stringify({ error: `could not load fire presets: ${proc.error.message}` }),
+      { 'Content-Type': 'application/json' });
+  }
+  if (proc.status !== 0) {
+    return send(res, 500, JSON.stringify({ error: `fire preset dump exited ${proc.status}: ${String(proc.stderr || '').slice(-400).trim()}` }),
+      { 'Content-Type': 'application/json' });
+  }
+  const lines = String(proc.stdout || '').trim().split('\n').filter(Boolean);
+  try {
+    return send(res, 200, JSON.stringify({ presets: JSON.parse(lines[lines.length - 1]) }),
+      { 'Content-Type': 'application/json' });
+  } catch (_err) {
+    return send(res, 500, JSON.stringify({ error: `unparseable fire presets: ${String(proc.stdout || '').slice(-400).trim()}` }),
+      { 'Content-Type': 'application/json' });
+  }
+}
+
+function handleFireScenario(req, res, dataDir = DATA_DIR) {
+  readBodyJson(req, LIVE_MAX_BODY, (err, params) => {
+    if (err) {
+      const tooLarge = /too large/i.test(String(err.message || ''));
+      return send(res, tooLarge ? 413 : 400,
+        JSON.stringify({ error: tooLarge ? 'request body too large' : 'invalid JSON body' }),
+        { 'Content-Type': 'application/json' });
+    }
+    const argv = [path.join(ROOT, 'scripts', 'fire_scenario.py'), '--json'];
+    const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const bad = (status, message) => send(res, status, JSON.stringify({ error: message }),
+      { 'Content-Type': 'application/json' });
+    const ix = num(params.ignition_x);
+    const iy = num(params.ignition_y);
+    if (ix === null || iy === null) {
+      return bad(400, 'ignition_x and ignition_y must be finite numbers');
+    }
+    let bounds;
+    try {
+      bounds = fireGridBounds(dataDir);
+    } catch (e) {
+      return bad(500, `could not read terrain grid bounds: ${e.message}`);
+    }
+    if (ix < bounds.minX || ix > bounds.maxX || iy < bounds.minY || iy > bounds.maxY) {
+      return bad(400, `ignition outside grid bounds [${bounds.minX}, ${bounds.maxX}] x [${bounds.minY}, ${bounds.maxY}]`);
+    }
+    argv.push('--ignition-x', String(ix), '--ignition-y', String(iy));
+
+    const weatherClasses = new Set([
+      'normal_spring', 'high_spring', 'extreme_redflag',
+      'summer_drought', 'dormant_fall', 'custom',
+    ]);
+    const fuelSources = new Set(['landfire', 'computed']);
+    const hydrologyModes = new Set(['on', 'off']);
+    const droughts = new Set(['normal', 'dry', 'severe', 'extreme']);
+    const exposures = new Set(['shaded', 'mixed', 'open']);
+    if (params.fuel_source !== undefined) {
+      if (!fuelSources.has(params.fuel_source)) return bad(400, 'invalid fuel_source');
+      argv.push('--fuel-source', params.fuel_source);
+    }
+    if (params.hydrology !== undefined) {
+      if (!hydrologyModes.has(params.hydrology)) return bad(400, 'invalid hydrology');
+      argv.push('--hydrology', params.hydrology);
+    }
+    if (params.weather_class !== undefined) {
+      if (!weatherClasses.has(params.weather_class)) return bad(400, 'invalid weather_class');
+      argv.push('--weather-class', params.weather_class);
+    }
+    if (params.drought !== undefined) {
+      if (!droughts.has(params.drought)) return bad(400, 'invalid drought');
+      argv.push('--drought', params.drought);
+    }
+    if (params.exposure !== undefined) {
+      if (!exposures.has(params.exposure)) return bad(400, 'invalid exposure');
+      argv.push('--exposure', params.exposure);
+    }
+    const validIsoDate = (s) => {
+      if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+      const d = new Date(`${s}T00:00:00Z`);
+      return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+    };
+    if (validIsoDate(params.date)) argv.push('--date', params.date);
+    if (num(params.wind_mph) !== null) {
+      argv.push('--wind-mph', String(Math.min(120, Math.max(0, params.wind_mph))));
+    }
+    if (num(params.wind_dir) !== null) {
+      argv.push('--wind-dir', String(((params.wind_dir % 360) + 360) % 360));
+    }
+    if (num(params.temp_f) !== null) {
+      argv.push('--temp-f', String(Math.min(130, Math.max(-20, params.temp_f))));
+    }
+    if (num(params.rh_min) !== null) {
+      argv.push('--rh-min', String(Math.min(100, Math.max(1, params.rh_min))));
+    }
+    if (num(params.days_since_rain) !== null) {
+      argv.push('--days-since-rain', String(Math.min(120, Math.max(0, params.days_since_rain))));
+    }
+    if (num(params.duration_min) !== null) {
+      argv.push('--duration-min', String(Math.min(1440, Math.max(1, params.duration_min))));
+    }
+    if (num(params.fmc_override) !== null) {
+      argv.push('--fmc-override', String(Math.min(140, Math.max(75, params.fmc_override))));
+    }
+
+    const py = spawn(FIRE_PYTHON, argv,
+      { cwd: ROOT, env: { ...process.env, TWIN_DATA_DIR: dataDir } });
+    let stdout = '';
+    let stderr = '';
+    let done = false;
+    const finish = (status, payload) => {
+      if (done) return;
+      done = true;
+      send(res, status, JSON.stringify(payload), { 'Content-Type': 'application/json' });
+    };
+    py.stdout.on('data', (c) => { stdout += c; });
+    py.stderr.on('data', (c) => { stderr += c; });
+    py.on('error', (err2) => finish(500, { error: `could not run fire scenario: ${err2.message}` }));
+    py.on('close', (code) => {
+      if (code !== 0) {
+        return finish(500, { error: `fire scenario exited ${code}: ${stderr.slice(-400).trim()}` });
+      }
+      const lines = stdout.trim().split('\n').filter(Boolean);
+      try {
+        finish(200, JSON.parse(lines[lines.length - 1]));
+      } catch (_err) {
+        finish(500, { error: `unparseable fire scenario output: ${stdout.slice(-400).trim()}` });
+      }
+    });
+    setTimeout(() => {
+      if (!done) { py.kill(); finish(504, { error: 'fire scenario timed out' }); }
+    }, SIMULATE_TIMEOUT_MS);
+  });
+}
+
 // Persist building-model placements tuned with the in-viewer editor
 // (public/viewer/building-editor.js) back into the manifest, and append every
 // save to placements.log.jsonl — the handoff that scripts/ingest_placements.py
@@ -4266,6 +4493,8 @@ function clearAnnotations(res, dataDir = DATA_DIR) {
 const CSRF_PROTECTED = new Set([
   '/api/building-placements',
   '/api/simulate',
+  '/api/et-scenario',
+  '/api/fire-simulate',
   '/api/annotations/clear',
   '/api/chat',
   '/api/layers/upload',
@@ -4450,6 +4679,18 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && pathname === '/api/simulate') {
     return handleSimulate(req, res, requestDataDir(req, res));
+  }
+
+  if (req.method === 'POST' && pathname === '/api/et-scenario') {
+    return handleEtScenario(req, res, requestDataDir(req, res));
+  }
+
+  if (req.method === 'GET' && pathname === '/api/fire-presets') {
+    return handleFirePresets(res, requestDataDir(req, res));
+  }
+
+  if (req.method === 'POST' && pathname === '/api/fire-simulate') {
+    return handleFireScenario(req, res, requestDataDir(req, res));
   }
 
   if (req.method === 'POST' && pathname === '/api/annotations/clear') {

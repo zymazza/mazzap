@@ -29,6 +29,7 @@
     atlas: null,            // viewer-layers.json
     survey: null,           // surveys/survey-layers.json (QField uploads)
     simulation: null,       // hydrology/simulation-layers.json (Simulation window)
+    wildfire: null,         // fire/fire-layers.json (Fire window)
     layerData: new Map(),   // id -> geojson | {image, grid}
     enabled: new Map(),     // id -> bool
     drape: null,            // {mesh, canvas, ctx, texture, bounds}
@@ -39,13 +40,17 @@
     toggleInputs: new Map(),  // id -> checkbox, so agent views move the UI
     layerLoads: new Map(),    // id -> in-flight ensureLayerData promise
     layerErrors: new Map(),   // id -> visible load failure message
+    fireReveal: { time: null, duration: null },
   };
+  const fireGridKeys = new WeakMap();
+  let fireGridKeySerial = 1;
 
   // every drape-able / identify-able vector+raster layer (atlas + survey +
   // derived simulation layers)
   const allLayers = () => state.atlas.layers
     .concat(state.survey?.layers || [])
-    .concat(state.simulation?.layers || []);
+    .concat(state.simulation?.layers || [])
+    .concat(state.wildfire?.layers || []);
 
   function fail(message) {
     loadingText.textContent = message;
@@ -172,6 +177,11 @@
     viewer.setVegetationDensity('trees', 1);
     viewer.setVegetationDensity('shrubs', 1);
     await viewer.setTerrainRenderMode('ortho');
+    window.__twin.vapor = window.VEILVapor?.create(viewer.scene, {
+      onFrame: viewer.onFrame?.bind(viewer),
+      sampleGrid,
+      terrainGrid: viewer.terrainGrid,
+    });
 
     // 3D building models on their footprints (part of the buildings layer).
     window.VEILBuildings3D
@@ -187,10 +197,13 @@
     state.survey.layers.forEach((l) => state.enabled.set(l.id, false));
     state.simulation = await loadSimulationCatalog();
     state.simulation.layers.forEach((l) => state.enabled.set(l.id, false));
+    state.wildfire = await loadWildfireCatalog();
+    state.wildfire.layers.forEach((l) => state.enabled.set(l.id, false));
 
     state.apron = await buildApron(viewer);
     state.surroundingVegetation = await buildSurroundingVegetation(viewer, state.apron);
     initDrape(viewer);
+    window.__twin.fireReveal = createFireRevealApi();
     raiseOverlaysAboveDrape(viewer);
     await ensureEnabledLayerData(allLayers());
     redrawDrape();
@@ -203,7 +216,9 @@
     setupPicking(viewer, scene);
     setupPOV(viewer, scene);
     window.__twin.applyLayerViews = applyLayerViews;
+    window.__twin.ensureLayerData = ensureLayerDataById;
     window.__twin.refreshAtlasLayers = refreshAtlasLayers;
+    window.__twin.syncVaporField = syncVaporField;
     window.__twin.annotations = window.VEILAnnotations?.create(viewer, scene);
     window.__twin.chat = window.VEILChat?.create(viewer, scene);
     window.__twin.survey = window.VEILSurvey?.create(refreshSurveyLayers);
@@ -214,6 +229,27 @@
       setEnabled: async (layer, on) => {
         await setDrapeLayerEnabled(layer, on);
       },
+      refresh: refreshSimulationLayers,
+    });
+    window.__twin.wildfire = window.VEILWildfire?.create({
+      catalog: () => state.wildfire,
+      isEnabled: (id) => !!state.enabled.get(id),
+      isLoading: (id) => isLayerLoading(id),
+      setEnabled: async (layer, on) => {
+        await setDrapeLayerEnabled(layer, on);
+      },
+      refresh: refreshWildfireLayers,
+    });
+    // Evapotranspiration tab: the water_balance drape lives in the shared
+    // simulation catalog; et.js filters it out and owns the ET readouts.
+    window.__twin.et = window.VEILET?.create({
+      catalog: () => state.simulation,
+      isEnabled: (id) => !!state.enabled.get(id),
+      isLoading: (id) => isLayerLoading(id),
+      setEnabled: async (layer, on) => {
+        await setDrapeLayerEnabled(layer, on);
+      },
+      ensureData: ensureLayerDataById,
       refresh: refreshSimulationLayers,
     });
     window.__twin.live = state.hosted?.hosted ? null : window.VEILLiveInputs?.create(viewer, scene);
@@ -264,14 +300,26 @@
     return state.atlas;
   }
 
-  /* ---------------- simulation layers (Simulation window — hydrology) ----- */
+  /* ------------- simulation layers (Simulation window — hydrology + ET) --- */
 
   async function loadSimulationCatalog() {
-    try {
-      return await fetchJson('/data/hydrology/simulation-layers.json');
-    } catch (_e) {
-      return { layers: [] }; // analyze_hydrology.py hasn't been run yet
-    }
+    // The Simulation window shows every derived process layer: terrain hydrology
+    // (analyze_hydrology.py / hydro_scenario.py) and the ET/water-balance layers
+    // (et_water_balance.py). Each catalog is optional and independently absent
+    // until its pipeline has run.
+    const fetchLayers = async (url) => {
+      try {
+        return (await fetchJson(url)).layers || [];
+      } catch (_e) {
+        return [];
+      }
+    };
+    const [hydro, et, etScenario] = await Promise.all([
+      fetchLayers('/data/hydrology/simulation-layers.json'),
+      fetchLayers('/data/et/et-layers.json'),
+      fetchLayers('/data/et/et-scenario-layers.json'),
+    ]);
+    return { layers: [...hydro, ...et, ...etScenario] };
   }
 
   // Called by the Simulation window after a scenario run: refetch the catalog
@@ -285,6 +333,30 @@
       if (!state.enabled.has(l.id)) state.enabled.set(l.id, false);
     });
     state.simulation = fresh;
+    await ensureEnabledLayerData(fresh.layers);
+    redrawDrape();
+    renderKey();
+    return fresh;
+  }
+
+  /* ---------------- fire layers (Fire window - wildfire) ---------------- */
+
+  async function loadWildfireCatalog() {
+    try {
+      return await fetchJson('/data/fire/fire-layers.json');
+    } catch (_e) {
+      return { layers: [] }; // analyze_fuels.py hasn't been run yet
+    }
+  }
+
+  async function refreshWildfireLayers(enableIds) {
+    const fresh = await loadWildfireCatalog();
+    fresh.layers.forEach((l) => {
+      state.layerData.delete(l.id);
+      if (enableIds && enableIds.includes(l.id)) state.enabled.set(l.id, true);
+      if (!state.enabled.has(l.id)) state.enabled.set(l.id, false);
+    });
+    state.wildfire = fresh;
     await ensureEnabledLayerData(fresh.layers);
     redrawDrape();
     renderKey();
@@ -489,6 +561,7 @@
       try {
         const data = await loadLayerData(layer);
         state.layerData.set(layer.id, data);
+        if (layer.id === 'aet_annual' || layer.id === 'scenario_aet') syncVaporField();
         state.layerErrors.delete(layer.id);
         return data;
       } catch (err) {
@@ -512,6 +585,31 @@
     const active = layers.filter((l) => state.enabled.get(l.id));
     const results = await Promise.allSettled(active.map((l) => ensureLayerData(l)));
     return results.every((r) => r.status === 'fulfilled');
+  }
+
+  function syncVaporField() {
+    const vapor = window.__twin?.vapor;
+    if (!vapor) return null;
+    const scenarioLayer = layerById('scenario_aet');
+    const scenarioData = scenarioLayer ? state.layerData.get(scenarioLayer.id) : null;
+    const annualLayer = layerById('aet_annual');
+    const annualData = annualLayer ? state.layerData.get(annualLayer.id) : null;
+    const layer = scenarioData?.grid ? scenarioLayer : annualLayer;
+    const data = scenarioData?.grid ? scenarioData : annualData;
+    const grid = data?.grid;
+    if (grid && Array.isArray(layer.bounds_local) && !Array.isArray(grid.bounds_local)) {
+      grid.bounds_local = layer.bounds_local;
+    }
+    vapor.setField(grid || null, state.viewer?.terrainGrid || null);
+    return data || null;
+  }
+
+  async function ensureLayerDataById(id) {
+    const layer = layerById(id);
+    if (!layer) return null;
+    const data = await ensureLayerData(layer);
+    if (id === 'aet_annual' || id === 'scenario_aet') syncVaporField();
+    return data;
   }
 
   function drawPolygonPath(ctx, rings) {
@@ -617,20 +715,252 @@
     return true;
   }
 
+  function createFireRevealApi() {
+    return {
+      set(time, duration) {
+        const t = Number(time);
+        const d = Number(duration);
+        state.fireReveal.duration = Number.isFinite(d) && d > 0 ? d : null;
+        state.fireReveal.time = Number.isFinite(t) && t >= 0 &&
+          !(state.fireReveal.duration != null && t > state.fireReveal.duration)
+          ? t
+          : null;
+        syncFireVegetationTint(activeFireReveal());
+        redrawDrape();
+      },
+      clear() {
+        state.fireReveal.time = null;
+        state.fireReveal.duration = null;
+        clearFireVegetationTint();
+        redrawDrape();
+      },
+      get() {
+        return { ...state.fireReveal };
+      },
+    };
+  }
+
+  function activeFireReveal() {
+    const t = Number(state.fireReveal.time);
+    if (!Number.isFinite(t)) return null;
+    const arrivalLayer = allLayers().find((l) => l.id === 'fire_arrival' && l.group === 'fire_scenario');
+    const arrivalData = arrivalLayer ? state.layerData.get(arrivalLayer.id) : null;
+    return {
+      time: t,
+      duration: state.fireReveal.duration,
+      arrivalLayer,
+      arrivalGrid: arrivalData?.grid?.values ? arrivalData.grid : null,
+    };
+  }
+
+  function shouldDisplayDrapeLayer(layer) {
+    return layer?.group !== 'fire_scenario' || !!activeFireReveal();
+  }
+
+  function fireGridKey(grid, layer) {
+    if (!grid || typeof grid !== 'object') return layer?.id || 'fire_arrival';
+    if (!fireGridKeys.has(grid)) {
+      fireGridKeys.set(grid, fireGridKeySerial);
+      fireGridKeySerial += 1;
+    }
+    return `${layer?.id || 'fire_arrival'}:${fireGridKeys.get(grid)}`;
+  }
+
+  function createFireArrivalSampler(reveal) {
+    const grid = reveal?.arrivalGrid;
+    const bounds = grid?.bounds_local || reveal?.arrivalLayer?.bounds_local;
+    const width = Number(grid?.width);
+    const height = Number(grid?.height);
+    if (!grid?.values || !Array.isArray(bounds) || bounds.length < 4 ||
+        !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      return null;
+    }
+    const [minx, miny, maxx, maxy] = bounds.map(Number);
+    if (![minx, miny, maxx, maxy].every(Number.isFinite) || maxx <= minx || maxy <= miny) {
+      return null;
+    }
+    const sampleArrival = (x, y) => {
+      if (x < minx || x > maxx || y < miny || y > maxy) return null;
+      const col = Math.min(width - 1, Math.max(0, Math.floor(((x - minx) / (maxx - minx)) * width)));
+      const row = Math.min(height - 1, Math.max(0, Math.floor(((maxy - y) / (maxy - miny)) * height)));
+      const value = grid.values?.[row]?.[col];
+      if (value === null || value === undefined || value === grid.nodata) return null;
+      const minutes = Number(value);
+      return Number.isFinite(minutes) ? minutes : null;
+    };
+    sampleArrival.__twinFireSampleKey = fireGridKey(grid, reveal.arrivalLayer);
+    return sampleArrival;
+  }
+
+  function vegetationRenderersForFireTint() {
+    const renderers = [];
+    const seen = new Set();
+    const add = (renderer) => {
+      if (!renderer || seen.has(renderer) || typeof renderer.applyFireTint !== 'function') return;
+      seen.add(renderer);
+      renderers.push(renderer);
+    };
+    add(state.viewer?.vegetationRenderer);
+    add(window.__twin?.viewer?.vegetationRenderer);
+    add(window.__twin?.vegetationRenderer);
+    add(state.surroundingVegetation?.renderer);
+    return renderers;
+  }
+
+  function clearFireVegetationTint() {
+    vegetationRenderersForFireTint().forEach((renderer) => renderer.clearFireTint?.());
+  }
+
+  function syncFireVegetationTint(reveal) {
+    const renderers = vegetationRenderersForFireTint();
+    if (!renderers.length) return;
+    if (!reveal) {
+      clearFireVegetationTint();
+      return;
+    }
+    const sampleArrival = createFireArrivalSampler(reveal);
+    if (!sampleArrival) {
+      clearFireVegetationTint();
+      return;
+    }
+    renderers.forEach((renderer) => {
+      renderer.applyFireTint(sampleArrival, reveal.time, reveal.duration);
+    });
+  }
+
+  function mixRgb(a, b, t) {
+    const x = Math.max(0, Math.min(1, t));
+    return [
+      Math.round(a[0] + (b[0] - a[0]) * x),
+      Math.round(a[1] + (b[1] - a[1]) * x),
+      Math.round(a[2] + (b[2] - a[2]) * x),
+    ];
+  }
+
+  function fireArrivalColor(age, duration) {
+    const frontWindow = Math.max(3, Math.min(9, (Number(duration) || 120) * 0.04));
+    if (age <= frontWindow) {
+      const hot = age / frontWindow;
+      const col = hot < 0.35
+        ? mixRgb([255, 255, 226], [255, 222, 82], hot / 0.35)
+        : mixRgb([255, 222, 82], [245, 89, 24], (hot - 0.35) / 0.65);
+      return `rgba(${col[0]},${col[1]},${col[2]},0.94)`;
+    }
+    const cool = Math.min(1, (age - frontWindow) / Math.max(18, (Number(duration) || 120) * 0.35));
+    const col = mixRgb([170, 25, 18], [48, 21, 24], cool);
+    return `rgba(${col[0]},${col[1]},${col[2]},0.78)`;
+  }
+
+  function gridLegendColor(grid, value) {
+    const legend = grid?.legend || {};
+    const direct = legend[String(value)] || legend[String(Math.round(Number(value)))];
+    const color = direct?.color;
+    return Array.isArray(color) && color.length >= 3 ? color : null;
+  }
+
+  function gridNumericRange(grid) {
+    if (grid.__twinRange) return grid.__twinRange;
+    let min = Infinity;
+    let max = -Infinity;
+    (grid.values || []).forEach((row) => (row || []).forEach((value) => {
+      const n = Number(value);
+      if (!Number.isFinite(n) || value === grid.nodata) return;
+      min = Math.min(min, n);
+      max = Math.max(max, n);
+    }));
+    grid.__twinRange = Number.isFinite(min) && Number.isFinite(max) && max > min
+      ? { min, max }
+      : { min: 0, max: 1 };
+    return grid.__twinRange;
+  }
+
+  function fireScenarioValueColor(layer, grid, value) {
+    if (layer.id === 'fire_arrival') return null;
+    const legend = gridLegendColor(grid, value);
+    if (legend) return `rgba(${legend[0]},${legend[1]},${legend[2]},0.76)`;
+    if (layer.id === 'crown_class') {
+      const cls = Math.round(Number(value));
+      const col = cls >= 2 ? [255, 222, 82] : cls === 1 ? [245, 121, 32] : [154, 31, 24];
+      return `rgba(${col[0]},${col[1]},${col[2]},0.74)`;
+    }
+    const range = gridNumericRange(grid);
+    const unit = (Number(value) - range.min) / (range.max - range.min || 1);
+    const col = unit < 0.5
+      ? mixRgb([117, 23, 29], [226, 65, 24], unit / 0.5)
+      : mixRgb([226, 65, 24], [255, 218, 81], (unit - 0.5) / 0.5);
+    return `rgba(${col[0]},${col[1]},${col[2]},0.74)`;
+  }
+
+  function arrivalAtLayerCell(arrivalGrid, layer, grid, row, col) {
+    if (arrivalGrid.width === grid.width && arrivalGrid.height === grid.height) {
+      return arrivalGrid.values?.[row]?.[col];
+    }
+    const [minx, miny, maxx, maxy] = layer.bounds_local;
+    const x = minx + ((col + 0.5) / grid.width) * (maxx - minx);
+    const y = maxy - ((row + 0.5) / grid.height) * (maxy - miny);
+    return sampleGrid(arrivalGrid, arrivalGrid.bounds_local || layer.bounds_local, x, y)?.value;
+  }
+
+  function drawFireRevealRaster(ctx, layer, data, reveal) {
+    const grid = data?.grid;
+    if (!reveal || layer.group !== 'fire_scenario' || layer.type !== 'raster' || !grid?.values) return false;
+    const [minx, miny, maxx, maxy] = layer.bounds_local;
+    const [x0, y0] = toCanvas(minx, maxy);
+    const [x1, y1] = toCanvas(maxx, miny);
+    const cw = (x1 - x0) / grid.width;
+    const ch = (y1 - y0) / grid.height;
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    for (let r = 0; r < grid.height; r += 1) {
+      const row = grid.values[r] || [];
+      for (let c = 0; c < grid.width; c += 1) {
+        const value = row[c];
+        if (value === null || value === undefined || value === grid.nodata) continue;
+        let arrival = null;
+        if (layer.id !== 'ember_exposure') {
+          if (layer.id !== 'fire_arrival' && !reveal.arrivalGrid) continue;
+          arrival = layer.id === 'fire_arrival'
+            ? Number(value)
+            : Number(arrivalAtLayerCell(reveal.arrivalGrid, layer, grid, r, c));
+          if (!Number.isFinite(arrival) || arrival > reveal.time) continue;
+        }
+        const color = layer.id === 'fire_arrival'
+          ? fireArrivalColor(reveal.time - arrival, reveal.duration)
+          : fireScenarioValueColor(layer, grid, value);
+        if (!color) continue;
+        ctx.fillStyle = color;
+        ctx.fillRect(x0 + c * cw, y0 + r * ch, cw + 0.6, ch + 0.6);
+      }
+    }
+    ctx.restore();
+    return true;
+  }
+
   function redrawDrape() {
     const d = state.drape;
     if (!d) return;
     d.ctx.clearRect(0, 0, d.W, d.H);
     const order = { raster: 0, polygon: 1, line: 2, point: 3 };
+    const reveal = activeFireReveal();
+    syncFireVegetationTint(reveal);
     const layers = allLayers()
-      .filter((l) => state.enabled.get(l.id) && state.layerData.has(l.id))
-      .sort((a, b) => (order[a.type] ?? 9) - (order[b.type] ?? 9));
+      .filter((l) => state.enabled.get(l.id) && shouldDisplayDrapeLayer(l) && state.layerData.has(l.id))
+      .sort((a, b) => {
+        const byType = (order[a.type] ?? 9) - (order[b.type] ?? 9);
+        if (byType !== 0) return byType;
+        if (reveal && a.group === 'fire_scenario' && b.group === 'fire_scenario') {
+          if (a.id === 'fire_arrival') return 1;
+          if (b.id === 'fire_arrival') return -1;
+        }
+        return 0;
+      });
 
     layers.forEach((layer) => {
       const data = state.layerData.get(layer.id);
       const ctx = d.ctx;
       const filter = state.layerFilters.get(layer.id);
       if (layer.type === 'raster') {
+        if (drawFireRevealRaster(ctx, layer, data, reveal)) return;
         // A species filter on the GAP grid paints a habitat mask; any other
         // filter re-renders the value grid keeping only the chosen classes;
         // unfiltered, the pre-colored ortho image drapes as before.
@@ -848,8 +1178,8 @@
   function renderKey() {
     const host = document.getElementById('key-list');
     host.replaceChildren();
-    const active = allLayers().filter((l) => state.enabled.get(l.id));
-    const errors = allLayers().filter((l) => state.layerErrors.has(l.id));
+    const active = allLayers().filter((l) => state.enabled.get(l.id) && shouldDisplayDrapeLayer(l));
+    const errors = allLayers().filter((l) => shouldDisplayDrapeLayer(l) && state.layerErrors.has(l.id));
     document.getElementById('key-empty').hidden = active.length > 0 || errors.length > 0;
     active.forEach((layer) => {
       const item = document.createElement('div');
@@ -978,8 +1308,10 @@
     }
   }
 
-  function identifyResultsHtml(results, speciesHtml, simHtml) {
+  function identifyResultsHtml(results, speciesHtml, simHtml, fireHtml, etHtml) {
     return (simHtml ? `<div class="info-card sim-info-card">${simHtml}</div>` : '') +
+      (fireHtml ? `<div class="info-card sim-info-card">${fireHtml}</div>` : '') +
+      (etHtml ? `<div class="info-card sim-info-card">${etHtml}</div>` : '') +
       results.map((r) => {
         const layerLabel = r.layer?.label || 'Layer';
         const title = r.title || layerLabel;
@@ -1048,11 +1380,14 @@
   function identify(x, y, hitRadiusMeters = IDENTIFY_HIT_RADIUS.fallbackMeters) {
     const results = [];
     const simSamples = []; // simulation layers speak in sentences, not rows
+    const fireSamples = [];
+    const etSamples = [];
     const hitRadius = Number.isFinite(hitRadiusMeters)
       ? clampNumber(hitRadiusMeters, IDENTIFY_HIT_RADIUS.minMeters, IDENTIFY_HIT_RADIUS.maxMeters)
       : IDENTIFY_HIT_RADIUS.fallbackMeters;
     allLayers().forEach((layer) => {
       if (!state.enabled.get(layer.id)) return;
+      if (!shouldDisplayDrapeLayer(layer)) return;
       const data = state.layerData.get(layer.id);
       if (!data) return;
       if (layer.type === 'raster') {
@@ -1064,6 +1399,14 @@
         // (simulation.js interpretAt) instead of a bare number row
         if (layer.group === 'hydrology' || layer.group === 'scenario') {
           simSamples.push({ layer, grid, value: s.value });
+          return;
+        }
+        if (layer.group === 'fire' || layer.group === 'fire_scenario') {
+          fireSamples.push({ layer, grid, value: s.value });
+          return;
+        }
+        if (layer.group === 'water_balance' || layer.group === 'et_scenario') {
+          etSamples.push({ layer, grid, value: s.value });
           return;
         }
         const leg = grid.legend && grid.legend[String(s.value)];
@@ -1111,7 +1454,13 @@
     const simHtml = simSamples.length
       ? (window.__twin?.simulation?.interpretAt?.(x, y, simSamples) || '')
       : '';
-    return { results, speciesHtml, simHtml };
+    const fireHtml = fireSamples.length
+      ? (window.__twin?.wildfire?.interpretAt?.(x, y, fireSamples) || '')
+      : '';
+    const etHtml = etSamples.length
+      ? (window.__twin?.et?.interpretAt?.(x, y, etSamples) || '')
+      : '';
+    return { results, speciesHtml, simHtml, fireHtml, etHtml };
   }
 
   let warnedMissingIdentifyHost = false;
@@ -1125,13 +1474,13 @@
       }
       return;
     }
-    const { results, speciesHtml, simHtml } = identify(x, y, hitRadiusMeters);
-    if (!results.length && !speciesHtml && !simHtml) {
+    const { results, speciesHtml, simHtml, fireHtml, etHtml } = identify(x, y, hitRadiusMeters);
+    if (!results.length && !speciesHtml && !simHtml && !fireHtml && !etHtml) {
       host.innerHTML = '<p class="readout-hint">No active layer has a feature at that spot.</p>';
       notifyInspect('identify');
       return;
     }
-    host.innerHTML = identifyResultsHtml(results, speciesHtml, simHtml);
+    host.innerHTML = identifyResultsHtml(results, speciesHtml, simHtml, fireHtml, etHtml);
     notifyInspect('identify');
   }
 
@@ -1261,7 +1610,8 @@
     }
 
     function pick(clientX, clientY) {
-      if (window.__twin?.live?.pickAtScreen?.(clientX, clientY)) return;
+      const firePicking = window.__twin?.wildfire?.state?.mode === 'pick';
+      if (!firePicking && window.__twin?.live?.pickAtScreen?.(clientX, clientY)) return;
       const rect = canvas.getBoundingClientRect();
       ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
       ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
@@ -1269,6 +1619,10 @@
       const hit = raycaster.intersectObject(viewer.terrainMesh, false)[0];
       if (!hit) return;
       const g = georef.worldToGeo(hit.point.x, hit.point.y, hit.point.z);
+      if (firePicking) {
+        window.__twin.wildfire.pickIgnition?.(hit, g);
+        return;
+      }
       placeMarker(hit.point);
       updatePickReadout(readout, g);
 
@@ -1283,8 +1637,13 @@
       downAt = null;
       // while the chat panel is drawing a region / picking a point, those
       // clicks belong to it (chat.js), not the GPS readout; same for the POV
-      // explorer's drop-in click / locked first-person session
+      // explorer's drop-in click / locked first-person session. Fire ignition
+      // uses this same raycast but consumes the click before readout/identify.
       if (window.__twin?.chat?.state?.mode) return;
+      if (window.__twin?.wildfire?.state?.mode === 'pick') {
+        if (moved < 5) pick(e.clientX, e.clientY);
+        return;
+      }
       if (window.__twin?.pov?.isBusy?.()) return;
       if (moved < 5) pick(e.clientX, e.clientY);
     });

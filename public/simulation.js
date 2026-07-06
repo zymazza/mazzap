@@ -228,7 +228,8 @@
     function toggleRow(layer) {
       const row = document.createElement('label');
       row.className = 'toggle-row';
-      const swatch = layer.group === 'scenario' ? '#f57e3c' : '#3e7cb1';
+      const swatch = layer.group === 'scenario' ? '#f57e3c'
+        : layer.group === 'water_balance' ? '#2aa198' : '#3e7cb1';
       const loading = !!api.isLoading?.(layer.id);
       row.classList.toggle('loading', loading);
       row.innerHTML =
@@ -249,6 +250,7 @@
 
     function renderToggles() {
       const layers = (api.catalog()?.layers) || [];
+      // Terrain hydrology only; the ET/water-balance drape moved to the ET tab (et.js).
       const hydro = layers.filter((l) => l.group === 'hydrology');
       const scenario = layers.filter((l) => l.group === 'scenario');
       if (hydro.length) {

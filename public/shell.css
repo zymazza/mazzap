@@ -131,6 +131,12 @@ html, body {
 .pane { display: none; flex-direction: column; gap: 20px; }
 .pane.active { display: flex; }
 
+/* Simulation pane: Wildfire / Hydrology sub-tabs sharing one rail item */
+.sim-tabs { flex: 0 0 auto; }
+.sim-tabs button { font-size: 12px; padding: 7px 8px; }
+.sim-view { display: none; }
+.sim-view.active { display: flex; flex-direction: column; gap: 20px; }
+
 .group { display: flex; flex-direction: column; gap: 9px; }
 .group-label, .group-label-row .group-label {
   margin: 0; font-size: 10.5px; font-weight: 600; letter-spacing: .08em;
@@ -436,10 +442,11 @@ body.chat-open .inspector { right: calc(28px + var(--chat-w)); }
   display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--ink-dim);
 }
 .sim-field-row .grow { flex: 1; }
-.sim-form input[type="number"], .sim-form select, .live-form select {
+.sim-form input[type="number"], .sim-form input[type="date"], .sim-form select, .live-form select {
   background: var(--glass-2); border: 1px solid var(--line); border-radius: 7px;
   color: var(--ink); font-size: 12px; padding: 5px 7px; width: 60px;
 }
+.sim-form input[type="date"] { width: 118px; }
 .sim-form select { width: auto; }
 .sim-form input:focus, .sim-form select:focus { border-color: var(--accent-line); outline: none; }
 .sim-frozen input { accent-color: var(--accent); width: 14px; height: 14px; }
@@ -451,7 +458,26 @@ body.chat-open .inspector { right: calc(28px + var(--chat-w)); }
 .sim-results { margin-top: 4px; }
 .sim-results .info-row { font-size: 12px; }
 .sim-note { margin-top: 6px; font-size: 11px; }
-#sim-hydro-toggles code { font-size: 10.5px; background: var(--glass-3); padding: 1px 4px; border-radius: 4px; }
+#sim-hydro-toggles code, #et-layer-toggles code { font-size: 10.5px; background: var(--glass-3); padding: 1px 4px; border-radius: 4px; }
+
+/* Water & ET tab */
+.et-methods { display: flex; flex-direction: column; gap: 5px; margin-bottom: 8px; }
+.et-method { display: flex; align-items: center; gap: 8px; font-size: 11.5px; }
+.et-method-name { flex: 0 0 110px; color: var(--ink-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.et-method-bar { flex: 1; height: 6px; border-radius: 3px; background: var(--glass-2); overflow: hidden; }
+.et-method-bar > span { display: block; height: 100%; background: #2aa198; border-radius: 3px; }
+.et-method-val { flex: none; min-width: 34px; text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
+.et-ensemble { margin: 0 0 8px; font-size: 12px; color: var(--ink-dim); }
+.et-ensemble strong { color: var(--ink); }
+.et-clim { margin: 10px 0 8px; }
+.et-clim-label { margin: 0 0 5px; font-size: 11px; color: var(--ink-faint); }
+.et-clim-bars { display: flex; align-items: flex-end; gap: 3px; height: 54px; }
+.et-clim-bar { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
+.et-clim-bar > span { width: 100%; min-height: 2px; background: linear-gradient(to top, #2aa198, #7fd3c9); border-radius: 2px 2px 0 0; }
+.et-clim-bar > em { margin-top: 3px; font-style: normal; font-size: 8.5px; color: var(--ink-faint); }
+.et-pm { color: var(--ink-faint); font-size: 10px; }
+.et-scenario-head { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--ink); }
+.et-series { line-height: 1.45; }
 
 /* ===========================================================================
    SURVEY FORM (generated + static)

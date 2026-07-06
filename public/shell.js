@@ -19,7 +19,7 @@
   const TITLES = {
     layers: 'Layers',
     explore: 'Explore',
-    simulate: 'Simulate water',
+    simulation: 'Simulation',
     survey: 'Field surveys',
     telemetry: 'Live telemetry',
   };
@@ -32,6 +32,7 @@
     flyout.hidden = false;
     document.body.classList.add('flyout-open');
     activeMode = mode;
+    applySimViews();
     syncRail();
   }
 
@@ -39,8 +40,27 @@
     flyout.hidden = true;
     document.body.classList.remove('flyout-open');
     activeMode = null;
+    applySimViews();
     syncRail();
   }
+
+  /* -------- simulation sub-tabs (Wildfire / Hydrology) --------
+     One rail item ("Simulation") holds two tab-views. We toggle .active on the
+     view divs (#fire-panel / #simulation-panel) only while their tab is showing,
+     so wildfire.js's animation observer (which watches #fire-panel.active) keeps
+     stopping the burn animation whenever the wildfire view is hidden or closed. */
+  const simTabs = [...document.querySelectorAll('.sim-tabs [data-simtab]')];
+  const simViews = [...document.querySelectorAll('.sim-view')];
+  let activeSimTab = 'fire';
+  function applySimViews() {
+    const on = activeMode === 'simulation';
+    simTabs.forEach((t) => t.classList.toggle('active', t.dataset.simtab === activeSimTab));
+    simViews.forEach((v) => v.classList.toggle('active', on && v.dataset.simview === activeSimTab));
+  }
+  simTabs.forEach((t) => t.addEventListener('click', () => {
+    activeSimTab = t.dataset.simtab;
+    applySimViews();
+  }));
 
   function toggleChat(force) {
     const open = force != null ? force : chatDock.hidden;

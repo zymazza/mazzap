@@ -9,9 +9,10 @@ view-time-offline like every other VEIL input.
 
 Daymet is the high-value single fetch here: one no-auth REST call returns daily
 precipitation, min/max temperature, modeled snow-water-equivalent (SWE), shortwave
-radiation and daylength — i.e. both the precip/temp forcing the degree-day
-snowmelt step needs AND a ~45-year SWE climatology to calibrate its melt factor
-against, plus the radiation/daylength an energy-balance upgrade would use.
+radiation, daylength and vapor pressure — i.e. both the precip/temp forcing the
+degree-day snowmelt step needs AND a ~45-year SWE climatology to calibrate its
+melt factor against, plus the radiation/daylength/humidity an energy-balance
+upgrade uses.
 
 Region-agnostic: the anchor comes from the twin's own georef.json, and the
 outputs go under the twin's --data-dir, so this works for any North American
@@ -56,7 +57,7 @@ sys.path.insert(0, os.path.join(PROJECT, "scripts"))
 import twin_georef  # noqa: E402
 
 DAYMET_API = "https://daymet.ornl.gov/single-pixel/api/data"
-VARS = "prcp,tmax,tmin,swe,srad,dayl"
+VARS = "prcp,tmax,tmin,swe,srad,dayl,vp"
 START, END = "1980-01-01", "2024-12-31"  # Daymet returns the available subset
 
 
@@ -100,6 +101,7 @@ def parse_records(csv_text):
             "swe": float(r["swe (kg/m^2)"]),
             "srad": float(r["srad (W/m^2)"]),
             "dayl": float(r["dayl (s)"]),
+            "vp": float(r["vp (Pa)"]) if r.get("vp (Pa)") not in (None, "") else None,
         })
     return header_block, rows
 
@@ -227,6 +229,10 @@ def main():
         "period": {"start": START, "end": END, "daily_records": len(rows)},
         "daymet_header": header_block,
         "variables": VARS.split(","),
+        "et_notes": {
+            "srad": "Daymet srad is a daylight-average flux (W/m^2); daily total shortwave Rs(MJ/m^2/d) = srad * dayl / 1e6.",
+            "vp": "Daymet vp is modeled humidity derived from Tmin-dewpoint assumptions, not an in-situ vapor-pressure observation.",
+        },
         **summary,
     }
     with open(summary_json, "w") as fh:

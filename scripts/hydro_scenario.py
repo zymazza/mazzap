@@ -37,6 +37,7 @@ Run:  python3 scripts/hydro_scenario.py --swe-in 10 --melt-days 4 --rain-in 0.5 
 """
 
 import argparse
+import csv
 import hashlib
 import json
 import math
@@ -79,6 +80,67 @@ def cn_amc_adjust(cn2, antecedent):
     if antecedent == "wet":
         return cn2 / (0.427 + 0.00573 * cn2)
     return cn2
+
+
+def cn_amc_continuous(cn2, wetness):
+    """Continuously interpolate AMC I -> II -> III from ET-derived wetness."""
+    wetness = float(np.clip(wetness, 0.0, 1.0))
+    dry = cn_amc_adjust(cn2, "dry")
+    normal = cn2
+    wet = cn_amc_adjust(cn2, "wet")
+    if wetness <= 0.5:
+        t = wetness / 0.5
+        return dry + (normal - dry) * t
+    t = (wetness - 0.5) / 0.5
+    return normal + (wet - normal) * t
+
+
+def et_antecedent_state(as_of=None):
+    """Latest/root-zone ET state mapped to a continuous SCS AMC wetness index.
+
+    Returns None when ET water-balance output is absent, preserving the legacy
+    manual dry|normal|wet path.
+    """
+    path = os.path.join(D, "et", "soil_water_daily.csv")
+    if not os.path.exists(path):
+        return None
+    rows = list(csv.DictReader(open(path)))
+    if not rows:
+        return None
+    if as_of:
+        rows = [r for r in rows if r.get("date", "") <= as_of] or rows
+    r = rows[-1]
+
+    def num(k, default=0.0):
+        try:
+            return float(r.get(k) or default)
+        except (TypeError, ValueError):
+            return default
+
+    dep = num("root_zone_depletion_fraction", 0.5)
+    wet5 = num("wetness_5d")
+    wet14 = num("wetness_14d")
+    wet30 = num("wetness_30d")
+    root_wet = 1.0 - max(0.0, min(1.0, dep))
+    wetness = max(0.0, min(1.0, 0.45 * root_wet + 0.25 * wet5 + 0.20 * wet14 + 0.10 * wet30))
+    if wetness < 0.33:
+        label = "dry"
+    elif wetness > 0.67:
+        label = "wet"
+    else:
+        label = "normal"
+    return {
+        "source": "et/soil_water_daily.csv",
+        "date": r.get("date"),
+        "as_of": as_of,
+        "mode": "auto",
+        "wetness_index": round(wetness, 3),
+        "equivalent_manual_class": label,
+        "root_zone_depletion_fraction": round(dep, 3),
+        "wetness_5d": round(wet5, 3),
+        "wetness_14d": round(wet14, 3),
+        "wetness_30d": round(wet30, 3),
+    }
 
 
 def scs_runoff_mm(p_mm, cn):
@@ -169,7 +231,9 @@ def main():
                     help="snowmelt: rain-on-snow; rain: the storm total")
     ap.add_argument("--storm-hours", type=float, default=12.0,
                     help="rain: storm duration in hours")
-    ap.add_argument("--antecedent", choices=["dry", "normal", "wet"], default="normal")
+    ap.add_argument("--antecedent", choices=["dry", "normal", "wet", "auto"], default="normal")
+    ap.add_argument("--as-of", default=None,
+                    help="with --antecedent auto, use ET water-balance state on or before YYYY-MM-DD")
     ap.add_argument("--frozen", action="store_true",
                     help="frozen/concrete ground: soils respond as wet AMC III + floor CN 80")
     ap.add_argument("--json", action="store_true", help="print result JSON on stdout")
@@ -227,8 +291,16 @@ def main():
             g = soils["hsg"][r, c]
             if g:
                 cn[r, c] = CN_WOODS.get(g, CN_DEFAULT)
-    antecedent = "wet" if args.frozen else args.antecedent
-    cn = cn_amc_adjust(cn, antecedent)
+    auto_state = et_antecedent_state(args.as_of) if args.antecedent == "auto" else None
+    if args.frozen:
+        antecedent = "wet"
+        cn = cn_amc_adjust(cn, antecedent)
+    elif auto_state:
+        antecedent = "auto"
+        cn = cn_amc_continuous(cn, auto_state["wetness_index"])
+    else:
+        antecedent = args.antecedent if args.antecedent != "auto" else "normal"
+        cn = cn_amc_adjust(cn, antecedent)
     if args.frozen:
         cn = np.maximum(cn, 80.0)  # concrete frost floor
     cn[~footprint] = np.nan
@@ -324,8 +396,11 @@ def main():
         "mode": args.mode,
         "rain_in": rain_in,
         "antecedent": args.antecedent, "frozen_ground": bool(args.frozen),
+        "antecedent_effective": antecedent,
         "label": scenario_label,
     }
+    if args.as_of:
+        scenario_params["as_of"] = args.as_of
     if args.mode == "rain":
         scenario_params["storm_hours"] = storm_hours
     else:
@@ -365,6 +440,11 @@ def main():
                     "to fill." if storage_m3 else None,
         },
         "layers": [l["id"] for l in new_layers],
+        "antecedent_state": auto_state or (
+            {"mode": "auto", "error": "et/soil_water_daily.csv absent; used normal AMC II"}
+            if args.antecedent == "auto" and not args.frozen else
+            {"mode": "manual", "class": antecedent}
+        ),
         "notes": [
             "Geometry (where water concentrates) is the reliable output; "
             "discharge magnitude is scenario-grade, not a forecast.",
@@ -377,6 +457,9 @@ def main():
         ]) + ([] if presets is not None else [
             "No climate forcing for this twin — snowmelt/storm presets are "
             "unavailable; supply event depths explicitly.",
+        ]) + ([] if args.antecedent != "auto" or auto_state else [
+            "ET-derived antecedent moisture was requested, but no ET water-balance "
+            "table was found; the scenario used normal AMC II.",
         ]),
     }
 
