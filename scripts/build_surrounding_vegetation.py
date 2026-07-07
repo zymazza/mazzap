@@ -116,7 +116,9 @@ def main():
     nir = gdal.Open(str(D / "imagery" / "false_color.png")).ReadAsArray().astype(float)[0]
     rgb = gdal.Open(str(D / "imagery" / "naip_rgb.png")).ReadAsArray().astype(float)
     red = rgb[0]
+    green = rgb[1]
     ndvi = (nir - red) / (nir + red + 1e-6)
+    water = veg_detect.water_mask(green, nir, ndvi=ndvi)
     image_height, image_width = red.shape
     typical_height = pack.typical_height
 
@@ -164,8 +166,15 @@ def main():
             and (signal["texture"] >= 9.0 or signal["brightness"] <= 118.0)
         )
 
+    # Open water reads as flat, valid apron terrain; an explicit water mask is
+    # the only thing that keeps stems off a lake. Folded into is_surrounding_cell
+    # so it gates the carried-over stems, canopy densification and shrubs alike.
+    is_water = veg_detect.water_at_sampler(water, grid)
+
     def is_surrounding_cell(x, y):
-        return has_valid_terrain(apron_p, x, y) and not has_valid_terrain(grid_p, x, y)
+        return (has_valid_terrain(apron_p, x, y)
+                and not has_valid_terrain(grid_p, x, y)
+                and not is_water(x, y))
 
     evt_at = pack.community_at
     # Read the parcel populations from the store (the authoritative source),
@@ -259,6 +268,7 @@ def main():
         "tree_count": total,
         "existing_tree_count": counts["existing"],
         "canopy_fill_count": counts["canopy_fill"],
+        "water_masked": bool(water is not None),
         "spectral_canopy_fill_count": counts["spectral_canopy_fill"],
         "shrub_anchor_count": len(surrounding_shrubs),
         "evergreen_count": counts["evergreen"],

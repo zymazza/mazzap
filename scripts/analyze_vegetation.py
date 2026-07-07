@@ -67,17 +67,20 @@ DEFAULT_SPACING = 3.6
 
 
 def load_imagery():
-    """(nir, ndvi, Himg, Wimg) over the outer footprint, or all-None when the
-    twin has no red+NIR imagery."""
+    """(nir, ndvi, water, Himg, Wimg) over the outer footprint, or all-None when
+    the twin has no red+NIR imagery. `water` is a boolean open-water mask so no
+    stem is ever planted on a lake surface (the DEM reports it as flat ground)."""
     fc = os.path.join(D, "imagery", "false_color.png")
     rgb_path = os.path.join(D, "imagery", "naip_rgb.png")
     if not (os.path.exists(fc) and os.path.exists(rgb_path)):
-        return None, None, None, None
+        return None, None, None, None, None
     nir = gdal.Open(fc).ReadAsArray().astype(float)[0]
     rgb = gdal.Open(rgb_path).ReadAsArray().astype(float)
     R = rgb[0]
+    green = rgb[1]
     ndvi = (nir - R) / (nir + R + 1e-6)
-    return nir, ndvi, R.shape[0], R.shape[1]
+    water = veg_detect.water_mask(green, nir, ndvi=ndvi)
+    return nir, ndvi, water, R.shape[0], R.shape[1]
 
 
 def detect_stems(grid, ndvi, terrain_valid, sample_elev):
@@ -112,7 +115,7 @@ def main():
     _use_data_dir(args.data_dir)
 
     pack = twin_pack.load_vegetation({"data_dir": D})
-    nir, ndvi, Himg, Wimg = load_imagery()
+    nir, ndvi, water, Himg, Wimg = load_imagery()
     has_nir = nir is not None
     can_type = bool(pack and has_nir)  # naming evergreen/deciduous needs both
 
@@ -147,15 +150,28 @@ def main():
 
     sample_elev = make_elev_sampler(grid)
 
+    # Open water reads as flat, valid DEM terrain, so nothing else keeps stems
+    # off a lake — an explicit water mask does. Folded into terrain_valid so it
+    # gates the CHM/NDVI detectors and canopy densification alike.
+    is_water = veg_detect.water_at_sampler(water, grid)
+
     # The DEM is null outside the AOI polygon; only those cells render terrain.
     # Densified trees must land on valid terrain, or they float beyond the lot.
     def terrain_valid(x, y):
-        return terrain_valid_for(grid, x, y)
+        return terrain_valid_for(grid, x, y) and not is_water(x, y)
 
     trees, capability = detect_stems(grid, ndvi, terrain_valid, sample_elev)
     if trees is None:
         skip_vegetation(capability, has_nir)
         return
+
+    # LiDAR/CHM/NDVI-detected stems are planted directly (not through the
+    # densifier's gates), so drop any that fall on open water here too.
+    water_dropped = 0
+    if water is not None:
+        kept = [t for t in trees if not is_water(t["x"], t["y"])]
+        water_dropped = len(trees) - len(kept)
+        trees = kept
 
     out_trees = []
     counts = {"evergreen": 0, "deciduous": 0, "unknown": 0}
@@ -213,6 +229,8 @@ def main():
         "detected_tree_count": n0,
         "lidar_tree_count": n0 if capability == "lidar_segmentation" else 0,
         "canopy_fill_count": added,
+        "water_masked": water is not None,
+        "water_dropped_stem_count": water_dropped,
         "stem_capability": capability,
         "evergreen_count": counts["evergreen"],
         "deciduous_count": counts["deciduous"],
@@ -258,6 +276,8 @@ def main():
               stats["observations"], left, retired))
 
     print("trees [%s]: %d detected + %d canopy-fill = %d" % (capability, n0, added, total))
+    if water is not None and water_dropped:
+        print("water mask: dropped %d detected stem(s) on open water" % water_dropped)
     if can_type:
         print("evergreen %d (%.0f%%) / deciduous %d (%.0f%%)" % (
             counts["evergreen"], meta["evergreen_pct"],

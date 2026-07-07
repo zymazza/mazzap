@@ -78,6 +78,41 @@ def stratified_grid_candidates(grid, spacing, salt="canopy_fill"):
             yield x0 + ux * (x1 - x0), y0 + uy * (y1 - y0)
 
 
+def water_mask(green, nir, ndvi=None, threshold=0.0, ndvi_veg=0.2):
+    """Boolean HxW open-water mask over the outer footprint (McFeeters NDWI).
+
+    Water reflects green and absorbs NIR, so NDWI = (green - NIR)/(green + NIR)
+    is positive over open water and strongly negative over lit canopy; roads and
+    bare soil sit near zero. We AND with a low-NDVI guard so bright vegetation is
+    never masked (its NDWI is already negative — the guard is belt-and-braces).
+    green/nir are HxW DN arrays; ndvi (optional) is the same-shape NDVI array.
+    """
+    green = green.astype(float)
+    nir = nir.astype(float)
+    ndwi = (green - nir) / (green + nir + 1e-6)
+    mask = ndwi >= threshold
+    if ndvi is not None:
+        mask &= ndvi < ndvi_veg
+    return mask
+
+
+def water_at_sampler(mask, grid):
+    """is_water(x, y) -> bool over scene-local meters, nearest-cell on `mask`
+    (an HxW array over the grid's outer footprint). Returns a no-op False
+    sampler when mask is None so callers need not special-case a maskless twin."""
+    if mask is None:
+        return lambda x, y: False
+    h, w = mask.shape
+    ox0, ox1, oy0, oy1 = _outer(grid)
+
+    def is_water(x, y):
+        col = min(w - 1, max(0, int((x - ox0) / (ox1 - ox0) * w)))
+        row = min(h - 1, max(0, int((oy1 - y) / (oy1 - oy0) * h)))
+        return bool(mask[row, col])
+
+    return is_water
+
+
 def _spatial_index(trees, cell):
     buckets = {}
     for i, tree in enumerate(trees):
