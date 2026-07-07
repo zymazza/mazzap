@@ -4,6 +4,13 @@
   const BUILDING_EXCLUSION_BUFFER_METERS = 1.75;
   const TREE_STRIDE = 6; // x, y, height, radius, typeFlag (1=evergreen, 0=deciduous), assetId
   const SHRUB_STRIDE = 3;
+  // Fire-reveal tinting: a passing fire front runs bright yellow -> orange, then
+  // cools through char brown to near-black as the burn ages behind the front.
+  const FIRE_COLOR_WHITE = Object.freeze({ r: 1, g: 1, b: 1 });
+  const FIRE_COLOR_HOT_YELLOW = '#ffcc33';
+  const FIRE_COLOR_HOT_ORANGE = '#ff6a1a';
+  const FIRE_COLOR_CHAR_BROWN = '#3a2a20';
+  const FIRE_COLOR_CHAR_BLACK = '#1a1512';
   const TREE_LIBRARY_ASSETS = Object.freeze([
     {
       id: 1,
@@ -450,6 +457,17 @@
     return hashUnit(key) <= density;
   }
 
+  function ensureFloat32Capacity(current, minItems, stride) {
+    if (current && current.length >= minItems * stride) {
+      return current;
+    }
+    return new Float32Array(Math.max(1, minItems) * stride);
+  }
+
+  function clamp01(value) {
+    return Math.max(0, Math.min(1, value));
+  }
+
   class VegetationRenderer {
     constructor(scene) {
       this.scene = scene;
@@ -478,6 +496,24 @@
       this.renderStats = {
         shrubs: 0,
         trees: 0,
+      };
+      // Fire-reveal state driven by app.js applyFireTint(); appliedKey lets a
+      // re-render skip retinting when the reveal time/grid have not changed.
+      this.fireTint = {
+        active: false,
+        sampleArrival: null,
+        revealTime: null,
+        duration: null,
+        appliedKey: null,
+      };
+      this.fireColor = {
+        natural: new THREE.Color(1, 1, 1),
+        target: new THREE.Color(1, 1, 1),
+        ratio: new THREE.Color(1, 1, 1),
+        hotYellow: new THREE.Color(FIRE_COLOR_HOT_YELLOW),
+        hotOrange: new THREE.Color(FIRE_COLOR_HOT_ORANGE),
+        charBrown: new THREE.Color(FIRE_COLOR_CHAR_BROWN),
+        charBlack: new THREE.Color(FIRE_COLOR_CHAR_BLACK),
       };
       this.rotationAxis = new THREE.Vector3(0, 1, 0);
       this.transform = new THREE.Matrix4();
@@ -514,6 +550,7 @@
         }),
         canopyMesh: null,
         capacity: 0,
+        fireScenePositions: null,
         trunkGeometry: new THREE.CylinderGeometry(0.12, 0.16, 1, 6),
         trunkMaterial: new THREE.MeshStandardMaterial({
           color: evergreen ? '#5b4631' : '#7a5a3b',
@@ -534,6 +571,7 @@
         diameter: 1,
         capacity: 0,
         visibleCount: 0,
+        fireScenePositions: null,
         parts: [],
       };
     }
@@ -645,6 +683,7 @@
         state.trunkMesh = null;
         state.canopyMesh = null;
         state.capacity = 0;
+        state.fireScenePositions = null;
       });
       this.treeAssetStates.forEach((state) => {
         state.parts.forEach((part) => {
@@ -653,6 +692,7 @@
         });
         state.capacity = 0;
         state.visibleCount = 0;
+        state.fireScenePositions = null;
       });
     }
 
@@ -722,6 +762,168 @@
       });
     }
 
+    // ---- fire-reveal tinting -------------------------------------------
+    // Driven by app.js: as the wildfire arrival-time reveal is scrubbed/played,
+    // each rendered stem samples its fire-arrival minute and shifts color from
+    // the natural canopy through the flame front to char.
+    fireTargetColor(ageMinutes, durationMinutes) {
+      const duration = Number(durationMinutes) || 120;
+      const frontWindow = Math.max(3, Math.min(9, duration * 0.04));
+      if (ageMinutes <= frontWindow) {
+        const hot = clamp01(ageMinutes / frontWindow);
+        return this.fireColor.target.copy(this.fireColor.hotYellow).lerp(this.fireColor.hotOrange, hot);
+      }
+      const cool = clamp01((ageMinutes - frontWindow) / Math.max(18, duration * 0.35));
+      if (cool < 0.2) {
+        return this.fireColor.target.copy(this.fireColor.hotOrange).lerp(this.fireColor.charBrown, cool / 0.2);
+      }
+      return this.fireColor.target.copy(this.fireColor.charBrown).lerp(this.fireColor.charBlack, (cool - 0.2) / 0.8);
+    }
+
+    // InstancedMesh.setColorAt multiplies the material color; convert an
+    // absolute target color into the per-instance multiplier that yields it.
+    fireMultiplierForMaterial(targetColor, material) {
+      if (!targetColor) {
+        return this.fireColor.natural;
+      }
+      const base = material?.color || FIRE_COLOR_WHITE;
+      const floor = 0.025;
+      this.fireColor.ratio.setRGB(
+        Math.min(16, targetColor.r / Math.max(floor, base.r || 0)),
+        Math.min(16, targetColor.g / Math.max(floor, base.g || 0)),
+        Math.min(16, targetColor.b / Math.max(floor, base.b || 0))
+      );
+      return this.fireColor.ratio;
+    }
+
+    sampleFireTarget(sampleArrival, sceneX, sceneY, revealTime, duration) {
+      let arrival = null;
+      try {
+        arrival = sampleArrival(sceneX, sceneY);
+      } catch (_err) {
+        arrival = null;
+      }
+      if (arrival === null || arrival === undefined) {
+        return null;
+      }
+      const a = Number(arrival);
+      if (!Number.isFinite(a) || a > revealTime) {
+        return null; // fire has not reached this stem yet at the reveal time
+      }
+      return this.fireTargetColor(Math.max(0, revealTime - a), duration);
+    }
+
+    tintMeshInstances(mesh, positions, count, material, sampleArrival, revealTime, duration) {
+      if (!mesh || !positions || !count) {
+        return;
+      }
+      for (let index = 0; index < count; index += 1) {
+        const offset = index * 2;
+        const target = this.sampleFireTarget(
+          sampleArrival,
+          positions[offset],
+          positions[offset + 1],
+          revealTime,
+          duration
+        );
+        mesh.setColorAt(index, this.fireMultiplierForMaterial(target, material));
+      }
+      if (mesh.instanceColor) {
+        mesh.instanceColor.needsUpdate = true;
+      }
+    }
+
+    clearMeshFireTint(mesh, count) {
+      if (!mesh?.instanceColor) {
+        return;
+      }
+      const total = mesh.instanceColor.count || count || 0;
+      for (let index = 0; index < total; index += 1) {
+        mesh.setColorAt(index, this.fireColor.natural);
+      }
+      mesh.instanceColor.needsUpdate = true;
+    }
+
+    applyFireTintToRenderedTrees(force = false) {
+      if (!this.fireTint.active || typeof this.fireTint.sampleArrival !== 'function') {
+        return;
+      }
+      const sampleArrival = this.fireTint.sampleArrival;
+      const revealTime = this.fireTint.revealTime;
+      const duration = this.fireTint.duration;
+      const key = `${sampleArrival.__twinFireSampleKey || 'grid'}:${revealTime}:${duration ?? ''}`;
+      if (!force && this.fireTint.appliedKey === key) {
+        return;
+      }
+
+      Object.values(this.treeMeshState).forEach((state) => {
+        this.tintMeshInstances(
+          state.canopyMesh,
+          state.fireScenePositions,
+          state.canopyMesh?.count || 0,
+          state.canopyMaterial,
+          sampleArrival,
+          revealTime,
+          duration
+        );
+      });
+
+      this.treeAssetStates.forEach((state) => {
+        state.parts.forEach((part) => {
+          if (part.kind !== 'leaf') {
+            return; // only the canopy/leaf parts char; trunks stay as-is
+          }
+          this.tintMeshInstances(
+            part.mesh,
+            state.fireScenePositions,
+            part.mesh?.count || 0,
+            part.material,
+            sampleArrival,
+            revealTime,
+            duration
+          );
+        });
+      });
+
+      this.fireTint.appliedKey = key;
+    }
+
+    applyFireTint(sampleArrival, revealTime, duration) {
+      const t = Number(revealTime);
+      if (this.disposed || typeof sampleArrival !== 'function' || !Number.isFinite(t)) {
+        this.clearFireTint();
+        return;
+      }
+      this.fireTint.active = true;
+      this.fireTint.sampleArrival = sampleArrival;
+      this.fireTint.revealTime = t;
+      this.fireTint.duration = Number.isFinite(Number(duration)) ? Number(duration) : null;
+      this.applyFireTintToRenderedTrees(false);
+    }
+
+    clearFireTint() {
+      const wasActive = this.fireTint.active || this.fireTint.appliedKey !== null;
+      this.fireTint.active = false;
+      this.fireTint.sampleArrival = null;
+      this.fireTint.revealTime = null;
+      this.fireTint.duration = null;
+      this.fireTint.appliedKey = null;
+      if (!wasActive) {
+        return;
+      }
+
+      Object.values(this.treeMeshState).forEach((state) => {
+        this.clearMeshFireTint(state.canopyMesh, state.canopyMesh?.count || 0);
+      });
+      this.treeAssetStates.forEach((state) => {
+        state.parts.forEach((part) => {
+          if (part.kind === 'leaf') {
+            this.clearMeshFireTint(part.mesh, part.mesh?.count || 0);
+          }
+        });
+      });
+    }
+
     ensureTreeCapacity(category, minCapacity) {
       const state = this.treeMeshState[category];
       if (!state || state.capacity >= minCapacity) {
@@ -744,6 +946,7 @@
       state.canopyMesh.count = 0;
       this.group.add(state.trunkMesh, state.canopyMesh);
       state.capacity = capacity;
+      state.fireScenePositions = ensureFloat32Capacity(state.fireScenePositions, capacity, 2);
     }
 
     ensureTreeAssetCapacity(assetKey, minCapacity) {
@@ -774,6 +977,7 @@
         this.group.add(part.mesh);
       });
       state.capacity = capacity;
+      state.fireScenePositions = ensureFloat32Capacity(state.fireScenePositions, capacity, 2);
       return true;
     }
 
@@ -1004,6 +1208,7 @@
 
       this.renderTrees();
       this.renderShrubs();
+      this.applyFireTintToRenderedTrees(true);
     }
 
     renderTrees() {
@@ -1052,6 +1257,7 @@
 
         if (useLibraryAsset) {
           const visibleIndex = assetState.visibleCount;
+          const positionOffset = visibleIndex * 2;
           const crownDiameter = Math.max(1.8, radius * 2);
           const modelDiameter = Math.max(1, assetState.diameter);
           const modelHeight = Math.max(1, assetState.height);
@@ -1067,6 +1273,10 @@
           assetState.parts.forEach((part) => {
             part.mesh?.setMatrixAt(visibleIndex, this.transform);
           });
+          if (assetState.fireScenePositions) {
+            assetState.fireScenePositions[positionOffset] = x;
+            assetState.fireScenePositions[positionOffset + 1] = y;
+          }
           assetState.visibleCount += 1;
           continue;
         }
@@ -1083,6 +1293,7 @@
         const crownR = Math.max(1.2, radius * (evergreen ? 0.85 : 1.15));
 
         const visibleIndex = visibleCounts[key];
+        const positionOffset = visibleIndex * 2;
         this.position.set(x, baseHeight + trunkHeight / 2, -y);
         const trunkR = Math.max(0.12, crownR * 0.12);
         this.scale.set(trunkR, trunkHeight, trunkR);
@@ -1093,6 +1304,10 @@
         this.scale.set(crownR, canopyHeight, crownR);
         this.transform.compose(this.position, this.quaternion, this.scale);
         state.canopyMesh.setMatrixAt(visibleIndex, this.transform);
+        if (state.fireScenePositions) {
+          state.fireScenePositions[positionOffset] = x;
+          state.fireScenePositions[positionOffset + 1] = y;
+        }
 
         visibleCounts[key] += 1;
       }
