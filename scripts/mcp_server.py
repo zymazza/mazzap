@@ -25,6 +25,7 @@ Conventions every tool follows:
       {"bbox": [minx, miny, maxx, maxy]}               — scene-local meters
       {"within_m": r, "point": {lat,lon} | {x,y}}      — circle, r in meters
       {"polygon": [[lon,lat], ...] or [[x,y], ...]}    — ring auto-closed
+      {"visible_from": {...}} / {"hidden_from": {...}} — viewshed mask region
   * Every factual value carries provenance: source / confidence / run_id /
     observed_at from the store's observations, or acquisition / service for
     atlas layers.
@@ -73,6 +74,9 @@ mcp = FastMCP(
         "for current state and live_telemetry_history / live_telemetry_store_summary "
         "for the temporary replay database; live_device entities in the twin store "
         "only exist after live telemetry has been exported/materialized. "
+        "For visibility questions use viewshed_from/can_see/horizon_at/best_viewpoints, "
+        "or pass region={visible_from:{point,agl_m,surface}} / hidden_from to "
+        "find_entities, aggregate_entities, summarize_region, or recommend_sites. "
         "For water questions use hydrology_at / hydrology_summary, and run_scenario "
         "for 'what if it …' events. For fire questions use fire_at / fire_summary, "
         "and run_fire_scenario for ignition/weather scenarios; fire scenario layers "
@@ -136,7 +140,8 @@ def find_entities(kind: str, near: dict | None = None,
     kind: tree | shrub | live_device | building | building_model | parcel | stream | road.
     near + within_m: center {lat,lon}|{x,y}|{"entity_id": id} and a radius in
       METERS (sugar for the within_m region shape; results sorted nearest
-      first with distance_m). region: the four-shape region object (see
+      first with distance_m). region: the region object (including
+      visible_from/hidden_from viewshed regions; see
       server description) — pass either near+within_m or region, not both.
     attr_filters: strings like "height > 20", "type = evergreen",
       "source = lidar" (ops = != > >= < <=; numbers compared numerically,
@@ -225,7 +230,8 @@ def summarize_region(region: dict) -> dict:
     """What's happening inside a shape — the one call for "summarize this
     area". region: {"aoi": true} | {"bbox":[minx,miny,maxx,maxy] meters} |
     {"within_m": r, "point": {...}} | {"polygon": [[lon,lat],...] or
-    [[x,y],...]}. Returns region area (m2), entity counts by kind, tree
+    [[x,y],...]} | {"visible_from": {...}} | {"hidden_from": {...}}.
+    Returns region area (m2), entity counts by kind, tree
     statistics (count, evergreen/deciduous split, mean/max height, summed
     crown area, top species, lidar vs canopy_fill sources), the parcels
     covering it (owner, address, acres), dominant LANDFIRE community and
@@ -245,11 +251,58 @@ def aggregate_entities(kind: str, metric: str, group_by: str | None = None,
     "<sum|mean|min|max>:<attr>" for numeric attrs, e.g. "mean:height".
     group_by: a categorical attr ("type", "species", "source", "community")
     — e.g. kind=tree, metric=count, group_by=type is the evergreen/deciduous
-    split. where: attr_filters strings (see find_entities). region: the
-    four-shape region object. Groups come back with entity_count and
+    split. where: attr_filters strings (see find_entities). region: any
+    region object, including visible_from/hidden_from. Groups come back with entity_count and
     source/run provenance."""
     return _run(_query().aggregate_entities, kind, metric, group_by=group_by,
                 where=where, region=region)
+
+
+@mcp.tool()
+def viewshed_from(point: dict, agl_m: float = 1.7, max_km: float | None = None,
+                  refraction: str = "optical", surface: str = "bare_earth",
+                  demonstrate: bool = False) -> dict:
+    """Compute the viewshed from a point. surface defaults to bare_earth; pass
+    canopy for DTM + LANDFIRE EVH blockers. refraction: optical or radio.
+    demonstrate=true writes/replaces a viewshed drape layer and an observer
+    marker in the live viewer."""
+    return _run(_query().viewshed_from, point, agl_m=agl_m, max_km=max_km,
+                refraction=refraction, surface=surface, demonstrate=demonstrate)
+
+
+@mcp.tool()
+def can_see(from_point: dict, to_point: dict, from_agl_m: float = 1.7,
+            to_agl_m: float = 0.0, refraction: str = "optical",
+            surface: str = "bare_earth", freq_mhz: float | None = None) -> dict:
+    """Intervisibility along one ray. Returns visible, controlling obstruction
+    with clearance deficit and is_canopy, and required_from_agl_m. For tower /
+    radio questions pass refraction='radio' and optionally freq_mhz for a
+    first-Fresnel midpoint radius note."""
+    return _run(_query().can_see, from_point, to_point, from_agl_m=from_agl_m,
+                to_agl_m=to_agl_m, refraction=refraction, surface=surface,
+                freq_mhz=freq_mhz)
+
+
+@mcp.tool()
+def horizon_at(point: dict, agl_m: float = 1.7, date: str | None = None,
+               surface: str = "bare_earth") -> dict:
+    """Return a 360-degree terrain/canopy horizon profile at a point, compacted
+    to 72 samples, with sun blocked/unblocked windows for date and a radio
+    geostationary-arc clearance check."""
+    return _run(_query().horizon_at, point, agl_m=agl_m, date=date, surface=surface)
+
+
+@mcp.tool()
+def best_viewpoints(region: dict | None = None, agl_m: float = 1.7,
+                    objective: str = "area", target: dict | None = None,
+                    surface: str = "bare_earth", count: int = 3,
+                    demonstrate: bool = False) -> dict:
+    """Rank candidate viewpoints inside a region. objective='area' ranks by
+    visible area; objective='sees_target' uses radio-refraction line-of-sight
+    to target. demonstrate=true draws the ranked points."""
+    return _run(_query().best_viewpoints, region=region, agl_m=agl_m,
+                objective=objective, target=target, surface=surface,
+                count=count, demonstrate=demonstrate)
 
 
 @mcp.tool()
@@ -646,19 +699,21 @@ def reset_layer_views() -> dict:
 
 
 @mcp.tool()
-def sky_at(time: str | None = None) -> dict:
+def sky_at(time: str | None = None, point: dict | None = None,
+           surface: str = "bare_earth") -> dict:
     """Return the sky state at the twin site for a UTC time (default now):
     sun/moon position, moon phase, twilight kind, visible planets, and today's
     sunrise/sunset/moonrise/moonset. Times are ISO-8601 UTC."""
-    return _run(_query().sky_at, time=time)
+    return _run(_query().sky_at, time=time, point=point, surface=surface)
 
 
 @mcp.tool()
-def body_position(body: str, time: str | None = None) -> dict:
+def body_position(body: str, time: str | None = None,
+                  point: dict | None = None, surface: str = "bare_earth") -> dict:
     """Return topocentric alt/az, RA/Dec, distance, magnitude/phase where
     available, constellation, and next rise/set/culmination for a sky body or
     named star. body accepts sun, moon, planets, and named stars."""
-    return _run(_query().body_position, body, time=time)
+    return _run(_query().body_position, body, time=time, point=point, surface=surface)
 
 
 @mcp.tool()
@@ -709,10 +764,13 @@ def clear_sky_highlights() -> dict:
 
 
 @mcp.tool()
-def solar_irradiance(time: str | None = None) -> dict:
+def solar_irradiance(time: str | None = None, point: dict | None = None,
+                     surface: str = "bare_earth") -> dict:
     """Return clear-sky GHI/DNI/DHI and sun geometry at the twin site for a UTC
-    time (default now). This does not include clouds or terrain shading."""
-    return _run(_query().solar_irradiance, time=time)
+    time (default now). Includes terrain-horizon adjustment when a horizon is
+    available; point optionally uses that observer instead of the precomputed
+    AOI horizon."""
+    return _run(_query().solar_irradiance, time=time, point=point, surface=surface)
 
 
 if __name__ == "__main__":

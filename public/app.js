@@ -262,6 +262,7 @@
       },
       refresh: refreshWildfireLayers,
     });
+    window.__twin.viewshed = window.VEILViewshed?.create({ viewer, state });
     window.__twin.astronomy = window.VEILAstronomy?.create({
       viewer,
       state,
@@ -341,12 +342,13 @@
         return [];
       }
     };
-    const [hydro, et, etScenario] = await Promise.all([
+    const [hydro, et, etScenario, viewshed] = await Promise.all([
       fetchLayers('/data/hydrology/simulation-layers.json'),
       fetchLayers('/data/et/et-layers.json'),
       fetchLayers('/data/et/et-scenario-layers.json'),
+      fetchLayers('/data/viewshed/viewshed-layers.json'),
     ]);
-    return { layers: [...hydro, ...et, ...etScenario] };
+    return { layers: [...hydro, ...et, ...etScenario, ...viewshed] };
   }
 
   // Called by the Simulation window after a scenario run: refetch the catalog
@@ -1697,6 +1699,10 @@
       // explorer's drop-in click / locked first-person session. Fire ignition
       // uses this same raycast but consumes the click before readout/identify.
       if (window.__twin?.chat?.state?.mode) return;
+      if (window.__twin?.viewshed?.isPicking?.()) {
+        if (moved < 5) window.__twin.viewshed.pickAtScreen?.(e.clientX, e.clientY);
+        return;
+      }
       if (window.__twin?.wildfire?.state?.mode === 'pick') {
         if (moved < 5) pick(e.clientX, e.clientY);
         return;

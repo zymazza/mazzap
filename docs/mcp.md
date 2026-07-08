@@ -59,7 +59,13 @@ python3 scripts/twin_query_test.py
 - **Regions.** Spatial tools take one `region` object, exactly one of:
   `{"aoi": true}` · `{"bbox": [minx,miny,maxx,maxy]}` (scene-local meters) ·
   `{"within_m": r, "point": {…}}` · `{"polygon": [[lon,lat],…] or [[x,y],…]}`
-  (ring auto-closed; lon/lat vertices auto-detected).
+  (ring auto-closed; lon/lat vertices auto-detected) ·
+  `{"visible_from": {"point": {…}, "agl_m": 1.7, "max_km": null,
+  "refraction": "optical"|"radio", "target_agl_m": 0,
+  "surface": "canopy"|"bare_earth"}}` · `{"hidden_from": {...}}`.
+  The visibility shapes are cached viewshed masks, so `find_entities`,
+  `aggregate_entities`, `summarize_region`, and `recommend_sites` compose with
+  visibility directly.
 - **Provenance.** Every entity attribute returns
   `source / confidence / run_id / observed_at`; every atlas fact returns the
   layer's `acquisition` (`local_source_clip` | `api_snapshot`) and service.
@@ -89,6 +95,10 @@ python3 scripts/twin_query_test.py
 | `summarize_region(region)` | "What's happening inside this shape?" — the headline call |
 | `aggregate_entities(kind, metric, group_by?, where?, region?)` | Counts, mean height, crown area, splits |
 | `canopy_change(region?, member?)` | "When did canopy density change here?" — per-run history |
+| `viewshed_from(point, agl_m?, max_km?, refraction?, surface?, demonstrate?)` | Visible area/horizon stats from a point; optionally writes a viewshed drape |
+| `can_see(from_point, to_point, from_agl_m?, to_agl_m?, refraction?, surface?, freq_mhz?)` | Intervisibility, controlling obstruction, clearance deficit, and canopy/ground blocker |
+| `horizon_at(point, agl_m?, date?, surface?)` | 360° terrain/canopy horizon, sun blocked windows, and geostationary arc check |
+| `best_viewpoints(region?, agl_m?, objective?, target?, surface?, count?, demonstrate?)` | Rank viewpoints by visible area or target visibility |
 | `list_survey_layers()` | The field-survey catalog (`survey_*` kinds, counts, fields, photos) |
 | `live_telemetry_snapshot(include_hidden?, prefer_live_api?)` | Current live gateways/devices, bridge status, latest positions/messages, and freshness |
 | `live_telemetry_history(date?, dates?, device_ids?, kind?, since?, until?, limit?)` | Raw replay events from the temporary telemetry SQLite store |
@@ -106,13 +116,13 @@ python3 scripts/twin_query_test.py
 | `set_layer_visibility(layer_id, visible?)` | Show/hide one atlas map layer on the user's terrain |
 | `filter_layer(layer_id, values, field?)` | Reveal ONLY the selected regions of a layer (turns it on) |
 | `reset_layer_views()` | Drop every agent layer override (user toggles back in control) |
-| `sky_at(time?)` | Sun/moon, twilight, visible planets, and rise/set events at the twin site |
-| `body_position(body, time?)` | Alt/az, RA/Dec, magnitude/phase/size, constellation, and next rise/set for a body or named star |
+| `sky_at(time?, point?, surface?)` | Sun/moon, twilight, visible planets, rise/set, and optional terrain blocking |
+| `body_position(body, time?, point?, surface?)` | Alt/az, RA/Dec, magnitude/phase/size, constellation, next rise/set, and optional terrain blocking |
 | `next_sky_event(kind, from_time?, count?)` | Solar/lunar eclipses, moon phases, rise/set, solstice/equinox, golden hour |
 | `set_view_time(time, rate?)` | Scrub the viewer astronomy clock; `time="now"` returns it to realtime |
 | `highlight_sky(name, label?)` | Highlight a body, named star, or constellation in the live sky |
 | `clear_sky_highlights()` | Remove sky highlights only |
-| `solar_irradiance(time?)` | Bird-Hulstrom clear-sky GHI/DNI/DHI and sun geometry |
+| `solar_irradiance(time?, point?, surface?)` | Bird-Hulstrom clear-sky GHI/DNI/DHI adjusted by the terrain/canopy horizon when available |
 
 ## Drawing on the map
 
@@ -168,12 +178,49 @@ agent. `reset_layer_views` drops every override (the **Clear drawings**
 button leaves layer views untouched — they have their own reset). Layer
 control, like drawings, never touches the store or the journal.
 
+## Viewshed & Horizon
+
+Viewshed tools use `scripts/twin_viewshed.py`, the same radial-sweep core as
+the browser worker. Curvature/refraction follows GDAL's convention
+(`cc = 1-k`); `refraction="optical"` uses `k=1/7`, while radio/tower/satellite
+questions should pass `refraction="radio"`. The default surface is `canopy`:
+bare-earth DTM plus decoded LANDFIRE EVH blockers. The observer height is
+always ground + AGL, never canopy-lifted.
+
+The compositional move is that visibility is a region shape. Examples:
+
+- `aggregate_entities("tree", "count", group_by="type",
+  region={"visible_from":{"point":p,"agl_m":10}})` answers how much of the
+  view is evergreen/deciduous forest.
+- `summarize_region({"visible_from":{"point":p,"agl_m":10}})` gives soils,
+  land cover, wetlands, GAP richness, and entities inside the visible mask.
+- `find_entities("survey_photo_points",
+  region={"hidden_from":{"point":proposed_build}})` finds photo points screened
+  from a build site.
+- `recommend_sites(objective="overlook",
+  region={"visible_from":{"point":lookout,"agl_m":60,"refraction":"radio"}})`
+  stacks ordinary site selection with a visibility constraint.
+
+Dedicated tools cover standalone questions: `viewshed_from(...,
+demonstrate=true)` writes a viewshed drape and observer marker; `can_see`
+returns the controlling obstruction and clearance deficit; `horizon_at` returns
+sun blocked/unblocked windows and a radio geostationary-arc check; and
+`best_viewpoints` ranks candidate viewpoints. Payloads include
+`analyzed_extent_km`; if a requested `max_km` or target lies beyond fetched
+terrain, the answer reports `needs_fetch` instead of implying "not visible."
+
 ## Astronomy
 
 Astronomy tools use the local `astronomy-engine` wrapper in
 `scripts/twin_astro.py`, with the observer taken from the twin georef. Results
 echo UTC ISO time and `unix_ms` and include provenance noting the engine version
 and the local JPL Horizons validation fixture.
+
+`sky_at`, `body_position`, and `solar_irradiance` are terrain-aware when a
+precomputed `data/viewshed/horizon.json` exists, or when a `point` is supplied.
+Solar irradiance zeroes DNI when the sun is below the local terrain/canopy
+horizon and trims diffuse light by the sky-view fraction; it still reports
+clear-sky, no-cloud irradiance.
 
 Use `sky_at`, `body_position`, `next_sky_event`, and `solar_irradiance` for
 facts. Use `set_view_time` and `highlight_sky` only when the answer should move
@@ -263,6 +310,41 @@ Natural-language questions and the tool calls they become:
    then `find_entities(kind="survey_observations", region={…})` or
    `identify_at(point=…)` for the features (with photos) at a spot.
 
+8. **"What can I see from the top of the hill if I build a 3-storey house?"**
+   `viewshed_from(point=…, agl_m=10, surface="canopy", demonstrate=true)` →
+   visible area, furthest visible cell, canopy cost vs. bare earth, and a
+   live viewshed drape.
+
+9. **"How much of what I'd see is forest vs. open field?"**
+   `aggregate_entities("tree","count", group_by="type",
+   region={"visible_from":{"point":…,"agl_m":10}})` plus
+   `summarize_region({"visible_from":{"point":…,"agl_m":10}})`.
+
+10. **"Is Snowy Mountain visible from my parcel, and if not why?"**
+    `can_see(from_point=parcel_high_point, to_point=snowy_mtn,
+    surface="canopy")` → visible/blocked, bearing, obstruction, clearance
+    deficit, and whether the blocker is canopy.
+
+11. **"Where should a 60 m radio tower go to reach the fire lookout?"**
+    `best_viewpoints(objective="sees_target", target=lookout, agl_m=60,
+    surface="canopy")`, then `can_see(..., refraction="radio", freq_mhz=...)`
+    on the winner.
+
+12. **"Best spot for solar that neither the ridge nor the treeline shades in winter?"**
+    `best_viewpoints(surface="canopy")` → `horizon_at(date="2026-12-21",
+    surface="canopy")` → `solar_irradiance(point=..., surface="canopy")`.
+
+13. **"How much would clearing the trees open up the view from here?"**
+    Compare `viewshed_from(point=…, surface="canopy")` with
+    `viewshed_from(point=…, surface="bare_earth")`; `canopy_hidden_km2` is the
+    direct delta.
+
+14. **"Screen the new build from the neighbour's survey photo point."**
+    Use `hidden_from` as the region shape when searching or summarizing:
+    `find_entities("survey_photo_points",
+    region={"hidden_from":{"point":build_point,"agl_m":10}})`.
+
+
 ## Hydrology simulation
 
 The Simulation window's engine is on the MCP server:
@@ -325,13 +407,17 @@ as the reply lands; **Clear drawings** removes them.
 
 ## Phase boundaries
 
-The store stays read-only except for two deliberate writers: `run_scenario`
+The store stays read-only except for deliberate scenario/presentation writers:
+`run_scenario`
 (a `scenario` pipeline run + the scenario drape layers, exactly what the
-viewer's Simulation window writes) and the viewer-directive tools — the
+viewer's Simulation window writes), fire scenario writers, and the
+viewer-directive tools — the
 `draw_*` tools and the layer-view tools (`set_layer_visibility` /
 `filter_layer` / `reset_layer_views`) plus astronomy viewer directives
-(`set_view_time` / `highlight_sky` / `clear_sky_highlights`) — which touch only
-`annotations.json`, never the store. Astronomy fact tools are pure functions of
+(`set_view_time` / `highlight_sky` / `clear_sky_highlights`) and viewshed
+demonstration writers (`viewshed_from(demonstrate=true)`, `best_viewpoints`
+with drawings) — which touch only `annotations.json` and generated drape files,
+never the store. Astronomy fact tools are pure functions of
 site and time; they add no store writers. No sensors/actuators, no HTTP
 transport, no auth — later phases. The MCP server reads `data/twin.gpkg`
 (plus the atlas/hydrology/soils/survey files under `data/`) directly via

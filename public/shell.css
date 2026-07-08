@@ -133,7 +133,11 @@ html, body {
 
 /* Simulation pane: Wildfire / Hydrology sub-tabs sharing one rail item */
 .sim-tabs { flex: 0 0 auto; }
-.sim-tabs button { font-size: 12px; padding: 7px 8px; }
+/* Icon-per-simulation tabs: icon always shown, full title only when selected. */
+.sim-tabs button { font-size: 12px; padding: 7px 8px; display: flex; align-items: center; justify-content: center; gap: 6px; }
+.sim-tabs button svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.sim-tabs button span { display: none; }
+.sim-tabs button.active span { display: inline; }
 .sim-view { display: none; }
 .sim-view.active { display: flex; flex-direction: column; gap: 20px; }
 

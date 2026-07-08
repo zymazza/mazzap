@@ -1273,6 +1273,11 @@
       this.overlayRenderer?.clear?.();
       this.vegetationRenderer?.clear?.();
       this.disposeTerrainDrapeOverlay();
+      if (this.distantTerrain?.dispose) {
+        this.distantTerrain.dispose();
+      }
+      this.distantTerrain = null;
+      this.distantTerrainPromise = null;
 
       if (this.terrainMesh) {
         this.scene.remove(this.terrainMesh);

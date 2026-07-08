@@ -53,3 +53,7 @@ packs/*/cache/
 
 # Working scratch (prompts, logs, screenshots, throwaway builds).
 scratchpad/
+
+# viewshed/annotations test-run artifacts under the fixture twin
+tests/fixtures/*/data/viewshed/
+tests/fixtures/*/data/annotations.json

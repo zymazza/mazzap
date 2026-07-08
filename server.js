@@ -1031,6 +1031,7 @@ const MIME = {
   '.tiff': 'image/tiff',
   '.ico': 'image/x-icon',
   '.obj': 'text/plain; charset=utf-8',
+  '.bin': 'application/octet-stream',
   '.txt': 'text/plain; charset=utf-8',
   '.zip': 'application/zip',
 };

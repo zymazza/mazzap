@@ -296,10 +296,494 @@
     return Number.isFinite(grid.heights[row * grid.width + col]);
   }
 
+  function dataUrl(path) {
+    const clean = String(path || '').replace(/^\/+/, '');
+    return clean.startsWith('data/') ? `/${clean}` : `/data/${clean}`;
+  }
+
+  async function fetchJson(path) {
+    const res = await fetch(path);
+    if (!res.ok) throw new Error(`${path} returned ${res.status}`);
+    return res.json();
+  }
+
+  async function fetchBinary(path) {
+    const url = dataUrl(path);
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`${url} returned ${res.status}`);
+    return res.arrayBuffer();
+  }
+
+  function ringBounds(item) {
+    const b = item?.bounds_local || [0, 0, 0, 0];
+    return {
+      minX: Number(b[0]),
+      minY: Number(b[1]),
+      maxX: Number(b[2]),
+      maxY: Number(b[3]),
+    };
+  }
+
+  function tileShape(ring, tile) {
+    const size = Number(ring.tileSize || 256);
+    const row0 = Number(tile.j) * size;
+    const col0 = Number(tile.i) * size;
+    return {
+      row0,
+      col0,
+      rows: Math.max(0, Math.min(ring.height, row0 + size) - row0),
+      cols: Math.max(0, Math.min(ring.width, col0 + size) - col0),
+    };
+  }
+
+  function copyGroundTile(ring, tile, buffer) {
+    const src = new Int16Array(buffer);
+    const shape = tileShape(ring, tile);
+    let k = 0;
+    let validCells = 0;
+    for (let r = 0; r < shape.rows; r += 1) {
+      const dstRow = shape.row0 + r;
+      for (let c = 0; c < shape.cols; c += 1) {
+        const dm = src[k];
+        const idx = dstRow * ring.width + shape.col0 + c;
+        if (dm === -32768) {
+          ring.ground[idx] = NaN;
+        } else {
+          ring.ground[idx] = dm / 10;
+          validCells += 1;
+        }
+        k += 1;
+      }
+    }
+    tile.validCells = validCells;
+  }
+
+  function copyCanopyTile(ring, tile, buffer) {
+    if (!ring.canopy) return;
+    const src = new Uint8Array(buffer);
+    const shape = tileShape(ring, tile);
+    let k = 0;
+    for (let r = 0; r < shape.rows; r += 1) {
+      const dstRow = shape.row0 + r;
+      for (let c = 0; c < shape.cols; c += 1) {
+        ring.canopy[dstRow * ring.width + shape.col0 + c] = src[k] / 10;
+        k += 1;
+      }
+    }
+  }
+
+  async function loadManifestRing(item) {
+    const b = ringBounds(item);
+    const ring = {
+      id: String(item.id || item.name || ''),
+      width: Number(item.width),
+      height: Number(item.height),
+      tileSize: Number(item.tile_size || 256),
+      minX: b.minX,
+      maxX: b.maxX,
+      minY: b.minY,
+      maxY: b.maxY,
+      resolutionM: Number(item.resolution_m || 1),
+      innerM: Number(item.inner_m || 0),
+      outerM: Number(item.outer_m || 0),
+      cellAreaM2: 0,
+      ground: null,
+      canopy: item.canopy_available ? null : null,
+      tiles: [],
+      source: item,
+    };
+    ring.cellAreaM2 = Math.abs(
+      ((ring.maxX - ring.minX) / Math.max(1, ring.width - 1)) *
+      ((ring.maxY - ring.minY) / Math.max(1, ring.height - 1))
+    );
+    ring.ground = new Float32Array(ring.width * ring.height);
+    ring.ground.fill(NaN);
+    const hasCanopy = (item.tiles || []).some((tile) => tile.canopy);
+    ring.canopy = hasCanopy ? new Float32Array(ring.width * ring.height) : null;
+    ring.tiles = (item.tiles || []).map((tile) => ({
+      i: Number(tile.i),
+      j: Number(tile.j),
+      ground: tile.ground,
+      canopy: tile.canopy || null,
+      imagery: tile.imagery || null,
+      key: `${ring.id}:${Number(tile.i)}:${Number(tile.j)}`,
+      validCells: 0,
+    }));
+    await Promise.all(ring.tiles.map(async (tile) => {
+      const ground = await fetchBinary(tile.ground);
+      copyGroundTile(ring, tile, ground);
+      if (tile.canopy && ring.canopy) {
+        copyCanopyTile(ring, tile, await fetchBinary(tile.canopy));
+      }
+    }));
+    return ring;
+  }
+
+  const DISTANT_VERT = `
+    uniform float uBaseElevation;
+    varying vec3 vWorld;
+    varying float vElevation;
+    varying vec2 vUv;
+    void main() {
+      vec4 world = modelMatrix * vec4(position, 1.0);
+      vWorld = world.xyz;
+      vElevation = position.y + uBaseElevation;
+      vUv = uv;
+      gl_Position = projectionMatrix * viewMatrix * world;
+    }
+  `;
+
+  const DISTANT_FRAG = `
+    precision highp float;
+    uniform float uVisible;
+    uniform float uHasImagery;
+    uniform float uMinElevation;
+    uniform float uMaxElevation;
+    uniform float uFogNear;
+    uniform float uFogFar;
+    uniform vec3 uLowColor;
+    uniform vec3 uHighColor;
+    uniform vec3 uHazeColor;
+    uniform vec3 uLightDir;
+    uniform sampler2D uImagery;
+    varying vec3 vWorld;
+    varying float vElevation;
+    varying vec2 vUv;
+
+    void main() {
+      vec3 dx = dFdx(vWorld);
+      vec3 dy = dFdy(vWorld);
+      vec3 n = normalize(cross(dx, dy));
+      if (n.y < 0.0) n = -n;
+      float light = clamp(dot(n, normalize(uLightDir)), 0.0, 1.0);
+      float rampShade = clamp(light * 0.62 + 0.38, 0.18, 1.0);
+      float imageryShade = mix(0.85, 1.0, light);
+      float e = clamp((vElevation - uMinElevation) / max(1.0, uMaxElevation - uMinElevation), 0.0, 1.0);
+      vec3 rampBase = mix(uLowColor, uHighColor, e) * rampShade;
+      vec3 imageBase = texture2D(uImagery, clamp(vUv, 0.0, 1.0)).rgb * imageryShade;
+      vec3 base = mix(rampBase, imageBase, step(0.5, uHasImagery));
+      float dist = length(cameraPosition - vWorld);
+      float haze = smoothstep(uFogNear, uFogFar, dist);
+      vec3 color = mix(base, uHazeColor, clamp(haze, 0.0, 0.88));
+      float vis = clamp(uVisible, 0.0, 1.0);
+      if (vis <= 0.004) discard;
+      gl_FragColor = vec4(color, vis);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }
+  `;
+
+  let distantFallbackTexture = null;
+
+  function getDistantFallbackTexture() {
+    if (!distantFallbackTexture) {
+      distantFallbackTexture = new THREE.DataTexture(
+        new Uint8Array([128, 128, 128, 255]),
+        1,
+        1,
+        THREE.RGBAFormat
+      );
+      distantFallbackTexture.colorSpace = THREE.SRGBColorSpace;
+      distantFallbackTexture.needsUpdate = true;
+    }
+    return distantFallbackTexture;
+  }
+
+  function makeDistantMaterial(baseElevation, minElevation, maxElevation) {
+    return new THREE.ShaderMaterial({
+      uniforms: {
+        uVisible: { value: 0 },
+        uHasImagery: { value: 0 },
+        uBaseElevation: { value: baseElevation },
+        uMinElevation: { value: minElevation },
+        uMaxElevation: { value: maxElevation },
+        uFogNear: { value: 18000 },
+        uFogFar: { value: 190000 },
+        uLowColor: { value: new THREE.Color(0x526f64) },
+        uHighColor: { value: new THREE.Color(0xb8b49f) },
+        uHazeColor: { value: new THREE.Color(0xbfd4df) },
+        uLightDir: { value: new THREE.Vector3(-0.35, 0.72, 0.48).normalize() },
+        uImagery: { value: getDistantFallbackTexture() },
+      },
+      vertexShader: DISTANT_VERT,
+      fragmentShader: DISTANT_FRAG,
+      transparent: true,
+      depthWrite: true,
+      depthTest: true,
+      fog: false,
+      side: THREE.FrontSide,
+      extensions: { derivatives: true },
+    });
+  }
+
+  function decimatedIndices(start, count, stride) {
+    const out = [];
+    const end = start + count - 1;
+    for (let v = start; v <= end; v += stride) {
+      out.push(v);
+    }
+    if (out[out.length - 1] !== end) {
+      out.push(end);
+    }
+    return out;
+  }
+
+  function buildDistantTileMesh(ring, tile, baseElevation, minElevation, maxElevation) {
+    const stride = ring.id === 'B'
+      ? Math.max(1, Math.round(60 / Math.max(1, ring.resolutionM)))
+      : Math.max(1, Math.round(300 / Math.max(1, ring.resolutionM)));
+    const shape = tileShape(ring, tile);
+    if (shape.rows < 2 || shape.cols < 2 || tile.validCells <= 0) {
+      return null;
+    }
+    const xStep = (ring.maxX - ring.minX) / Math.max(1, ring.width - 1);
+    const yStep = (ring.maxY - ring.minY) / Math.max(1, ring.height - 1);
+    const meshRows = shape.rows + (shape.row0 + shape.rows < ring.height ? 1 : 0);
+    const meshCols = shape.cols + (shape.col0 + shape.cols < ring.width ? 1 : 0);
+    const rows = decimatedIndices(shape.row0, meshRows, stride);
+    const cols = decimatedIndices(shape.col0, meshCols, stride);
+    const positions = new Float32Array(rows.length * cols.length * 3);
+    const uvs = new Float32Array(rows.length * cols.length * 2);
+    const valid = new Uint8Array(rows.length * cols.length);
+    let p = 0;
+    let uvp = 0;
+    for (let rr = 0; rr < rows.length; rr += 1) {
+      const row = rows[rr];
+      const y = ring.maxY - row * yStep;
+      for (let cc = 0; cc < cols.length; cc += 1) {
+        const col = cols[cc];
+        const x = ring.minX + col * xStep;
+        const elevation = ring.ground[row * ring.width + col];
+        const ok = Number.isFinite(elevation);
+        const vi = rr * cols.length + cc;
+        valid[vi] = ok ? 1 : 0;
+        positions[p] = x;
+        positions[p + 1] = (ok ? elevation : minElevation) - baseElevation;
+        positions[p + 2] = -y;
+        p += 3;
+        uvs[uvp] = shape.cols > 0 ? (col - shape.col0 + 0.5) / shape.cols : 0;
+        uvs[uvp + 1] = shape.rows > 0 ? 1 - ((row - shape.row0 + 0.5) / shape.rows) : 1;
+        uvp += 2;
+      }
+    }
+    const indices = [];
+    for (let rr = 0; rr < rows.length - 1; rr += 1) {
+      for (let cc = 0; cc < cols.length - 1; cc += 1) {
+        const a = rr * cols.length + cc;
+        const b = (rr + 1) * cols.length + cc;
+        const c = rr * cols.length + cc + 1;
+        const d = (rr + 1) * cols.length + cc + 1;
+        if (valid[a] && valid[b] && valid[c]) indices.push(a, b, c);
+        if (valid[c] && valid[b] && valid[d]) indices.push(c, b, d);
+      }
+    }
+    if (!indices.length) {
+      return null;
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    geometry.setIndex(indices);
+    geometry.computeBoundingSphere();
+    const material = makeDistantMaterial(baseElevation, minElevation, maxElevation);
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = `distant-terrain-${tile.key}`;
+    mesh.visible = false;
+    mesh.frustumCulled = true;
+    mesh.renderOrder = -3;
+    mesh.userData.distantTile = {
+      key: tile.key,
+      ringId: ring.id,
+      i: tile.i,
+      j: tile.j,
+      validCells: tile.validCells,
+      imagery: tile.imagery || null,
+      texture: null,
+      targetVisible: 0,
+      currentVisible: 0,
+    };
+    return mesh;
+  }
+
+  function maxAnisotropy(viewer) {
+    const getMax = viewer?.renderer?.capabilities?.getMaxAnisotropy;
+    return typeof getMax === 'function' ? Math.max(1, Math.min(8, getMax.call(viewer.renderer.capabilities))) : 1;
+  }
+
+  function isPowerOfTwo(value) {
+    return value > 0 && (value & (value - 1)) === 0;
+  }
+
+  function configureDistantTexture(texture, viewer) {
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = maxAnisotropy(viewer);
+    texture.wrapS = THREE.ClampToEdgeWrapping;
+    texture.wrapT = THREE.ClampToEdgeWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    const image = texture.image;
+    const canMipmap = image && isPowerOfTwo(image.width || 0) && isPowerOfTwo(image.height || 0);
+    texture.generateMipmaps = Boolean(canMipmap);
+    texture.minFilter = canMipmap ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
+    texture.needsUpdate = true;
+  }
+
+  function loadDistantTileImagery(viewer, mesh, tile) {
+    if (!tile?.imagery || !mesh?.material?.uniforms) {
+      return;
+    }
+    const loader = viewer?.textureLoader || new THREE.TextureLoader();
+    const url = dataUrl(tile.imagery);
+    const texture = loader.load(
+      url,
+      (loaded) => {
+        configureDistantTexture(loaded, viewer);
+        if (mesh.material?.uniforms) {
+          mesh.material.uniforms.uImagery.value = loaded;
+          mesh.material.uniforms.uHasImagery.value = 1;
+        }
+      },
+      undefined,
+      (err) => {
+        console.warn(`distant imagery failed for ${tile.key}:`, err);
+        if (mesh.material?.uniforms) {
+          mesh.material.uniforms.uHasImagery.value = 0;
+        }
+        texture.dispose?.();
+      }
+    );
+    configureDistantTexture(texture, viewer);
+    mesh.userData.distantTile.texture = texture;
+  }
+
+  function finiteRange(rings, fallbackMin, fallbackMax) {
+    let min = Infinity;
+    let max = -Infinity;
+    rings.forEach((ring) => {
+      for (let i = 0; i < ring.ground.length; i += 1) {
+        const v = ring.ground[i];
+        if (Number.isFinite(v)) {
+          min = Math.min(min, v);
+          max = Math.max(max, v);
+        }
+      }
+    });
+    if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) {
+      return { min: fallbackMin, max: Math.max(fallbackMax, fallbackMin + 1) };
+    }
+    return { min, max };
+  }
+
+  function createDistantState(viewer, manifest, rings) {
+    const group = new THREE.Group();
+    group.name = 'distant-terrain-rings';
+    viewer.scene.add(group);
+    const maxOuter = Math.max(0, ...rings.map((ring) => Number(ring.outerM || 0)));
+    if (viewer.camera && maxOuter > 0 && viewer.camera.far < maxOuter * 1.15) {
+      viewer.camera.far = maxOuter * 1.15;
+      viewer.camera.updateProjectionMatrix();
+    }
+    const baseElevation = Number(viewer.terrainGrid?.minElevation || 0);
+    const range = finiteRange(
+      rings,
+      Number(viewer.terrainGrid?.minElevation || 0),
+      Number(viewer.terrainGrid?.maxElevation || 1)
+    );
+    const meshes = [];
+    rings.forEach((ring) => {
+      ring.tiles.forEach((tile) => {
+        const mesh = buildDistantTileMesh(ring, tile, baseElevation, range.min, range.max);
+        if (mesh) {
+          group.add(mesh);
+          meshes.push(mesh);
+          loadDistantTileImagery(viewer, mesh, tile);
+        }
+      });
+    });
+    let enabled = true;
+
+    // Opacity for a tile with the given viewshed-visible fraction. Any visible
+    // tile renders near-solid (0.82..0.96) so distant terrain reads as real
+    // land, not a ghost; fully-hidden tiles stay 0 (culled). The atmospheric
+    // haze in the shader still supplies depth — that is separate from alpha.
+    const SOLID_ALPHA = 0.96;
+    function targetFromFraction(fraction) {
+      const f = clamp(Number(fraction) || 0, 0, 1);
+      return f > 0 ? Math.min(SOLID_ALPHA, Math.max(0.82, 0.82 + 0.14 * Math.sqrt(f))) : 0;
+    }
+
+    return {
+      manifest,
+      rings,
+      group,
+      meshes,
+      setEnabled(on) {
+        enabled = Boolean(on);
+        group.visible = enabled;
+      },
+      showAll(value = SOLID_ALPHA) {
+        meshes.forEach((mesh) => {
+          mesh.userData.distantTile.targetVisible = enabled ? clamp(value, 0, 1) : 0;
+          if (enabled) mesh.visible = true;
+        });
+      },
+      setVisibilityFractions(fractions) {
+        const map = fractions instanceof Map ? fractions : new Map(Object.entries(fractions || {}));
+        meshes.forEach((mesh) => {
+          const info = mesh.userData.distantTile;
+          info.targetVisible = enabled ? targetFromFraction(map.get(info.key) || 0) : 0;
+          if (info.targetVisible > 0) mesh.visible = true;
+        });
+      },
+      update(dt) {
+        const blend = 1 - Math.exp(-Math.max(0, dt) / 0.3);
+        meshes.forEach((mesh) => {
+          const info = mesh.userData.distantTile;
+          const target = enabled ? info.targetVisible : 0;
+          info.currentVisible += (target - info.currentVisible) * blend;
+          const eased = info.currentVisible * info.currentVisible * (3 - 2 * info.currentVisible);
+          mesh.material.uniforms.uVisible.value = eased;
+          if (target <= 0 && info.currentVisible <= 0.01) {
+            info.currentVisible = 0;
+            mesh.material.uniforms.uVisible.value = 0;
+            mesh.visible = false;
+          }
+        });
+      },
+      dispose() {
+        viewer.scene.remove(group);
+        meshes.forEach((mesh) => {
+          mesh.geometry.dispose();
+          mesh.userData.distantTile?.texture?.dispose?.();
+          mesh.material.dispose();
+        });
+      },
+    };
+  }
+
+  async function ensureDistantTerrain(viewer) {
+    if (!viewer) return null;
+    if (viewer.distantTerrain) return viewer.distantTerrain;
+    if (viewer.distantTerrainPromise) return viewer.distantTerrainPromise;
+    viewer.distantTerrainPromise = (async () => {
+      const manifest = await fetchJson('/data/terrain/distant/manifest.json');
+      const items = (manifest.rings || []).filter((item) => item && !item.kind && item.tiles && item.tiles.length);
+      const rings = await Promise.all(items.map(loadManifestRing));
+      const state = createDistantState(viewer, manifest, rings);
+      viewer.distantTerrain = state;
+      viewer.onFrame?.((dt) => state.update(dt));
+      return state;
+    })().catch((err) => {
+      viewer.distantTerrainPromise = null;
+      throw err;
+    });
+    return viewer.distantTerrainPromise;
+  }
+
   global.VEILTerrain = {
     buildTerrainMesh,
     buildTerrainBaseMesh,
     sampleTerrainHeightAtLocal,
     hasValidTerrainAtLocal,
+    ensureDistantTerrain,
   };
 })(window);

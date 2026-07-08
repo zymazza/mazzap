@@ -8,8 +8,9 @@ const GL = ['--use-gl=angle','--use-angle=gl-egl','--no-sandbox','--disable-gpu-
 
 (async () => {
   const out = process.argv[2] || '/tmp/twin.png';
-  const toggleOnly = process.argv[3] || null;   // layer id to leave on (others off)
+  const toggleOnly = process.argv[3] && process.argv[3] !== '-' ? process.argv[3] : null;   // layer id to leave on (others off)
   const extraWait = Number(process.argv[4] || 0);
+  const mode = process.argv[5] || null;
   const url = process.env.SHOT_URL
     || `http://127.0.0.1:${process.env.PORT || 4173}/`;
   const browser = await chromium.launch({ args: GL });
@@ -46,7 +47,7 @@ const GL = ['--use-gl=angle','--use-angle=gl-egl','--no-sandbox','--disable-gpu-
     await page.waitForTimeout(extraWait);
   }
 
-  if (process.argv[5] === 'click') {
+  if (mode === 'click') {
     const box = await page.locator('#viewer-root canvas').boundingBox();
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
     await page.waitForTimeout(600);
@@ -55,6 +56,45 @@ const GL = ['--use-gl=angle','--use-angle=gl-egl','--no-sandbox','--disable-gpu-
       identify: document.getElementById('identify-results')?.innerText?.slice(0, 600),
     }));
     console.log('CLICK INFO:', JSON.stringify(info, null, 2));
+  }
+
+  if (mode === 'astronomy') {
+    await page.click('[data-mode="astronomy"]');
+    await page.waitForSelector('#astro-master', { timeout: 10000 });
+    await page.evaluate(() => {
+      const setChecked = (el, value) => {
+        if (el && el.checked !== value) {
+          el.checked = value;
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      };
+      setChecked(document.getElementById('astro-master'), true);
+      document.querySelectorAll('#astro-toggles input').forEach((cb) => setChecked(cb, true));
+    });
+    await page.waitForTimeout(1200);
+  }
+
+  if (mode === 'viewshed') {
+    await page.click('[data-mode="simulation"]');
+    await page.click('[data-simtab="viewshed"]');
+    await page.waitForSelector('#viewshed-enable', { timeout: 10000 });
+    await page.selectOption('#viewshed-agl', '120');
+    await page.selectOption('#viewshed-surface', 'bare_earth');
+    await page.evaluate(() => {
+      const cb = document.getElementById('viewshed-distant-toggle');
+      if (cb && !cb.checked) {
+        cb.checked = true;
+        cb.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    });
+    await page.click('#viewshed-enable');
+    const box = await page.locator('#viewer-root canvas').boundingBox();
+    await page.mouse.click(box.x + box.width * 0.52, box.y + box.height * 0.58);
+    await page.waitForFunction(() => {
+      const status = document.getElementById('viewshed-status')?.textContent || '';
+      return /visible|failed|unavailable/i.test(status);
+    }, { timeout: 30000 }).catch(() => {});
+    await page.waitForTimeout(300);
   }
 
   await page.screenshot({ path: out });

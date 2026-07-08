@@ -66,9 +66,15 @@ optional **regional pack**, never hardcoded in the engine.
   actual ET, closing the land's water budget), and **wildfire** behavior
   scenarios. Each renders as draped, clickable layers in the viewer's Simulation
   window, and is honest about its uncertainty. See ["Simulation"](#simulation).
-  panel that talks to an LLM wired to the twin's read-only query tools (the MCP
-  server), scoped to the whole twin, a polygon you draw, or a point you pick.
-  See [docs/mcp.md](docs/mcp.md).
+- **Astronomy** — a local ephemeris-driven sky, lighting model, and time scrubber
+  for sun, moon, planets, stars, constellations, eclipses, rise/set, golden hour,
+  and terrain-aware solar context. See ["Astronomy"](#astronomy).
+- **Viewshed & distant terrain** — compute what is visible from an observer point,
+  rank viewpoints, query visibility through MCP, and render 3DEP distant terrain
+  with NAIP drapes around the twin. See ["Viewshed & distant terrain"](#viewshed--distant-terrain).
+- **Ask the land chat** — a collapsible panel that talks to an LLM wired to the
+  twin's read-only query tools (the MCP server), scoped to the whole twin, a
+  polygon you draw, or a point you pick. See [docs/mcp.md](docs/mcp.md).
 - **QField survey companion** — generate a QField project from the active twin,
   collect trails / stream centerlines / photo points / observations in the
   field, then upload the zipped project folder back through the viewer. Uploads
@@ -155,6 +161,29 @@ MCP via `et_summary`, `et_at`, and `water_balance`.
 - **Agriculture** — read the modeled crop-coefficient AET and soil-water-stress signal to see when and where the root zone draws down, flagging the seasonal windows most exposed to irrigation deficit.
 - **Ecology** — use the daily AET and antecedent soil-moisture series to characterize drought stress and growing-season water availability across the VEIL's vegetation communities.
 - **Conservation** — combine the closed water balance's runoff and recharge terms with wet/dry antecedent state to compare how land-cover scenarios shift where water leaves versus infiltrates.
+
+## Astronomy
+
+Mazzap's Astronomy pane runs a local ephemeris in the browser and in MCP. It
+scrubs the VEIL clock, renders physical sky and lighting, overlays sun, moon,
+planets, stars, and constellations, and answers site-specific sky questions such
+as rise/set, eclipses, supermoons, alignments, solstice/equinox times, and golden
+hour. The screenshot below uses the bundled Flatirons demo VEIL.
+
+![Mazzap astronomy simulation: physical night sky, stars, constellations, moon and planet markers over the Flatirons demo VEIL](docs/img/astronomy-flatirons.png)
+
+## Viewshed & distant terrain
+
+Viewshed analysis now lives in the Simulation window alongside hydrology, ET, and
+wildfire. Pick an observer, choose eye level or tower height, select bare-earth
+or canopy blockers, and VEIL computes the visible area, horizon, farthest visible
+terrain, and sky-open azimuths. For US twins, `fetch_distant_terrain.py` builds
+real USGS 3DEP rings and NAIPPlus imagery around the twin so distant ridges and
+valleys participate in the analysis instead of being a painted backdrop. The
+screenshot below is the bundled Flatirons demo VEIL with generated 3DEP/NAIP
+distant terrain.
+
+![Mazzap viewshed simulation: a tower-height observer, computed visible area, and 3DEP distant terrain around the Flatirons demo VEIL](docs/img/viewshed-flatirons.png)
 
 ## Run with Docker
 

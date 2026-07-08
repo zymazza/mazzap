@@ -37,12 +37,17 @@ import json
 import math
 import os
 import re
+import struct
 import sys
+import zlib
+
+import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import twin_store  # noqa: E402
 import twin_astro  # noqa: E402
+import twin_viewshed  # noqa: E402
 
 PROJECT = twin_store.PROJECT
 DATA = twin_store.DATA_DIR
@@ -68,6 +73,9 @@ FIRE_SUMMARY = os.path.join(FIRE_DIR, "summary.json")
 FIRE_LAST_SCENARIO = os.path.join(FIRE_DIR, "last-fire-scenario.json")
 SOILS_FEATURES = os.path.join(DATA, "soils", "features.geojson")
 SOILS_TABULAR = os.path.join(DATA, "soils", "tabular.json")
+VIEWSHED_DIR = os.path.join(DATA, "viewshed")
+VIEWSHED_CATALOG = os.path.join(VIEWSHED_DIR, "viewshed-layers.json")
+VIEWSHED_MANIFEST = os.path.join(DATA, "terrain", "distant", "manifest.json")
 ET_DIR = os.path.join(DATA, "et")
 ET0_SUMMARY = os.path.join(ET_DIR, "et0-summary.json")
 ET_SUMMARY = os.path.join(ET_DIR, "summary.json")
@@ -335,6 +343,24 @@ def sample_terrain_elevation(grid, x, y):
     return sum(v * wgt for v, wgt in valid) / total
 
 
+def write_rgba_png(path, rgba):
+    """Small RGBA PNG writer for MCP-generated drape layers."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    h, w, _ = rgba.shape
+    raw = b"".join(b"\x00" + rgba[row].astype(np.uint8).tobytes() for row in range(h))
+    def chunk(kind, data):
+        return (struct.pack(">I", len(data)) + kind + data
+                + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff))
+    png = b"\x89PNG\r\n\x1a\n"
+    png += chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+    png += chunk(b"IDAT", zlib.compress(raw, 6))
+    png += chunk(b"IEND", b"")
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as fh:
+        fh.write(png)
+    os.replace(tmp, path)
+
+
 _SITE_OBJECTIVE_ALIASES = {
     "overlook": ("overlook", "over-look", "lookout", "view", "viewpoint", "vantage", "ridge"),
     "trailcam": ("trailcam", "trail-cam", "trail cam", "camera", "camerapoint", "cam"),
@@ -404,21 +430,25 @@ def geometry_centroid_and_bbox(geometry):
 # ----------------------------------------------------------------- region
 
 class Region:
-    """One region abstraction, four shapes (aoi / bbox / within_m / polygon).
+    """One region abstraction, including viewshed-backed visibility shapes.
     `contains(x, y)` takes scene-local meters; `bounds` is the scene-local
     bounding box used to prefilter before the exact test."""
 
-    def __init__(self, shape, bounds, contains, area_m2, description):
+    def __init__(self, shape, bounds, contains, area_m2, description, metadata=None):
         self.shape = shape
         self.bounds = bounds
         self.contains = contains
         self.area_m2 = area_m2
         self.description = description
+        self.metadata = metadata or {}
 
     def describe(self):
-        return {"shape": self.shape, "bounds_scene_m": [round(v, 3) for v in self.bounds],
-                "area_m2": round(self.area_m2, 1) if self.area_m2 else None,
-                "description": self.description}
+        out = {"shape": self.shape, "bounds_scene_m": [round(v, 3) for v in self.bounds],
+               "area_m2": round(self.area_m2, 1) if self.area_m2 else None,
+               "description": self.description}
+        if self.metadata:
+            out.update(self.metadata)
+        return out
 
 
 def _looks_geographic(pairs, georef):
@@ -450,28 +480,34 @@ def _aoi_rings():
     return rings
 
 
-def resolve_region(region, georef):
+def resolve_region(region, georef, viewshed_resolver=None):
     """The single region resolver every spatial tool uses (decision 6).
     Accepts exactly one of:
       {"aoi": true}
       {"bbox": [minx, miny, maxx, maxy]}            (scene-local meters)
       {"within_m": r, "point": {lat,lon} | {x,y}}   (radius in meters)
       {"polygon": [[lon,lat], ...] | [[x,y], ...]}  (ring auto-closed)
+      {"visible_from": {...}} / {"hidden_from": {...}} (TwinQuery-backed)
     Returns a Region, or None when region is None (no spatial filter).
     """
     if region is None:
         return None
     if not isinstance(region, dict):
         raise TwinQueryError("region must be an object", got=region)
-    shapes = [k for k in ("aoi", "bbox", "within_m", "polygon") if k in region]
+    shapes = [k for k in ("aoi", "bbox", "within_m", "polygon", "visible_from", "hidden_from") if k in region]
     if len(shapes) != 1:
         raise TwinQueryError(
-            "region must carry exactly one of: aoi, bbox, within_m (+point), polygon",
+            "region must carry exactly one of: aoi, bbox, within_m (+point), polygon, visible_from, hidden_from",
             got=sorted(region.keys()))
     extra = set(region) - {shapes[0], "point"}
     if extra or ("point" in region and shapes[0] != "within_m"):
         raise TwinQueryError("unexpected region keys", got=sorted(region.keys()))
     shape = shapes[0]
+
+    if shape in {"visible_from", "hidden_from"}:
+        if viewshed_resolver is None:
+            raise TwinQueryError("visible_from/hidden_from regions need a TwinQuery viewshed resolver")
+        return viewshed_resolver(shape, region[shape])
 
     if shape == "aoi":
         if region["aoi"] is not True:
@@ -646,6 +682,90 @@ class TwinQuery:
         if key not in self._caches:
             self._caches[key] = build()
         return self._caches[key]
+
+    def _resolve_region(self, region):
+        return resolve_region(region, self.georef, self._resolve_viewshed_region)
+
+    def _viewshed_stack(self):
+        def build():
+            if os.path.exists(VIEWSHED_MANIFEST):
+                return twin_viewshed.RingStack.load(VIEWSHED_MANIFEST)
+            return twin_viewshed.RingStack.from_local_files(DATA)
+        return self._cache("viewshed_stack", build)
+
+    def _viewshed_key(self, x, y, agl, target_agl, refraction, max_km, surface):
+        stack = self._viewshed_stack()
+        return (
+            "viewshed_sweep",
+            round(float(x), 1), round(float(y), 1),
+            round(float(agl), 2), round(float(target_agl), 2),
+            str(refraction or "optical").lower(),
+            None if max_km is None else round(float(max_km), 3),
+            str(surface or "canopy").lower(),
+            stack.manifest_hash,
+        )
+
+    def _viewshed_sweep_cached(self, point, agl_m=1.7, target_agl_m=0.0,
+                               refraction="optical", max_km=None, surface="bare_earth",
+                               n_az=720):
+        x, y = resolve_point(point, self.georef)
+        key = self._viewshed_key(x, y, agl_m, target_agl_m, refraction, max_km, surface)
+        def build():
+            stack = self._viewshed_stack()
+            return twin_viewshed.sweep(
+                stack, x, y, float(agl_m), n_az=n_az, max_km=max_km,
+                surface=surface or "canopy", k=refraction or "optical",
+                target_agl_m=float(target_agl_m or 0.0))
+        result = self._cache(key, build)
+        return self._viewshed_stack(), result, x, y, key
+
+    def _resolve_viewshed_region(self, shape, spec):
+        if not isinstance(spec, dict) or "point" not in spec:
+            raise TwinQueryError(f"{shape} region needs a point and optional agl_m/max_km/refraction/surface",
+                                 got=spec)
+        agl = float(spec.get("agl_m", 1.7))
+        target_agl = float(spec.get("target_agl_m", 0.0))
+        max_km = spec.get("max_km")
+        max_km = None if max_km is None else float(max_km)
+        refraction = spec.get("refraction", "optical")
+        surface = spec.get("surface", "bare_earth")
+        stack, result, x, y, key = self._viewshed_sweep_cached(
+            spec["point"], agl_m=agl, target_agl_m=target_agl,
+            refraction=refraction, max_km=max_km, surface=surface)
+        minx, miny, maxx, maxy = stack.bounds
+        masks = result["visible"]
+        negate = shape == "hidden_from"
+        analyzed = result["stats"]["analyzed_extent_km"]
+        note = None
+        if max_km is not None and max_km > analyzed + 1e-6:
+            note = "needs_fetch: requested max_km exceeds analyzed terrain; absence outside this range is unknown"
+        visible_area = result["stats"]["visible_km2"] * 1_000_000.0
+        total_area = sum(np.count_nonzero(np.isfinite(r.ground)) * r.cell_area_m2
+                         for r in stack.rings)
+        area = (total_area - visible_area) if negate else visible_area
+        def contains(px, py):
+            val = stack.mask_contains(masks, px, py)
+            return not val if negate else val
+        return Region(
+            shape,
+            (minx, miny, maxx, maxy),
+            contains,
+            area,
+            f"{shape.replace('_', ' ')} ({x:.1f},{y:.1f}) agl={agl:g}m surface={surface}",
+            metadata={
+                "viewshed": {
+                    "observer": self.georef.echo(x, y),
+                    "agl_m": agl,
+                    "target_agl_m": target_agl,
+                    "surface": surface,
+                    "refraction": refraction,
+                    "k": result["k"],
+                    "analyzed_extent_km": analyzed,
+                    "manifest_hash": stack.manifest_hash,
+                    "memo_key": str(key),
+                    "note": note,
+                }
+            })
 
     # -- low-level reads ----------------------------------------------------
 
@@ -1255,7 +1375,7 @@ class TwinQuery:
                 nx, ny = resolve_point(near, self.georef)
                 near_geometry = point_geometry(nx, ny)
                 region = {"within_m": within_m, "point": {"x": nx, "y": ny}}
-        reg = resolve_region(region, self.georef)
+        reg = self._resolve_region(region)
         if reg is not None and reg.shape == "within_m":
             b = reg.bounds
             nx, ny = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
@@ -1848,7 +1968,7 @@ class TwinQuery:
         self._validate_site_constraints(normalized_filters)
         if region is None:
             region = {"aoi": True}
-        reg = resolve_region(region, self.georef)
+        reg = self._resolve_region(region)
         if reg is None:
             raise TwinQueryError("recommend_sites needs a region", region=region)
 
@@ -2623,7 +2743,7 @@ class TwinQuery:
     def summarize_region(self, region):
         """The headline call: everything happening inside a region, with
         provenance per fact — shaped for an LLM to narrate directly."""
-        reg = resolve_region(region, self.georef)
+        reg = self._resolve_region(region)
         if reg is None:
             raise TwinQueryError(
                 "summarize_region needs a region "
@@ -2746,7 +2866,7 @@ class TwinQuery:
         metric: "count", "crown_area" (sum of pi*radius^2), or
         "<sum|mean|min|max>:<numeric attr>" e.g. "mean:height"."""
         self._require_kind(kind)
-        reg = resolve_region(region, self.georef)
+        reg = self._resolve_region(region)
         filters = self._parse_filters(where)
 
         m = re.match(r"^(count|crown_area|(sum|mean|min|max):([A-Za-z_]\w*))$",
@@ -2841,7 +2961,7 @@ class TwinQuery:
         if member not in ("member_parcel", "member_surrounding", "any"):
             raise TwinQueryError("member must be member_parcel, member_surrounding, or any",
                                  got=member)
-        reg = resolve_region(region, self.georef)
+        reg = self._resolve_region(region)
         params = {"minx": -1e9, "miny": -1e9, "maxx": 1e9, "maxy": 1e9}
         id_join = ""
         if reg is not None:
@@ -3777,6 +3897,227 @@ class TwinQuery:
                 out.append(f"In the simulated {tag}: " + "; ".join(parts) + ".")
         return out
 
+    # -- viewshed -------------------------------------------------------------
+
+    def _viewshed_layer_catalog(self, layer):
+        os.makedirs(VIEWSHED_DIR, exist_ok=True)
+        catalog = {"version": 1, "layers": []}
+        if os.path.exists(VIEWSHED_CATALOG):
+            try:
+                catalog = json.load(open(VIEWSHED_CATALOG))
+            except Exception:
+                catalog = {"version": 1, "layers": []}
+        catalog["layers"] = [l for l in catalog.get("layers", []) if l.get("id") != layer["id"]] + [layer]
+        tmp = VIEWSHED_CATALOG + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(catalog, fh, indent=2)
+        os.replace(tmp, VIEWSHED_CATALOG)
+        return catalog
+
+    def _write_viewshed_layer(self, result, layer_id="viewshed_current", label="Current viewshed"):
+        stack = self._viewshed_stack()
+        ring = stack.rings[0]
+        mask = result["visible"][ring.name]
+        os.makedirs(os.path.join(VIEWSHED_DIR, "local"), exist_ok=True)
+        image_rel = f"viewshed/local/{layer_id}.png"
+        grid_rel = f"viewshed/local/{layer_id}.grid.json"
+        rgba = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.uint8)
+        rgba[mask > 0] = [255, 142, 26, 190]
+        write_rgba_png(os.path.join(DATA, image_rel), rgba)
+        grid = {
+            "bounds_local": [ring.min_x, ring.min_y, ring.max_x, ring.max_y],
+            "width": int(mask.shape[1]),
+            "height": int(mask.shape[0]),
+            "nodata": None,
+            "legend": {"0": {"name": "not visible"}, "1": {"name": "visible"}},
+            "values": [[int(v) for v in row] for row in mask],
+            "surface": result.get("surface"),
+            "k": result.get("k"),
+            "manifest_hash": stack.manifest_hash,
+        }
+        with open(os.path.join(DATA, grid_rel), "w") as fh:
+            json.dump(grid, fh, separators=(",", ":"))
+        layer = {
+            "id": layer_id,
+            "label": label,
+            "type": "raster",
+            "group": "viewshed",
+            "image": image_rel,
+            "grid": grid_rel,
+            "bounds_local": grid["bounds_local"],
+            "description": f"Viewshed from {result['observer']['x']:.1f},{result['observer']['y']:.1f}; surface={result['surface']}, k={result['k']:.5f}.",
+        }
+        self._viewshed_layer_catalog(layer)
+        doc = _load_view_doc()
+        doc["layer_views"] = [v for v in doc["layer_views"] if v.get("layer_id") != layer_id]
+        doc["layer_views"].append({"layer_id": layer_id, "visible": True, "created_at": _utc_now()})
+        _save_view_doc(doc)
+        return {"layer": layer, "catalog": os.path.relpath(VIEWSHED_CATALOG, DATA)}
+
+    def _viewshed_provenance(self, result):
+        stack = self._viewshed_stack()
+        return {
+            "tool": "twin_viewshed radial R2 sweep",
+            "surface": result.get("surface"),
+            "k": result.get("k"),
+            "cc": result.get("cc"),
+            "rings": [{
+                "id": r.name,
+                "resolution_m": r.resolution_m,
+                "canopy_available": r.canopy is not None,
+                "bounds_scene_m": [round(r.min_x, 2), round(r.min_y, 2), round(r.max_x, 2), round(r.max_y, 2)],
+            } for r in stack.rings],
+            "manifest_hash": stack.manifest_hash,
+            "accuracy_note": "Exact radial sweep on the loaded ring surface; no claim beyond analyzed_extent_km.",
+        }
+
+    def viewshed_from(self, point, agl_m=1.7, max_km=None, refraction="optical",
+                      surface="bare_earth", demonstrate=False):
+        stack, result, x, y, _key = self._viewshed_sweep_cached(
+            point, agl_m=agl_m, refraction=refraction, max_km=max_km,
+            surface=surface, n_az=1440)
+        canopy_hidden = None
+        if surface == "canopy":
+            bare = twin_viewshed.sweep(stack, x, y, float(agl_m), n_az=720,
+                                       max_km=max_km, surface="bare_earth",
+                                       k=refraction or "optical")
+            canopy_hidden = max(0.0, bare["stats"]["visible_km2"] - result["stats"]["visible_km2"])
+        payload = {
+            "observer": self.georef.echo(x, y),
+            "agl_m": float(agl_m),
+            "visible_area_km2": round(result["stats"]["visible_km2"], 6),
+            "max_visible_km": round(result["stats"]["max_visible_km"], 3),
+            "sky_open_fraction": round(result["stats"]["sky_open_fraction_ge_2deg"], 4),
+            "surface": result["surface"],
+            "refraction": refraction,
+            "k": result["k"],
+            "canopy_hidden_km2": None if canopy_hidden is None else round(canopy_hidden, 6),
+            "analyzed_extent_km": round(result["stats"]["analyzed_extent_km"], 3),
+            "needs_fetch": bool(max_km is not None and float(max_km) > result["stats"]["analyzed_extent_km"] + 1e-6),
+            "provenance": self._viewshed_provenance(result),
+        }
+        if demonstrate:
+            payload["demonstration"] = self._write_viewshed_layer(result)
+            payload["observer_marker"] = self.draw_point({"x": x, "y": y}, label=f"Viewshed {float(agl_m):g} m AGL").get("drawn")
+        return payload
+
+    def can_see(self, from_point, to_point, from_agl_m=1.7, to_agl_m=0.0,
+                refraction="optical", surface="bare_earth", freq_mhz=None):
+        x0, y0 = resolve_point(from_point, self.georef)
+        x1, y1 = resolve_point(to_point, self.georef)
+        result = twin_viewshed.line_of_sight(
+            self._viewshed_stack(), x0, y0, float(from_agl_m), x1, y1,
+            float(to_agl_m), k=refraction or "optical", surface=surface or "canopy")
+        if result.get("error"):
+            return result
+        obs = result.get("obstruction")
+        if obs:
+            obs = {**obs, "position": self.georef.echo(obs["x"], obs["y"])}
+            obs.pop("x", None)
+            obs.pop("y", None)
+        fresnel = None
+        if freq_mhz and refraction and str(refraction).startswith("radio"):
+            d_km = result["distance_km"]
+            fresnel = {"note": "first Fresnel radius at midpoint, approximate",
+                       "radius_m": round(17.3 * math.sqrt((d_km / 2) * (d_km / 2) / (float(freq_mhz) * d_km)), 3)}
+        return {
+            "from": self.georef.echo(x0, y0),
+            "to": self.georef.echo(x1, y1),
+            "visible": result["visible"],
+            "bearing_deg": round(result["bearing_deg"], 3),
+            "distance_km": round(result["distance_km"], 3),
+            "obstruction": obs,
+            "required_from_agl_m": round(result["required_agl0_m"], 3),
+            "clearance_deficit_m": round(result["clearance_deficit_m"], 3),
+            "surface": result["surface"],
+            "refraction": refraction,
+            "k": result["k"],
+            "fresnel": fresnel,
+            "provenance": self._viewshed_provenance({"surface": result["surface"], "k": result["k"], "cc": result["cc"]}),
+        }
+
+    def _sun_block_windows(self, horizon_deg, date=None):
+        base = date or twin_astro.iso_from_dt(twin_astro._utc_now())
+        day = str(base)[:10]
+        rows = []
+        for minute in range(0, 24 * 60, 10):
+            hh, mm = divmod(minute, 60)
+            iso = f"{day}T{hh:02d}:{mm:02d}:00Z"
+            try:
+                sun = twin_astro.body_position("sun", time=iso, site=self._astronomy_site())
+            except Exception:
+                continue
+            hz = twin_viewshed.horizon_at_azimuth(np.asarray(horizon_deg), sun["azimuth_deg"])
+            rows.append({"time": iso, "blocked": sun["altitude_deg"] < hz,
+                         "sun_altitude_deg": sun["altitude_deg"], "horizon_deg": hz})
+        windows = []
+        cur = None
+        for row in rows:
+            if cur is None or cur["blocked"] != row["blocked"]:
+                if cur is not None:
+                    cur["end"] = row["time"]
+                    windows.append(cur)
+                cur = {"blocked": row["blocked"], "begin": row["time"]}
+        if cur is not None:
+            cur["end"] = rows[-1]["time"] if rows else None
+            windows.append(cur)
+        return windows
+
+    def horizon_at(self, point, agl_m=1.7, date=None, surface="bare_earth"):
+        stack, result, x, y, _key = self._viewshed_sweep_cached(
+            point, agl_m=agl_m, refraction="optical", surface=surface, n_az=720)
+        horizon = result["horizon_deg"]
+        compact = twin_viewshed.compact_horizon(horizon, 72)
+        geo = twin_viewshed.geo_arc_elevations(self._astronomy_site().lat, n_az=72)
+        for row, hz in zip(geo, compact):
+            row["horizon_deg"] = hz
+            row["clear"] = bool(math.isfinite(row["elevation_deg"]) and row["elevation_deg"] > hz)
+        return {
+            "observer": self.georef.echo(x, y),
+            "agl_m": float(agl_m),
+            "surface": surface,
+            "horizon_72_deg": compact,
+            "min_horizon_deg": round(float(np.nanmin(horizon)), 3),
+            "max_horizon_deg": round(float(np.nanmax(horizon)), 3),
+            "sun_windows": self._sun_block_windows(horizon, date=date),
+            "geo_arc": {"refraction": "radio", "samples": geo},
+            "provenance": self._viewshed_provenance(result),
+        }
+
+    def best_viewpoints(self, region=None, agl_m=1.7, objective="area", target=None,
+                        surface="bare_earth", count=3, demonstrate=False):
+        reg = self._resolve_region(region or {"aoi": True})
+        pts, spacing = self._regular_lattice_points(reg, target=80)
+        ranked = []
+        for x, y in pts:
+            if self._terrain_elevation(x, y) is None:
+                continue
+            if objective == "sees_target" and target:
+                tx, ty = resolve_point(target, self.georef)
+                los = twin_viewshed.line_of_sight(self._viewshed_stack(), x, y, float(agl_m), tx, ty,
+                                                  0.0, k="radio", surface=surface)
+                score = 1.0 if los.get("visible") else 0.0
+                area = 0.0
+            else:
+                r = twin_viewshed.sweep(self._viewshed_stack(), x, y, float(agl_m), n_az=180,
+                                        surface=surface)
+                area = r["stats"]["visible_km2"]
+                score = area
+            ranked.append({"x": x, "y": y, "score": score, "visible_area_km2": area})
+        ranked.sort(key=lambda r: (-r["score"], r["x"], r["y"]))
+        out = []
+        for i, row in enumerate(ranked[:max(1, min(int(count), 10))], start=1):
+            rec = {"rank": i, "point": self.georef.echo(row["x"], row["y"]),
+                   "score": round(row["score"], 6),
+                   "visible_area_km2": round(row["visible_area_km2"], 6)}
+            if demonstrate:
+                rec["drawn"] = self.draw_point({"x": row["x"], "y": row["y"]},
+                                               label=f"Viewpoint #{i}").get("drawn")
+            out.append(rec)
+        return {"region": reg.describe(), "objective": objective, "agl_m": float(agl_m),
+                "surface": surface, "candidate_spacing_m": round(spacing, 3),
+                "viewpoints": out, "provenance": {"tool": "best_viewpoints", "refraction_for_target": "radio"}}
+
     # -- astronomy -----------------------------------------------------------
 
     def _astronomy_site(self):
@@ -3793,21 +4134,61 @@ class TwinQuery:
             raise TwinQueryError(message, **payload)
         raise TwinQueryError(str(error))
 
-    def sky_at(self, time=None):
+    def _precomputed_horizon(self, surface="bare_earth"):
+        path = os.path.join(VIEWSHED_DIR, "horizon.json")
+        if not os.path.exists(path):
+            return None
+        try:
+            doc = json.load(open(path))
+            values = (doc.get("horizon_deg") or {}).get(surface) or (doc.get("horizon_deg") or {}).get("bare_earth")
+            return np.asarray(values, dtype=np.float32) if values else None
+        except Exception:
+            return None
+
+    def _terrain_block_for_altaz(self, altitude, azimuth, point=None, surface="bare_earth"):
+        if altitude is None or azimuth is None:
+            return None
+        horizon = None
+        source = "precomputed_aoi_centroid"
+        if point:
+            try:
+                _stack, result, _x, _y, _key = self._viewshed_sweep_cached(
+                    point, agl_m=1.7, refraction="optical", surface=surface, n_az=720)
+                horizon = result["horizon_deg"]
+                source = "observer_point_sweep"
+            except Exception:
+                horizon = None
+        if horizon is None:
+            horizon = self._precomputed_horizon(surface)
+        if horizon is None:
+            return {"available": False, "blocked": None, "source": "missing data/viewshed/horizon.json"}
+        hz = twin_viewshed.horizon_at_azimuth(horizon, azimuth)
+        return {"available": True, "blocked": bool(float(altitude) < hz),
+                "horizon_deg_at_azimuth": round(float(hz), 3),
+                "source": source, "surface": surface}
+
+    def sky_at(self, time=None, point=None, surface="bare_earth"):
         """Sun, moon, visible planets, twilight state, and rise/set events at
         the twin's observer site for a UTC time (default: now)."""
         try:
-            return twin_astro.sky_at(time=time, site=self._astronomy_site())
+            result = twin_astro.sky_at(time=time, site=self._astronomy_site())
         except (twin_astro.AstronomyNameError, ValueError) as error:
             self._astronomy_error(error)
+        sun = result.get("sun") or {}
+        result["terrain"] = {"sun": self._terrain_block_for_altaz(
+            sun.get("altitude_deg"), sun.get("azimuth_deg"), point=point, surface=surface)}
+        return result
 
-    def body_position(self, body, time=None):
+    def body_position(self, body, time=None, point=None, surface="bare_earth"):
         """Topocentric position, phase/size where available, constellation,
         and next rise/set/culmination for a body or named star."""
         try:
-            return twin_astro.body_position(body, time=time, site=self._astronomy_site())
+            result = twin_astro.body_position(body, time=time, site=self._astronomy_site())
         except (twin_astro.AstronomyNameError, ValueError) as error:
             self._astronomy_error(error)
+        result["terrain"] = self._terrain_block_for_altaz(
+            result.get("altitude_deg"), result.get("azimuth_deg"), point=point, surface=surface)
+        return result
 
     def next_sky_event(self, kind, from_time=None, count=1, max_span_deg=50.0,
                        horizon_years=100.0, demonstrate=False):
@@ -3882,13 +4263,32 @@ class TwinQuery:
             "note": "viewer clock scrubbed to the event and target(s) highlighted; the browser applies it within a few seconds",
         }
 
-    def solar_irradiance(self, time=None):
+    def solar_irradiance(self, time=None, point=None, surface="bare_earth"):
         """Clear-sky GHI/DNI/DHI at the twin site for a UTC time. This is a
-        radiometric data result, not a terrain-shaded solar-siting model."""
+        radiometric data result with optional terrain-horizon adjustment."""
         try:
-            return twin_astro.solar_irradiance(time=time, site=self._astronomy_site())
+            result = twin_astro.solar_irradiance(time=time, site=self._astronomy_site())
+            sun = twin_astro.body_position("sun", time=time, site=self._astronomy_site())
         except (twin_astro.AstronomyNameError, ValueError) as error:
             self._astronomy_error(error)
+        terrain = self._terrain_block_for_altaz(
+            result.get("sun_altitude_deg"), sun.get("azimuth_deg"), point=point, surface=surface)
+        if terrain and terrain.get("available"):
+            horizon = self._precomputed_horizon(surface)
+            sky_fraction = 0.5 if horizon is None else float(np.count_nonzero(horizon <= 2.0) / len(horizon))
+            if terrain.get("blocked"):
+                result["dni_wm2_unadjusted"] = result.get("dni_wm2")
+                result["ghi_wm2_unadjusted"] = result.get("ghi_wm2")
+                result["dni_wm2"] = 0.0
+                result["dhi_wm2"] = round(float(result.get("dhi_wm2") or 0.0) * sky_fraction, 2)
+                result["ghi_wm2"] = result["dhi_wm2"]
+            result["horizon_adjusted"] = True
+            result["terrain"] = terrain
+            result["sky_view_fraction"] = round(sky_fraction, 4)
+        else:
+            result["horizon_adjusted"] = False
+            result["terrain"] = terrain
+        return result
 
     def set_view_time(self, time, rate=1.0):
         """Set the viewer's shared astronomy clock through annotations.json.

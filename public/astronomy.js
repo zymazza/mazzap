@@ -260,9 +260,17 @@
       const phase = s?.moonPhase ?? 0;
       const phasePct = s?.moonPhasePct ?? 0;
       const sun = s?.sun;
+      const terrainH = Number.isFinite(sun?.azimuthDeg)
+        ? global.__twin?.viewshed?.horizonAt?.(sun.azimuthDeg)
+        : null;
+      const terrainNote = Number.isFinite(terrainH)
+        ? (sun.altitudeDeg < terrainH
+          ? ` · Sun behind terrain (${terrainH.toFixed(1)}° horizon)`
+          : ` · Terrain horizon ${terrainH.toFixed(1)}°`)
+        : '';
       els.status.className = 'sim-status';
       els.status.textContent =
-        `${fmtTime(ms)} · Sun ${fmtDeg(sun?.altitudeDeg)} alt / ${fmtDeg(sun?.azimuthDeg, 0)} az · Moon ${phasePct.toFixed(0)}% ${moonPhaseName(phase)}`;
+        `${fmtTime(ms)} · Sun ${fmtDeg(sun?.altitudeDeg)} alt / ${fmtDeg(sun?.azimuthDeg, 0)} az${terrainNote} · Moon ${phasePct.toFixed(0)}% ${moonPhaseName(phase)}`;
     }
 
     function setManualTime(ms, rate = 1, playing = true) {

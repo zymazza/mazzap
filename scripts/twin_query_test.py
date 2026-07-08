@@ -16,6 +16,8 @@ import sqlite3
 import subprocess
 import sys
 
+import numpy as np
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT = os.path.dirname(HERE)
 os.environ.setdefault("TWIN_DATA_DIR",
@@ -23,6 +25,7 @@ os.environ.setdefault("TWIN_DATA_DIR",
 sys.path.insert(0, HERE)
 
 import twin_astro  # noqa: E402
+import twin_viewshed  # noqa: E402
 import twin_query  # noqa: E402
 import twin_store  # noqa: E402
 from twin_query import (TwinQuery, TwinQueryError, resolve_region,  # noqa: E402
@@ -176,7 +179,9 @@ print("== resolve_region ==")
 r = resolve_region({"aoi": True}, G)
 check("aoi region has positive area", r.area_m2 > 1e5, str(r.area_m2))
 check("aoi contains scene origin", r.contains(0, 0))
-check("aoi excludes far point", not r.contains(600, 600))
+far_x = r.bounds[2] + max(100.0, r.bounds[2] - r.bounds[0])
+far_y = r.bounds[3] + max(100.0, r.bounds[3] - r.bounds[1])
+check("aoi excludes far point", not r.contains(far_x, far_y))
 
 r = resolve_region({"bbox": [-10, -20, 10, 20]}, G)
 check("bbox area", abs(r.area_m2 - 800) < 1e-6)
@@ -386,6 +391,61 @@ err = expect_error("unknown sky target rejected with suggestions",
                    tq.body_position, "__not_a_sky_target__")
 check("unknown sky target error carries suggestions",
       isinstance(err.get("suggestions"), list))
+
+print("== viewshed ==")
+stack = twin_viewshed.RingStack.from_local_files(twin_store.DATA_DIR)
+vx, vy = twin_viewshed.nearest_valid_point(stack)
+bare_eye = twin_viewshed.sweep(stack, vx, vy, 1.7, n_az=360, surface="bare_earth")
+bare_tower = twin_viewshed.sweep(stack, vx, vy, 120.0, n_az=360, surface="bare_earth")
+canopy_eye = twin_viewshed.sweep(stack, vx, vy, 1.7, n_az=360, surface="canopy")
+ring_name = stack.rings[0].name
+check("AGL 120 viewshed is a superset of eye-level bare-earth mask",
+      not np.any((bare_eye["visible"][ring_name] == 1) & (bare_tower["visible"][ring_name] == 0)))
+check("canopy viewshed is subset of bare-earth mask",
+      not np.any((canopy_eye["visible"][ring_name] == 1) & (bare_eye["visible"][ring_name] == 0)))
+check("tower sees at least as much as eye level",
+      np.count_nonzero(bare_tower["visible"][ring_name]) >= np.count_nonzero(bare_eye["visible"][ring_name]))
+
+# Regression: the near ring must composite the parcel LiDAR over the apron so
+# the parcel interior is real 3 m terrain, not a nodata hole that drops the
+# near-field sweep onto the coarse distant ring (the Great-Sacandaga false-hide).
+near_ring = stack.rings[0]
+near_finite = float(np.isfinite(near_ring.ground).mean())
+has_apron = os.path.exists(os.path.join(twin_store.DATA_DIR, "terrain", "grid.apron.json"))
+if has_apron:
+    check("near ring has no parcel-interior nodata hole (parcel merged over apron)",
+          near_finite > 0.9, f"near-ring finite fraction {near_finite:.3f} (expected ~1.0)")
+else:
+    check("near ring loads finite terrain cells",
+          near_finite > 0.1, f"near-ring finite fraction {near_finite:.3f}")
+_scene_center = near_ring.sample_ground(np.asarray([0.0]), np.asarray([0.0]))[0]
+check("near ring samples finite terrain at the scene interior",
+      bool(np.isfinite(_scene_center)), f"center ground {_scene_center}")
+
+vreg = {"visible_from": {"point": {"x": vx, "y": vy}, "agl_m": 120, "surface": "canopy"}}
+before_sweep_keys = {k for k in tq._caches if isinstance(k, tuple) and k and k[0] == "viewshed_sweep"}
+all_trees = tq.aggregate_entities("tree", "count")
+vis_trees = tq.aggregate_entities("tree", "count", region=vreg)
+check("visible_from region composes with aggregate_entities as a subset",
+      0 <= vis_trees["groups"]["all"]["entity_count"] <= all_trees["groups"]["all"]["entity_count"])
+_ = tq.find_entities("tree", region=vreg, limit=5)
+after_sweep_keys = {k for k in tq._caches if isinstance(k, tuple) and k and k[0] == "viewshed_sweep"}
+check("visible_from memo reuses one sweep across stacked calls", len(after_sweep_keys - before_sweep_keys) == 1, str(after_sweep_keys - before_sweep_keys))
+summary_v = tq.summarize_region(vreg)
+check("summarize_region accepts visible_from region", summary_v["region"]["shape"] == "visible_from")
+
+vf = tq.viewshed_from({"x": vx, "y": vy}, agl_m=10, surface="canopy", demonstrate=True)
+check("viewshed_from reports provenance and canopy cost",
+      vf["surface"] == "canopy" and vf["provenance"]["manifest_hash"]
+      and "canopy_hidden_km2" in vf and vf.get("demonstration", {}).get("layer", {}).get("id") == "viewshed_current")
+los = tq.can_see({"x": vx, "y": vy}, {"x": vx + 30, "y": vy + 30}, from_agl_m=30, surface="canopy")
+check("can_see returns intervisibility payload",
+      ("visible" in los or los.get("error") == "needs_fetch") and ("k" in los or los.get("error")))
+hz = tq.horizon_at({"x": vx, "y": vy}, date="2026-12-21", surface="canopy")
+check("horizon_at returns sun windows and GEO arc",
+      len(hz["horizon_72_deg"]) == 72 and any(w["blocked"] for w in hz["sun_windows"])
+      and len(hz["geo_arc"]["samples"]) == 72)
+
 
 required_full_kinds = {"building_model", "parcel", "stream"}
 available_kinds = set(d["entity_counts"].keys())
