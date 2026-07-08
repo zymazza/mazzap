@@ -46,6 +46,10 @@
       return viewer.buildingModelsGroup;
     }
 
+    function invalidateBuildingShadows() {
+      viewer.invalidateShadowMap?.('building-placement');
+    }
+
     function entryOf(child) {
       return child.userData.entry;
     }
@@ -128,6 +132,7 @@
       child.scale.setScalar(p.scale);
       if (options.applyPlacement) {
         global.VEILBuildings3D.applyPlacement(child, p, viewer.terrainGrid);
+        invalidateBuildingShadows();
       }
       refreshUi();
       return p.scale;
@@ -162,6 +167,7 @@
         p.z_offset = dragInfo.z_offset;
       }
       global.VEILBuildings3D.applyPlacement(state.selected, p, viewer.terrainGrid);
+      invalidateBuildingShadows();
       refreshUi();
     }
 
@@ -216,6 +222,7 @@
             enforceUniformScale(state.selected, c.userData.drag);
           }
           syncPlacementFromObject(state.selected);
+          invalidateBuildingShadows();
           refreshUi();
         }
       });
@@ -252,6 +259,7 @@
       if (!original) return;
       e.placement = { ...original };
       global.VEILBuildings3D.applyPlacement(state.selected, e.placement, viewer.terrainGrid);
+      invalidateBuildingShadows();
       refreshUi();
       setStatus(`Reset ${e.id} to its loaded placement.`);
     }
@@ -406,6 +414,7 @@
         const p = entryOf(child).placement;
         Object.assign(p, patch);
         global.VEILBuildings3D.applyPlacement(child, p, viewer.terrainGrid);
+        invalidateBuildingShadows();
         refreshUi();
         return { ...p };
       },

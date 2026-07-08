@@ -17,3 +17,4 @@
 mcp>=1.20,<2
 pyproj>=3.6,<4
 Pillow>=10,<12
+astronomy-engine>=2.1

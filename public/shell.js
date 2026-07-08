@@ -20,6 +20,7 @@
     layers: 'Layers',
     explore: 'Explore',
     simulation: 'Simulation',
+    astronomy: 'Astronomy',
     survey: 'Field surveys',
     telemetry: 'Live telemetry',
   };

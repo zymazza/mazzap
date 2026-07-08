@@ -118,6 +118,25 @@
     });
   }
 
+  function resolveAstronomySite(scene, viewer) {
+    const origin = Array.isArray(scene?.origin_utm) ? scene.origin_utm : [0, 0];
+    let lon = null;
+    let lat = null;
+    try {
+      const geo = VEILGeoref.projectedToGeographic(Number(origin[0] || 0), Number(origin[1] || 0));
+      lon = geo.lon;
+      lat = geo.lat;
+    } catch (err) {
+      console.warn('astronomy georef resolution failed:', err);
+    }
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+    return {
+      lon,
+      lat,
+      heightM: Number(viewer?.terrainGrid?.minElevation ?? scene?.grid_min_elevation_m ?? 0) || 0,
+    };
+  }
+
   async function loadLayerData(layer, deps = {}) {
     const fetchJsonFn = deps.fetchJson || fetchJson;
     const loadImageFn = deps.loadImage || loadImageAsset;
@@ -187,6 +206,8 @@
     window.VEILBuildings3D
       ?.load(viewer, '/data/buildings/models/manifest.json')
       .then(() => {
+        viewer.applyBuildingShadows?.(viewer.photometricMode);
+        viewer.invalidateShadowMap?.('building-models-loaded');
         window.__twin.buildingEditor = window.VEILBuildingEditor?.create(viewer);
       })
       .catch((err) => console.error('building models failed:', err));
@@ -202,6 +223,7 @@
 
     state.apron = await buildApron(viewer);
     state.surroundingVegetation = await buildSurroundingVegetation(viewer, state.apron);
+    registerPhotometricSceneExtras(viewer);
     initDrape(viewer);
     window.__twin.fireReveal = createFireRevealApi();
     raiseOverlaysAboveDrape(viewer);
@@ -239,6 +261,11 @@
         await setDrapeLayerEnabled(layer, on);
       },
       refresh: refreshWildfireLayers,
+    });
+    window.__twin.astronomy = window.VEILAstronomy?.create({
+      viewer,
+      state,
+      site: resolveAstronomySite(scene, viewer),
     });
     // Evapotranspiration tab: the water_balance drape lives in the shared
     // simulation catalog; et.js filters it out and owns the ET readouts.
@@ -503,7 +530,9 @@
         fetchJson(treeUrl),
         fetchJson(shrubUrl),
       ]);
-      const renderer = window.VEILVegetation.create(viewer.scene);
+      const renderer = window.VEILVegetation.create(viewer.scene, {
+        onAssetLoad: () => viewer.invalidateShadowMap?.('vegetation-asset'),
+      });
       renderer.load({ treeInstances, shrubPoints, grid: apron.grid });
       renderer.setDensity('trees', 1);
       renderer.setDensity('shrubs', 1);
@@ -512,6 +541,31 @@
     } catch (err) {
       console.error('surrounding vegetation failed:', err);
       return null;
+    }
+  }
+
+  function setApronShadowFlags(apron, on) {
+    const enabled = Boolean(on);
+    if (apron?.mesh) {
+      apron.mesh.castShadow = enabled;
+      apron.mesh.receiveShadow = enabled;
+    }
+    if (apron?.baseMesh) {
+      apron.baseMesh.castShadow = false;
+      apron.baseMesh.receiveShadow = enabled;
+    }
+  }
+
+  function registerPhotometricSceneExtras(viewer) {
+    const sync = (on) => {
+      setApronShadowFlags(state.apron, on);
+      state.surroundingVegetation?.renderer?.setShadows?.(on);
+      if (on) viewer.invalidateShadowMap?.('photometric-extras');
+    };
+    if (viewer.onPhotometricModeChange) {
+      viewer.onPhotometricModeChange(sync);
+    } else {
+      sync(viewer.photometricMode);
     }
   }
 
@@ -1617,7 +1671,10 @@
       ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(ndc, viewer.camera);
       const hit = raycaster.intersectObject(viewer.terrainMesh, false)[0];
-      if (!hit) return;
+      if (!hit) {
+        if (!firePicking) window.__twin?.astronomy?.pickSky?.(ndc);
+        return;
+      }
       const g = georef.worldToGeo(hit.point.x, hit.point.y, hit.point.z);
       if (firePicking) {
         window.__twin.wildfire.pickIgnition?.(hit, g);

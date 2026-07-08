@@ -54,11 +54,16 @@ mcp = FastMCP(
         "hydrology model (flow, wetness, ponding, springs/seeps, snowmelt and "
         "storm scenarios), an evapotranspiration/water-balance model, a wildfire "
         "fuels/scenario model (fuel model, ROS, crown potential, arrival/flame/"
-        "intensity scenario drapes), and any field-survey uploads. The store is "
-        "read-only; run_scenario, run_fire_scenario, the draw_* tools and the "
+        "intensity scenario drapes), a local astronomy/sky model (sun, moon, "
+        "planets, stars, eclipses, viewer clock and sky highlights), and any "
+        "field-survey uploads. The store is "
+        "read-only; run_scenario, run_fire_scenario, the draw_* tools, the "
         "layer-view tools "
-        "(set_layer_visibility / filter_layer / reset_layer_views) are the only "
-        "writers; run_fire_scenario is a store-WRITING scenario/fire pipeline "
+        "(set_layer_visibility / filter_layer / reset_layer_views), and the "
+        "sky directive tools (set_view_time / highlight_sky / clear_sky_highlights "
+        "/ next_sky_event with demonstrate=true) are the only "
+        "writers; the viewer-directive tools write only data/annotations.json, "
+        "never the store. run_fire_scenario is a store-WRITING scenario/fire pipeline "
         "run, the same run the viewer's Fire pane launches. "
         "Use describe_place for lightweight location/coordinate context; use "
         "describe_twin only when broader inventory counts or run history matter. "
@@ -638,6 +643,76 @@ def reset_layer_views() -> dict:
     polygons and points are left in place (clear those with clear_drawings).
     Call it when switching topics so stale layer state doesn't linger."""
     return _run(_query().reset_layer_views)
+
+
+@mcp.tool()
+def sky_at(time: str | None = None) -> dict:
+    """Return the sky state at the twin site for a UTC time (default now):
+    sun/moon position, moon phase, twilight kind, visible planets, and today's
+    sunrise/sunset/moonrise/moonset. Times are ISO-8601 UTC."""
+    return _run(_query().sky_at, time=time)
+
+
+@mcp.tool()
+def body_position(body: str, time: str | None = None) -> dict:
+    """Return topocentric alt/az, RA/Dec, distance, magnitude/phase where
+    available, constellation, and next rise/set/culmination for a sky body or
+    named star. body accepts sun, moon, planets, and named stars."""
+    return _run(_query().body_position, body, time=time)
+
+
+@mcp.tool()
+def next_sky_event(kind: str, from_time: str | None = None, count: int = 1,
+                   max_span_deg: float = 50.0, horizon_years: float = 100.0,
+                   demonstrate: bool = False) -> dict:
+    """Find upcoming sky events at the twin site. kind: solar_eclipse (next
+    eclipse with ANY coverage here, with local kind and obscuration),
+    total_solar_eclipse (next time THIS site is inside the path of totality —
+    may be decades out; horizon_years bounds the search), lunar_eclipse (with
+    visible_from_site), total_lunar_eclipse, blood_moon (total lunar eclipse
+    the moon is up for at this site), planetary_alignment (the five naked-eye
+    planets within max_span_deg of geocentric ecliptic longitude; result
+    reports which are observable vs lost in the sun's glare), supermoon,
+    full_moon, new_moon, sunrise, sunset, moonrise, moonset, solstice,
+    equinox, or golden_hour. from_time is ISO UTC; count is clamped.
+    demonstrate=true additionally scrubs the live viewer's astronomy clock to
+    the first event (eclipses start ~10 min early at 60x) and highlights the
+    bodies involved — one call to answer the question AND show it on screen
+    (writes data/annotations.json, never the twin store)."""
+    return _run(_query().next_sky_event, kind, from_time=from_time, count=count,
+                max_span_deg=max_span_deg, horizon_years=horizon_years,
+                demonstrate=demonstrate)
+
+
+@mcp.tool()
+def set_view_time(time: str, rate: float = 1.0) -> dict:
+    """Set the viewer's astronomy clock. Use ISO-8601 UTC times; rate is
+    simulated seconds per real second. time='now' clears the directive and
+    returns the viewer to browser realtime."""
+    return _run(_query().set_view_time, time, rate=rate)
+
+
+@mcp.tool()
+def highlight_sky(name: str, label: str | None = None) -> dict:
+    """Highlight a sky target in the live viewer. name resolves to a body,
+    named star, or constellation; label is optional text shown next to it.
+    Presentation-only: writes sky_views in data/annotations.json, never the
+    twin store."""
+    return _run(_query().highlight_sky, name, label=label)
+
+
+@mcp.tool()
+def clear_sky_highlights() -> dict:
+    """Clear all sky highlights from the live viewer. Map drawings and atlas
+    layer-view overrides are left untouched."""
+    return _run(_query().clear_sky_highlights)
+
+
+@mcp.tool()
+def solar_irradiance(time: str | None = None) -> dict:
+    """Return clear-sky GHI/DNI/DHI and sun geometry at the twin site for a UTC
+    time (default now). This does not include clouds or terrain shading."""
+    return _run(_query().solar_irradiance, time=time)
 
 
 if __name__ == "__main__":

@@ -32,6 +32,10 @@
   const POV_FOV = 70;
   const FOG_DENSITY = 0.0016;    // soft near-field falloff
   const SKY_COLOR = 0x9fc6e8;
+
+  function astronomyPhotometricOn() {
+    return Boolean(global.__twin?.astronomy?.photometricOn?.());
+  }
   const BUILDING_PAD = 1.2;      // metres of clearance kept around footprints
   const FOLLOW_POSITION_RESPONSE = 4.5; // camera follow smoothing (1/s)
   const FOLLOW_YAW_RESPONSE = 5.5;      // heading pan smoothing (1/s)
@@ -267,8 +271,10 @@
       }
 
       // higher-quality near-field look
-      this.scene.background = new THREE.Color(SKY_COLOR);
-      this.scene.fog = new THREE.FogExp2(SKY_COLOR, FOG_DENSITY);
+      if (!astronomyPhotometricOn()) {
+        this.scene.background = new THREE.Color(SKY_COLOR);
+        this.scene.fog = new THREE.FogExp2(SKY_COLOR, FOG_DENSITY);
+      }
       camera.fov = POV_FOV;
       camera.near = 0.05;
       camera.updateProjectionMatrix();
@@ -376,8 +382,10 @@
       if (viewer.gridHelper) {
         viewer.gridHelper.visible = false;
       }
-      this.scene.background = new THREE.Color(SKY_COLOR);
-      this.scene.fog = new THREE.FogExp2(SKY_COLOR, FOG_DENSITY);
+      if (!astronomyPhotometricOn()) {
+        this.scene.background = new THREE.Color(SKY_COLOR);
+        this.scene.fog = new THREE.FogExp2(SKY_COLOR, FOG_DENSITY);
+      }
       camera.fov = POV_FOV;
       camera.near = 0.05;
       camera.updateProjectionMatrix();

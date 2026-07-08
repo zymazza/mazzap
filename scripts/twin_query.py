@@ -42,6 +42,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import twin_store  # noqa: E402
+import twin_astro  # noqa: E402
 
 PROJECT = twin_store.PROJECT
 DATA = twin_store.DATA_DIR
@@ -539,8 +540,10 @@ def _utc_now():
 
 def _load_view_doc():
     """The viewer-directive document: drawings the agent placed (`annotations`)
-    and layer-view overrides it set (`layer_views`). One file the viewer polls;
-    both lists are returned so a write to one never drops the other."""
+    layer-view overrides it set (`layer_views`), sky highlights (`sky_views`),
+    and an optional viewer clock directive (`view_time`). One file the viewer
+    polls; callers save the whole dict so a write to one key never drops the
+    others."""
     try:
         with open(ANNOTATIONS_PATH) as fh:
             doc = json.load(fh)
@@ -550,21 +553,35 @@ def _load_view_doc():
         doc = {}
     anns = doc.get("annotations")
     views = doc.get("layer_views")
-    return (anns if isinstance(anns, list) else [],
-            views if isinstance(views, list) else [])
+    sky_views = doc.get("sky_views")
+    view_time = doc.get("view_time")
+    return {
+        "version": 1,
+        "updated_at": doc.get("updated_at") or _utc_now(),
+        "annotations": anns if isinstance(anns, list) else [],
+        "layer_views": views if isinstance(views, list) else [],
+        "sky_views": sky_views if isinstance(sky_views, list) else [],
+        "view_time": view_time if isinstance(view_time, dict) else None,
+    }
 
 
-def _save_view_doc(annotations, layer_views):
-    doc = {"version": 1, "updated_at": _utc_now(),
-           "annotations": annotations, "layer_views": layer_views}
+def _save_view_doc(doc):
+    clean = {
+        "version": 1,
+        "updated_at": _utc_now(),
+        "annotations": doc.get("annotations") if isinstance(doc.get("annotations"), list) else [],
+        "layer_views": doc.get("layer_views") if isinstance(doc.get("layer_views"), list) else [],
+        "sky_views": doc.get("sky_views") if isinstance(doc.get("sky_views"), list) else [],
+        "view_time": doc.get("view_time") if isinstance(doc.get("view_time"), dict) else None,
+    }
     tmp = ANNOTATIONS_PATH + ".tmp"
     with open(tmp, "w") as fh:
-        json.dump(doc, fh, indent=1)
+        json.dump(clean, fh, indent=1)
     os.replace(tmp, ANNOTATIONS_PATH)
 
 
 def _load_annotations():
-    return _load_view_doc()[0]
+    return _load_view_doc()["annotations"]
 
 
 def _next_annotation_id(annotations):
@@ -3760,6 +3777,205 @@ class TwinQuery:
                 out.append(f"In the simulated {tag}: " + "; ".join(parts) + ".")
         return out
 
+    # -- astronomy -----------------------------------------------------------
+
+    def _astronomy_site(self):
+        site = getattr(self, "_cached_astronomy_site", None)
+        if site is None:
+            site = twin_astro.site_from_georef()
+            self._cached_astronomy_site = site
+        return site
+
+    def _astronomy_error(self, error):
+        if isinstance(error, twin_astro.AstronomyNameError):
+            payload = dict(error.payload)
+            message = payload.pop("error", str(error))
+            raise TwinQueryError(message, **payload)
+        raise TwinQueryError(str(error))
+
+    def sky_at(self, time=None):
+        """Sun, moon, visible planets, twilight state, and rise/set events at
+        the twin's observer site for a UTC time (default: now)."""
+        try:
+            return twin_astro.sky_at(time=time, site=self._astronomy_site())
+        except (twin_astro.AstronomyNameError, ValueError) as error:
+            self._astronomy_error(error)
+
+    def body_position(self, body, time=None):
+        """Topocentric position, phase/size where available, constellation,
+        and next rise/set/culmination for a body or named star."""
+        try:
+            return twin_astro.body_position(body, time=time, site=self._astronomy_site())
+        except (twin_astro.AstronomyNameError, ValueError) as error:
+            self._astronomy_error(error)
+
+    def next_sky_event(self, kind, from_time=None, count=1, max_span_deg=50.0,
+                       horizon_years=100.0, demonstrate=False):
+        """Find upcoming sky events at the twin site: eclipses (including the
+        next path-of-totality pass over the site and blood moons visible from
+        here), planetary alignments, supermoons, moon phases, rise/set events,
+        solstices/equinoxes, or golden hour windows. demonstrate=True also
+        scrubs the live viewer's astronomy clock to the first event and
+        highlights the bodies involved (annotations.json only, never the
+        store)."""
+        try:
+            result = twin_astro.next_sky_event(kind, from_time=from_time, count=count,
+                                               site=self._astronomy_site(),
+                                               max_span_deg=max_span_deg,
+                                               horizon_years=horizon_years)
+        except (twin_astro.AstronomyNameError, ValueError) as error:
+            self._astronomy_error(error)
+        if demonstrate:
+            if result.get("events"):
+                result["demonstration"] = self._demonstrate_sky_event(
+                    result["kind"], result["events"][0])
+            else:
+                result["demonstration"] = {"note": "no event found; nothing written to the viewer"}
+        return result
+
+    def _demonstrate_sky_event(self, kind, event):
+        def iso_of(key):
+            block = event.get(key)
+            return block.get("iso") if isinstance(block, dict) else None
+
+        rate = 1.0
+        lead_ms = 0
+        if kind in {"solar_eclipse", "total_solar_eclipse"}:
+            iso = iso_of("total_begin") or iso_of("peak")
+            rate, lead_ms, targets = 60.0, 600_000, ["sun"]
+        elif kind in {"lunar_eclipse", "total_lunar_eclipse", "blood_moon"}:
+            iso = iso_of("total_begin") or iso_of("partial_begin") or iso_of("peak")
+            rate, lead_ms, targets = 60.0, 600_000, ["moon"]
+        elif kind == "planetary_alignment":
+            iso = iso_of("peak")
+            targets = [p["name"] for p in event.get("planets", [])]
+        elif kind in {"full_moon", "new_moon", "supermoon", "moonrise", "moonset"}:
+            iso = iso_of("time")
+            targets = ["moon"]
+        else:
+            iso = iso_of("time") or iso_of("begin")
+            targets = ["sun"]
+        if not iso:
+            return {"note": "first event carries no usable time; nothing written to the viewer"}
+        _, ms, _ = twin_astro.normalize_time(iso)
+        start_iso = twin_astro.iso_from_dt(
+            twin_astro.datetime_from_unix_ms(twin_astro.clamp_unix_ms(ms - lead_ms)))
+        label = kind.replace("_", " ")
+        label = label[:1].upper() + label[1:]
+        highlighted = []
+        for name in targets:
+            try:
+                target = twin_astro.resolve_target(name)
+            except twin_astro.AstronomyNameError:
+                continue
+            self._upsert_sky_view({
+                "target_type": target["target_type"],
+                "name": target.get("name") or target.get("abbr") or str(name),
+                "label": label,
+                "created_at": _utc_now(),
+            })
+            highlighted.append(target.get("name") or str(name))
+        view = self.set_view_time(start_iso, rate=rate)
+        return {
+            "view_time": view.get("view_time"),
+            "highlighted": highlighted,
+            "note": "viewer clock scrubbed to the event and target(s) highlighted; the browser applies it within a few seconds",
+        }
+
+    def solar_irradiance(self, time=None):
+        """Clear-sky GHI/DNI/DHI at the twin site for a UTC time. This is a
+        radiometric data result, not a terrain-shaded solar-siting model."""
+        try:
+            return twin_astro.solar_irradiance(time=time, site=self._astronomy_site())
+        except (twin_astro.AstronomyNameError, ValueError) as error:
+            self._astronomy_error(error)
+
+    def set_view_time(self, time, rate=1.0):
+        """Set the viewer's shared astronomy clock through annotations.json.
+        time='now' clears the directive so the browser returns to realtime."""
+        try:
+            payload = twin_astro.set_view_time_payload(time, rate=rate)
+        except ValueError as error:
+            self._astronomy_error(error)
+        doc = _load_view_doc()
+        if payload is None:
+            doc["view_time"] = None
+            _save_view_doc(doc)
+            return {
+                "view_time": None,
+                "mode": "realtime",
+                "note": "viewer astronomy clock returned to browser realtime",
+                "provenance": twin_astro.provenance(),
+            }
+        payload = {**payload, "created_at": _utc_now()}
+        doc["view_time"] = payload
+        _save_view_doc(doc)
+        return {
+            "view_time": payload,
+            "mode": "manual",
+            "note": "viewer astronomy clock directive written; the browser poll applies it within a few seconds",
+            "provenance": twin_astro.provenance(),
+        }
+
+    def _upsert_sky_view(self, directive):
+        doc = _load_view_doc()
+        views = [
+            v for v in doc["sky_views"]
+            if not (
+                str(v.get("target_type", "")).lower() == directive["target_type"]
+                and str(v.get("name", "")).lower() == directive["name"].lower()
+            )
+        ]
+        views.append(directive)
+        doc["sky_views"] = views
+        _save_view_doc(doc)
+        return views
+
+    def highlight_sky(self, name, label=None):
+        """Highlight one sky target in the live viewer: body, named star, or
+        constellation. The highlight is presentation-only and never touches the
+        twin store."""
+        try:
+            target = twin_astro.resolve_target(name)
+        except twin_astro.AstronomyNameError as error:
+            self._astronomy_error(error)
+        target_type = target["target_type"]
+        resolved_name = target.get("name") or target.get("abbr") or str(name)
+        directive = {
+            "target_type": target_type,
+            "name": resolved_name,
+            "label": _clean_label(label),
+            "created_at": _utc_now(),
+        }
+        views = self._upsert_sky_view(directive)
+        result = {
+            "sky_view": directive,
+            "sky_views_total": len(views),
+            "resolved": {k: v for k, v in target.items() if k not in {"body", "star"}},
+            "note": "sky highlight written; the browser poll applies it within a few seconds",
+            "provenance": twin_astro.provenance(),
+        }
+        if target_type != "constellation":
+            try:
+                result["current_position"] = twin_astro.target_position(
+                    target, time=None, site=self._astronomy_site())
+            except (twin_astro.AstronomyNameError, ValueError) as error:
+                self._astronomy_error(error)
+        return result
+
+    def clear_sky_highlights(self):
+        """Clear only sky highlights; map drawings and layer-view overrides
+        are left untouched."""
+        doc = _load_view_doc()
+        cleared = len(doc["sky_views"])
+        doc["sky_views"] = []
+        _save_view_doc(doc)
+        return {
+            "cleared": cleared,
+            "note": "all sky highlights removed; drawings and layer views left untouched",
+            "provenance": twin_astro.provenance(),
+        }
+
     # -- map drawings (viewer annotations) -----------------------------------
 
     def _within_extent(self, xs, ys):
@@ -3789,12 +4005,13 @@ class TwinQuery:
             raise TwinQueryError("polygon needs at least 3 distinct vertices", got=polygon)
         pts = [(round(x, 2), round(y, 2)) for x, y in pts]
 
-        annotations, views = _load_view_doc()
+        doc = _load_view_doc()
+        annotations = doc["annotations"]
         ann = {"id": _next_annotation_id(annotations), "type": "polygon",
                "label": _clean_label(label), "vertices": [[x, y] for x, y in pts],
                "created_at": _utc_now()}
         annotations.append(ann)
-        _save_view_doc(annotations, views)
+        _save_view_doc(doc)
 
         cx = sum(x for x, _ in pts) / len(pts)
         cy = sum(y for _, y in pts) / len(pts)
@@ -3815,12 +4032,13 @@ class TwinQuery:
     def draw_point(self, point, label=None):
         x, y = resolve_point(point, self.georef)
         x, y = round(x, 2), round(y, 2)
-        annotations, views = _load_view_doc()
+        doc = _load_view_doc()
+        annotations = doc["annotations"]
         ann = {"id": _next_annotation_id(annotations), "type": "point",
                "label": _clean_label(label), "x": x, "y": y,
                "created_at": _utc_now()}
         annotations.append(ann)
-        _save_view_doc(annotations, views)
+        _save_view_doc(doc)
         result = {
             "drawn": {"id": ann["id"], "type": "point", "label": ann["label"],
                       "position": self.georef.echo(x, y)},
@@ -3832,12 +4050,14 @@ class TwinQuery:
         return result
 
     def clear_drawings(self):
-        annotations, views = _load_view_doc()
-        _save_view_doc([], views)
+        doc = _load_view_doc()
+        annotations = doc["annotations"]
+        doc["annotations"] = []
+        _save_view_doc(doc)
         return {"cleared": len(annotations),
                 "note": "all drawings removed from the user's 3D map "
-                        "(layer views left untouched — use reset_layer_views "
-                        "to restore the user's layer toggles)"}
+                        "(layer views and sky highlights left untouched — use "
+                        "reset_layer_views / clear_sky_highlights for those)"}
 
     # -- layer views (atlas map-layer control) -------------------------------
 
@@ -3893,10 +4113,12 @@ class TwinQuery:
         return {"kind": "vector", "field": "__label", "fields": fields}
 
     def _upsert_layer_view(self, directive):
-        annotations, views = _load_view_doc()
+        doc = _load_view_doc()
+        views = doc["layer_views"]
         views = [v for v in views if v.get("layer_id") != directive["layer_id"]]
         views.append(directive)
-        _save_view_doc(annotations, views)
+        doc["layer_views"] = views
+        _save_view_doc(doc)
         return views
 
     def set_layer_visibility(self, layer_id, visible=True):
@@ -3970,8 +4192,10 @@ class TwinQuery:
     def reset_layer_views(self):
         """Drop every agent layer override, returning the user's manual layer
         toggles to control. Leaves drawn polygons/points in place."""
-        annotations, views = _load_view_doc()
-        _save_view_doc(annotations, [])
+        doc = _load_view_doc()
+        views = doc["layer_views"]
+        doc["layer_views"] = []
+        _save_view_doc(doc)
         return {"cleared": len(views),
                 "note": "all agent layer overrides removed; the user's manual "
                         "layer toggles are back in control"}

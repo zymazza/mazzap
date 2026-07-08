@@ -203,6 +203,12 @@
         });
         const placed = placeBuilding(model, entry, viewer.terrainGrid);
         placed.name = entry.id;
+        placed.traverse((child) => {
+          if (child?.isMesh) {
+            child.castShadow = Boolean(viewer.photometricMode);
+            child.receiveShadow = Boolean(viewer.photometricMode);
+          }
+        });
         layerGroup.add(placed);
       } catch (error) {
         console.error(`building model ${entry.id} failed:`, error);

@@ -17,6 +17,17 @@
     sizePaddingMultiplier: 1.08,
     sizeSnapIncrementMeters: 20,
   };
+  const PHOTOMETRIC_CONFIG = {
+    dayExposure: 0.55,
+    nightExposure: 2.6,
+    sunIntensity: 3.2,
+    moonIntensity: 0.12,
+    shadowMapSize: 4096,
+    shadowFallbackMapSize: 2048,
+    shadowSunMoveThresholdDeg: 0.1,
+    shadowCameraMargin: 1.2,
+    lightDistanceMeters: 2000,
+  };
   const LAYER_JOB_TYPE_BY_ID = {
     buildings: 'buildings_fetch',
     hydrology: 'hydrology_fetch',
@@ -39,6 +50,15 @@
       error.name = 'AbortError';
       return error;
     }
+  }
+
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, Number(value) || 0));
+  }
+
+  function smoothstep(edge0, edge1, value) {
+    const t = clamp((value - edge0) / (edge1 - edge0), 0, 1);
+    return t * t * (3 - 2 * t);
   }
 
   function isAbortError(error) {
@@ -167,6 +187,9 @@
       this.sunLight = new THREE.DirectionalLight(0xffffff, 1.15);
       this.sunLight.position.set(180, 240, 220);
       this.scene.add(this.ambientLight, this.sunLight);
+      this.moonLight = new THREE.DirectionalLight(0xbfcfff, 0);
+      this.moonLight.castShadow = false;
+      this.hemiLight = new THREE.HemisphereLight(0xbfd7ff, 0x3a3428, 0);
 
       this.gridHelper = new THREE.GridHelper(
         GRID_HELPER_CONFIG.initialSizeMeters,
@@ -195,7 +218,31 @@
       this.textureLoadPromises = new Map();
       this.activeTerrainMode = 'elevation';
       this.layerVisibility = new Map();
-      this.vegetationRenderer = VEILVegetation.create(this.scene);
+      this.skyPass = null;
+      this.skyBackgroundBeforePass = null;
+      this.photometricMode = false;
+      this.photometricLastState = null;
+      this.photometricLastShadowSunDir = null;
+      this.shadowMapDirty = false;
+      this.photometricModeCallbacks = new Set();
+      this.photometricSnapshot = {
+        ambientColor: this.ambientLight.color.clone(),
+        ambientIntensity: this.ambientLight.intensity,
+        rendererShadowAutoUpdate: this.renderer.shadowMap.autoUpdate,
+        rendererShadowEnabled: this.renderer.shadowMap.enabled,
+        rendererShadowType: this.renderer.shadowMap.type,
+        rendererToneMapping: this.renderer.toneMapping,
+        rendererToneMappingExposure: this.renderer.toneMappingExposure,
+        sunCastShadow: this.sunLight.castShadow,
+        sunColor: this.sunLight.color.clone(),
+        sunIntensity: this.sunLight.intensity,
+        sunPosition: this.sunLight.position.clone(),
+        sunVisible: this.sunLight.visible,
+        sunTargetPosition: this.sunLight.target.position.clone(),
+      };
+      this.vegetationRenderer = VEILVegetation.create(this.scene, {
+        onAssetLoad: () => this.invalidateShadowMap('vegetation-asset'),
+      });
       this.overlayRenderer = VEILOverlays.create(this.scene);
       this.renderStats = {
         aoi: 0,
@@ -373,6 +420,296 @@
       }
     }
 
+    vectorFromDirection(value) {
+      if (value?.isVector3) {
+        return value.clone().normalize();
+      }
+      const vector = new THREE.Vector3(
+        Number(value?.x),
+        Number(value?.y),
+        Number(value?.z)
+      );
+      return Number.isFinite(vector.x) && Number.isFinite(vector.y) && Number.isFinite(vector.z)
+        ? vector.normalize()
+        : null;
+    }
+
+    terrainLightingCenter() {
+      const grid = this.terrainGrid;
+      if (!grid) {
+        return new THREE.Vector3(0, 0, 0);
+      }
+      return new THREE.Vector3(
+        (Number(grid.minX) + Number(grid.maxX)) * 0.5,
+        Math.max(0, (Number(grid.maxElevation) - Number(grid.minElevation)) * 0.5),
+        -((Number(grid.minY) + Number(grid.maxY)) * 0.5)
+      );
+    }
+
+    aimDirectionalLight(light, direction, center = this.terrainLightingCenter()) {
+      if (!light || !direction) {
+        return;
+      }
+      light.position.copy(center).add(
+        direction.clone().multiplyScalar(PHOTOMETRIC_CONFIG.lightDistanceMeters)
+      );
+      light.target.position.copy(center);
+      light.target.updateMatrixWorld();
+    }
+
+    configureSunShadowCamera() {
+      if (!this.terrainGrid || !this.sunLight?.shadow) {
+        return;
+      }
+      const grid = this.terrainGrid;
+      const width = Math.max(1, Number(grid.maxX) - Number(grid.minX));
+      const depth = Math.max(1, Number(grid.maxY) - Number(grid.minY));
+      const elevRange = Math.max(1, Number(grid.maxElevation) - Number(grid.minElevation));
+      const halfSpan = Math.max(width, depth) * PHOTOMETRIC_CONFIG.shadowCameraMargin * 0.5;
+      const camera = this.sunLight.shadow.camera;
+      camera.left = -halfSpan;
+      camera.right = halfSpan;
+      camera.top = halfSpan;
+      camera.bottom = -halfSpan;
+      camera.near = 1;
+      camera.far = Math.max(3000, PHOTOMETRIC_CONFIG.lightDistanceMeters * 2 + elevRange + 400);
+      camera.updateProjectionMatrix();
+
+      const maxTextureSize = this.renderer.capabilities?.maxTextureSize || PHOTOMETRIC_CONFIG.shadowMapSize;
+      const mapSize = maxTextureSize >= PHOTOMETRIC_CONFIG.shadowMapSize
+        ? PHOTOMETRIC_CONFIG.shadowMapSize
+        : Math.min(maxTextureSize, PHOTOMETRIC_CONFIG.shadowFallbackMapSize);
+      this.sunLight.shadow.mapSize.set(mapSize, mapSize);
+      this.sunLight.shadow.bias = -0.0004;
+      this.sunLight.shadow.normalBias = 1.5;
+    }
+
+    setTerrainShadowFlags(on) {
+      const enabled = Boolean(on);
+      if (this.terrainMesh) {
+        this.terrainMesh.castShadow = enabled;
+        this.terrainMesh.receiveShadow = enabled;
+      }
+      if (this.terrainBaseMesh) {
+        this.terrainBaseMesh.castShadow = false;
+        this.terrainBaseMesh.receiveShadow = enabled;
+      }
+      if (this.terrainDrapeOverlayMesh) {
+        this.terrainDrapeOverlayMesh.castShadow = false;
+        this.terrainDrapeOverlayMesh.receiveShadow = enabled;
+      }
+    }
+
+    createTerrainDrapeMaterial(texture) {
+      const base = {
+        depthWrite: false,
+        map: texture,
+        opacity: 0.85,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
+        transparent: true,
+      };
+      if (this.photometricMode) {
+        return new THREE.MeshStandardMaterial({
+          ...base,
+          metalness: 0,
+          roughness: 1,
+        });
+      }
+      return new THREE.MeshBasicMaterial(base);
+    }
+
+    syncTerrainDrapeMaterialForPhotometricMode() {
+      if (!this.terrainDrapeOverlayMesh?.material?.map) {
+        return;
+      }
+      const oldMaterial = this.terrainDrapeOverlayMesh.material;
+      this.terrainDrapeOverlayMesh.material = this.createTerrainDrapeMaterial(oldMaterial.map);
+      oldMaterial.dispose();
+      this.setTerrainShadowFlags(this.photometricMode);
+      this.invalidateShadowMap('terrain-drape-material');
+    }
+
+    applyBuildingShadows(on = this.photometricMode) {
+      if (!this.buildingModelsGroup) {
+        return;
+      }
+      const enabled = Boolean(on);
+      this.buildingModelsGroup.traverse((child) => {
+        if (child?.isMesh) {
+          child.castShadow = enabled;
+          child.receiveShadow = enabled;
+        }
+      });
+    }
+
+    invalidateShadowMap(reason = 'scene-change') {
+      if (!this.photometricMode) {
+        return;
+      }
+      this.shadowMapDirty = true;
+      debugLog('viewer-shadow-invalidated', {
+        reason,
+        workspace_id: this.scenePayload?.workspace_id || null,
+      });
+    }
+
+    onPhotometricModeChange(callback) {
+      if (typeof callback !== 'function') {
+        return () => {};
+      }
+      this.photometricModeCallbacks.add(callback);
+      try {
+        callback(this.photometricMode);
+      } catch (err) {
+        console.warn('photometric mode subscriber failed:', err);
+      }
+      return () => this.photometricModeCallbacks.delete(callback);
+    }
+
+    notifyPhotometricModeChange() {
+      this.photometricModeCallbacks.forEach((callback) => {
+        try {
+          callback(this.photometricMode);
+        } catch (err) {
+          console.warn('photometric mode subscriber failed:', err);
+        }
+      });
+    }
+
+    setPhotometricMode(on) {
+      if (this.destroyed) {
+        return;
+      }
+      const enabled = Boolean(on);
+      if (enabled === this.photometricMode) {
+        if (enabled) {
+          this.updatePhotometricSky(this.photometricLastState);
+        }
+        return;
+      }
+
+      this.photometricMode = enabled;
+      if (enabled) {
+        this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        this.renderer.toneMappingExposure = this.photometricSnapshot.rendererToneMappingExposure;
+        this.renderer.shadowMap.enabled = true;
+        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        this.renderer.shadowMap.autoUpdate = false;
+        this.ambientLight.intensity = 0;
+        this.sunLight.castShadow = true;
+        if (!this.sunLight.target.parent) this.scene.add(this.sunLight.target);
+        if (!this.moonLight.parent) this.scene.add(this.moonLight);
+        if (!this.moonLight.target.parent) this.scene.add(this.moonLight.target);
+        if (!this.hemiLight.parent) this.scene.add(this.hemiLight);
+        this.configureSunShadowCamera();
+        this.setTerrainShadowFlags(true);
+        this.vegetationRenderer?.setShadows?.(true);
+        this.applyBuildingShadows(true);
+        this.syncTerrainDrapeMaterialForPhotometricMode();
+        this.updatePhotometricSky(this.photometricLastState);
+        this.invalidateShadowMap('photometric-on');
+        this.notifyPhotometricModeChange();
+        return;
+      }
+
+      this.renderer.toneMapping = this.photometricSnapshot.rendererToneMapping;
+      this.renderer.toneMappingExposure = this.photometricSnapshot.rendererToneMappingExposure;
+      this.renderer.shadowMap.enabled = this.photometricSnapshot.rendererShadowEnabled;
+      this.renderer.shadowMap.type = this.photometricSnapshot.rendererShadowType;
+      this.renderer.shadowMap.autoUpdate = this.photometricSnapshot.rendererShadowAutoUpdate;
+      this.ambientLight.color.copy(this.photometricSnapshot.ambientColor);
+      this.ambientLight.intensity = this.photometricSnapshot.ambientIntensity;
+      this.sunLight.color.copy(this.photometricSnapshot.sunColor);
+      this.sunLight.intensity = this.photometricSnapshot.sunIntensity;
+      this.sunLight.position.copy(this.photometricSnapshot.sunPosition);
+      this.sunLight.visible = this.photometricSnapshot.sunVisible;
+      this.sunLight.castShadow = this.photometricSnapshot.sunCastShadow;
+      this.sunLight.target.position.copy(this.photometricSnapshot.sunTargetPosition);
+      this.sunLight.target.updateMatrixWorld();
+      this.scene.remove(this.sunLight.target);
+      this.scene.remove(this.moonLight);
+      this.scene.remove(this.moonLight.target);
+      this.scene.remove(this.hemiLight);
+      this.moonLight.intensity = 0;
+      this.hemiLight.intensity = 0;
+      this.photometricLastShadowSunDir = null;
+      this.shadowMapDirty = false;
+      this.setTerrainShadowFlags(false);
+      this.vegetationRenderer?.setShadows?.(false);
+      this.applyBuildingShadows(false);
+      this.syncTerrainDrapeMaterialForPhotometricMode();
+      this.notifyPhotometricModeChange();
+    }
+
+    updatePhotometricSky(state) {
+      this.photometricLastState = state || null;
+      if (!this.photometricMode || !state?.sun) {
+        return;
+      }
+
+      const sunDir = this.vectorFromDirection(state.sun.direction);
+      const moonDir = this.vectorFromDirection(state.moon?.direction);
+      if (!sunDir) {
+        return;
+      }
+      const center = this.terrainLightingCenter();
+      const sunAlt = Number(state.sun.altitudeDeg) || 0;
+      const moonAlt = Number(state.moon?.altitudeDeg) || 0;
+      const obscuration = clamp(state.solarObscuration, 0, 1);
+      const sunUp = Math.pow(clamp(Math.sin(THREE.MathUtils.degToRad(sunAlt)), 0, 1), 0.6);
+      const sunlightFactor = Math.max(0, 1 - obscuration);
+      const sunIntensity = PHOTOMETRIC_CONFIG.sunIntensity * sunUp * sunlightFactor;
+      this.aimDirectionalLight(this.sunLight, sunDir, center);
+      this.sunLight.intensity = sunIntensity;
+      this.sunLight.visible = sunIntensity > 0.0001;
+      const sunriseColor = new THREE.Color(0xff9955).lerp(
+        new THREE.Color(0xffd9b0),
+        smoothstep(-4, 2, sunAlt)
+      );
+      this.sunLight.color.copy(sunriseColor.lerp(new THREE.Color(0xffffff), smoothstep(2, 16, sunAlt)));
+
+      if (moonDir) {
+        const moonUp = clamp(Math.sin(THREE.MathUtils.degToRad(moonAlt)), 0, 1);
+        const phase = clamp(state.moon?.illuminatedFraction ?? 0, 0, 1);
+        this.aimDirectionalLight(this.moonLight, moonDir, center);
+        this.moonLight.color.set(0xbfcfff);
+        this.moonLight.intensity = PHOTOMETRIC_CONFIG.moonIntensity * phase * moonUp;
+      } else {
+        this.moonLight.intensity = 0;
+      }
+
+      const eclipseDim = 1 - 0.82 * obscuration;
+      const hemiT = smoothstep(-12, 10, sunAlt);
+      this.hemiLight.color.set(0xbfd7ff).lerp(new THREE.Color(0xffe0bd), 1 - smoothstep(0, 12, sunAlt));
+      this.hemiLight.groundColor.set(0x3a3428);
+      this.hemiLight.intensity = THREE.MathUtils.lerp(0.02, 0.55, hemiT) * eclipseDim;
+
+      const baseExposure = THREE.MathUtils.lerp(
+        PHOTOMETRIC_CONFIG.nightExposure,
+        PHOTOMETRIC_CONFIG.dayExposure,
+        smoothstep(-12, 8, sunAlt)
+      );
+      const eclipseBoost = Math.min(3, 1 / (0.15 + 0.85 * Math.pow(1 - obscuration, 3)));
+      this.renderer.toneMappingExposure = baseExposure * eclipseBoost;
+
+      if (!this.photometricLastShadowSunDir) {
+        this.photometricLastShadowSunDir = sunDir.clone();
+        this.invalidateShadowMap('sun-initial');
+      } else {
+        const movedDeg = THREE.MathUtils.radToDeg(Math.acos(clamp(
+          this.photometricLastShadowSunDir.dot(sunDir),
+          -1,
+          1
+        )));
+        if (movedDeg >= PHOTOMETRIC_CONFIG.shadowSunMoveThresholdDeg) {
+          this.photometricLastShadowSunDir.copy(sunDir);
+          this.invalidateShadowMap('sun-moved');
+        }
+      }
+    }
+
     async loadTerrainTexture(textureUrl) {
       if (this.destroyed) {
         return null;
@@ -468,6 +805,8 @@
         shrubPoints: this.vegetationData.shrubPoints,
         treeInstances: this.vegetationData.treeInstances,
       });
+      this.vegetationRenderer.setShadows?.(this.photometricMode);
+      this.invalidateShadowMap('vegetation-render');
       Object.assign(this.renderStats, this.vegetationRenderer.getRenderStats());
       debugLog('viewer-vegetation-rerender', {
         loaded_shrub_count: getVegetationItemCount(this.vegetationData.shrubPoints),
@@ -546,6 +885,9 @@
         this.scene.add(this.terrainBaseMesh);
       }
       this.scene.add(this.terrainMesh);
+      this.configureSunShadowCamera();
+      this.setTerrainShadowFlags(this.photometricMode);
+      this.invalidateShadowMap('terrain-ready');
       debugLog('viewer-terrain-ready', {
         grid_height: grid.height,
         grid_width: grid.width,
@@ -804,6 +1146,8 @@
         this.disposeTerrainDrapeOverlay();
         this.disposeActiveTerrainMaterial();
         this.terrainMesh.material = this.elevationMaterial;
+        this.setTerrainShadowFlags(this.photometricMode);
+        this.invalidateShadowMap('terrain-mode');
         this.activeTerrainMode = mode;
         return true;
       }
@@ -838,18 +1182,14 @@
           roughness: 0.9,
         });
 
-        const drapeMaterial = new THREE.MeshBasicMaterial({
-          depthWrite: false,
-          map: orthoTexture,
-          opacity: 0.85,
-          polygonOffset: true,
-          polygonOffsetFactor: -1,
-          polygonOffsetUnits: -1,
-          transparent: true,
-        });
+        const drapeMaterial = this.createTerrainDrapeMaterial(orthoTexture);
         this.terrainDrapeOverlayMesh = new THREE.Mesh(this.terrainMesh.geometry, drapeMaterial);
         this.terrainDrapeOverlayMesh.renderOrder = (this.terrainMesh.renderOrder || 0) + 1;
+        this.terrainDrapeOverlayMesh.castShadow = false;
+        this.terrainDrapeOverlayMesh.receiveShadow = this.photometricMode;
         this.scene.add(this.terrainDrapeOverlayMesh);
+        this.setTerrainShadowFlags(this.photometricMode);
+        this.invalidateShadowMap('terrain-mode');
         this.activeTerrainMode = mode;
         return true;
       }
@@ -866,6 +1206,8 @@
         metalness: 0.06,
         roughness: 0.9,
       });
+      this.setTerrainShadowFlags(this.photometricMode);
+      this.invalidateShadowMap('terrain-mode');
       this.activeTerrainMode = mode;
       return true;
     }
@@ -992,6 +1334,7 @@
         return;
       }
       this.vegetationRenderer.setDensity(kind, density);
+      this.invalidateShadowMap('vegetation-density');
     }
 
     isLayerVisible(layerId) {
@@ -1030,6 +1373,38 @@
       this.renderer.setSize(width, height, false);
     }
 
+    setSkyPass(passOrNull) {
+      if (this.destroyed) {
+        return;
+      }
+      const next = passOrNull || null;
+      if (next && !this.skyPass) {
+        this.skyBackgroundBeforePass = this.scene.background;
+        this.scene.background = null;
+      } else if (!next && this.skyPass) {
+        this.scene.background = this.skyBackgroundBeforePass;
+        this.skyBackgroundBeforePass = null;
+      }
+      this.skyPass = next;
+    }
+
+    renderFrame() {
+      if (this.photometricMode && this.shadowMapDirty) {
+        this.renderer.shadowMap.needsUpdate = true;
+        this.shadowMapDirty = false;
+      }
+      if (this.skyPass) {
+        const previousAutoClear = this.renderer.autoClear;
+        this.renderer.autoClear = false;
+        this.renderer.clear();
+        this.skyPass.render(this.renderer, this.camera);
+        this.renderer.render(this.scene, this.camera);
+        this.renderer.autoClear = previousAutoClear;
+        return;
+      }
+      this.renderer.render(this.scene, this.camera);
+    }
+
     animate() {
       if (this.destroyed) {
         this.animationFrame = null;
@@ -1045,14 +1420,14 @@
         this.povController.update(deltaSeconds);
         this.overlayRenderer.tick(deltaSeconds);
         this.runFrameCallbacks(deltaSeconds);
-        this.renderer.render(this.scene, this.camera);
+        this.renderFrame();
         return;
       }
       VEILCamera.applyKeyboardPan(this.camera, this.controls, this.keyboardPanState, deltaSeconds);
       this.overlayRenderer.tick(deltaSeconds);
       this.runFrameCallbacks(deltaSeconds);
       this.controls.update();
-      this.renderer.render(this.scene, this.camera);
+      this.renderFrame();
     }
 
     onFrame(fn) {

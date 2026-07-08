@@ -21,12 +21,19 @@ const GL = ['--use-gl=angle','--use-angle=gl-egl','--no-sandbox','--disable-gpu-
   try { await page.waitForSelector('#loading.hidden', { state: 'attached', timeout: 60000 }); }
   catch { console.log('WARN: scene did not finish loading'); }
   await page.waitForTimeout(1500);
+  await page.evaluate((astroTime) => {
+    const api = window.__twin?.astronomy;
+    if (api?.clock?.setManual) {
+      api.clock.setManual(Date.parse(astroTime), { rate: 0, playing: false });
+    }
+  }, process.env.ASTRO_TIME || '2026-06-21T16:00:00Z');
+  await page.waitForTimeout(100);
 
   if (toggleOnly) {
     // comma list of labels to keep on; everything else (scene + atlas + survey) goes off
     await page.evaluate((keepCsv) => {
       const keeps = keepCsv.toLowerCase().split(',').map((s) => s.trim()).filter(Boolean);
-      document.querySelectorAll('#layer-toggles .toggle-row, #atlas-toggles .toggle-row, #survey-toggles .toggle-row')
+      document.querySelectorAll('#layer-toggles .toggle-row, #atlas-toggles .toggle-row, #survey-toggles .toggle-row, #astro-toggles .toggle-row')
         .forEach((row) => {
           const cb = row.querySelector('input');
           const label = row.textContent.trim().toLowerCase();

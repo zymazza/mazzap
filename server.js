@@ -4471,7 +4471,7 @@ function clearAnnotations(res, dataDir = DATA_DIR) {
   try {
     fs.writeFileSync(annPath, JSON.stringify({
       version: 1, updated_at: new Date().toISOString(),
-      annotations: [], layer_views: [],
+      annotations: [], layer_views: [], sky_views: [], view_time: null,
     }, null, 1));
     send(res, 200, JSON.stringify({ ok: true }), { 'Content-Type': 'application/json' });
   } catch (err) {
@@ -4739,7 +4739,15 @@ const server = http.createServer((req, res) => {
     const ext = path.extname(filePath).toLowerCase();
     const type = MIME[ext] || 'application/octet-stream';
     res.writeHead(200, { 'Content-Type': type, 'Content-Length': stat.size, 'Cache-Control': 'no-cache' });
-    fs.createReadStream(filePath).pipe(res);
+    const stream = fs.createReadStream(filePath);
+    stream.on('error', (streamErr) => {
+      if (!res.headersSent) {
+        send(res, 500, `Failed to read ${pathname}: ${streamErr.message}`);
+        return;
+      }
+      res.destroy(streamErr);
+    });
+    stream.pipe(res);
   });
 });
 

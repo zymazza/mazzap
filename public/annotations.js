@@ -9,6 +9,7 @@
   'use strict';
 
   const POLL_MS = 4000;
+  const FETCH_TIMEOUT_MS = 3500;
   const ORANGE = 0xff8c1a;
 
   function annotationContentSignature(text) {
@@ -46,6 +47,28 @@
       })();
       return active;
     };
+  }
+
+  async function fetchAnnotationDoc() {
+    const url = `/data/annotations.json?v=${Date.now().toString(36)}`;
+    const text = await new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', url, true);
+      xhr.timeout = FETCH_TIMEOUT_MS;
+      xhr.setRequestHeader('Cache-Control', 'no-cache');
+      xhr.onload = () => resolve(xhr.status >= 200 && xhr.status < 300 ? xhr.responseText : null);
+      xhr.onerror = () => resolve(null);
+      xhr.ontimeout = () => resolve(null);
+      xhr.send();
+    });
+    if (!text) {
+      return null;
+    }
+    try {
+      return { doc: JSON.parse(text), text };
+    } catch (_err) {
+        return null;
+    }
   }
 
   function createPollingLifecycle({
@@ -221,16 +244,18 @@
     async function refreshImpl(initial) {
       let annotations = [];
       let layerViews = [];
+      let skyViews = null;
+      let viewTime;
       let stamp = 'absent';
       try {
-        const res = await fetch('/data/annotations.json', { cache: 'no-store' });
-        if (res.ok) {
-          const text = await res.text();
-          const doc = JSON.parse(text);
-          stamp = annotationContentSignature(text);
-          annotations = doc.annotations || [];
-          layerViews = doc.layer_views || [];
-        }
+        const fetched = await fetchAnnotationDoc();
+        if (!fetched) return;
+        const { doc, text } = fetched;
+        stamp = annotationContentSignature(text);
+        annotations = doc.annotations || [];
+        layerViews = doc.layer_views || [];
+        skyViews = Array.isArray(doc.sky_views) ? doc.sky_views : null;
+        viewTime = Object.prototype.hasOwnProperty.call(doc, 'view_time') ? doc.view_time : undefined;
       } catch (_err) { /* unreadable = unchanged; keep what's shown */ return; }
       if (stamp === state.stamp) return;
       state.stamp = stamp;
@@ -241,7 +266,10 @@
       // layer_views persisted from a prior session are ignored so the app
       // always opens with atlas layers at their hidden default. Only live
       // changes during this session drive the drape.
-      if (!initial) global.__twin?.applyLayerViews?.(layerViews);
+      if (!initial) {
+        global.__twin?.applyLayerViews?.(layerViews);
+        global.__twin?.astronomy?.applySkyDirectives?.(skyViews, viewTime);
+      }
     }
     const refresh = createCoalescedAsyncGate(refreshImpl);
 
@@ -261,7 +289,7 @@
     async function clearOnOpen() {
       try {
         const res = await fetch('/api/annotations/clear', { method: 'POST' });
-        if (res.ok) { await refresh(); return; }
+        if (res.ok) { await refreshImpl(true); return; }
       } catch (_err) { /* server gone — show whatever's on disk */ }
       refresh(true);
     }

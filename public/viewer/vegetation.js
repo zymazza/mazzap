@@ -469,13 +469,15 @@
   }
 
   class VegetationRenderer {
-    constructor(scene) {
+    constructor(scene, options = {}) {
       this.scene = scene;
+      this.onAssetLoad = typeof options.onAssetLoad === 'function' ? options.onAssetLoad : () => {};
       this.group = new THREE.Group();
       this.scene.add(this.group);
       this.disposed = false;
       this.renderFrameId = null;
       this.renderQueued = false;
+      this.pendingAssetInvalidation = false;
       this.grid = null;
       this.data = {
         shrubs: EMPTY_SHRUB_DATA,
@@ -497,6 +499,7 @@
         shrubs: 0,
         trees: 0,
       };
+      this.shadowsEnabled = false;
       // Fire-reveal state driven by app.js applyFireTint(); appliedKey lets a
       // re-render skip retinting when the reveal time/grid have not changed.
       this.fireTint = {
@@ -628,6 +631,7 @@
         }));
         state.loaded = true;
         state.error = null;
+        this.pendingAssetInvalidation = true;
         this.requestRender();
       } catch (err) {
         state.error = err;
@@ -725,6 +729,29 @@
       this.group.visible = Boolean(visible);
     }
 
+    applyMeshShadowFlags(mesh) {
+      if (!mesh) {
+        return;
+      }
+      mesh.castShadow = this.shadowsEnabled;
+      mesh.receiveShadow = this.shadowsEnabled;
+    }
+
+    setShadows(on) {
+      if (this.disposed) {
+        return;
+      }
+      this.shadowsEnabled = Boolean(on);
+      Object.values(this.treeMeshState).forEach((state) => {
+        this.applyMeshShadowFlags(state.trunkMesh);
+        this.applyMeshShadowFlags(state.canopyMesh);
+      });
+      this.treeAssetStates.forEach((state) => {
+        state.parts.forEach((part) => this.applyMeshShadowFlags(part.mesh));
+      });
+      this.applyMeshShadowFlags(this.shrubMeshState.mesh);
+    }
+
     setAvoidance(avoidance, options = {}) {
       this.avoidance = {
         buildingLines: [],
@@ -745,6 +772,7 @@
       }
       this.renderQueued = false;
       this.render();
+      this.flushAssetLoadInvalidation();
     }
 
     requestRender() {
@@ -759,7 +787,16 @@
         this.renderFrameId = null;
         this.renderQueued = false;
         this.render();
+        this.flushAssetLoadInvalidation();
       });
+    }
+
+    flushAssetLoadInvalidation() {
+      if (!this.pendingAssetInvalidation || this.disposed) {
+        return;
+      }
+      this.pendingAssetInvalidation = false;
+      this.onAssetLoad();
     }
 
     // ---- fire-reveal tinting -------------------------------------------
@@ -938,10 +975,8 @@
       state.canopyMesh = new THREE.InstancedMesh(state.canopyGeometry, state.canopyMaterial, capacity);
       state.trunkMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       state.canopyMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      state.trunkMesh.castShadow = false;
-      state.canopyMesh.castShadow = false;
-      state.trunkMesh.receiveShadow = false;
-      state.canopyMesh.receiveShadow = false;
+      this.applyMeshShadowFlags(state.trunkMesh);
+      this.applyMeshShadowFlags(state.canopyMesh);
       state.trunkMesh.count = 0;
       state.canopyMesh.count = 0;
       this.group.add(state.trunkMesh, state.canopyMesh);
@@ -971,8 +1006,7 @@
       state.parts.forEach((part) => {
         part.mesh = new THREE.InstancedMesh(part.geometry, part.material, capacity);
         part.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-        part.mesh.castShadow = false;
-        part.mesh.receiveShadow = false;
+        this.applyMeshShadowFlags(part.mesh);
         part.mesh.count = 0;
         this.group.add(part.mesh);
       });
@@ -995,8 +1029,7 @@
         capacity
       );
       this.shrubMeshState.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      this.shrubMeshState.mesh.castShadow = false;
-      this.shrubMeshState.mesh.receiveShadow = false;
+      this.applyMeshShadowFlags(this.shrubMeshState.mesh);
       this.shrubMeshState.mesh.count = 0;
       this.group.add(this.shrubMeshState.mesh);
       this.shrubMeshState.capacity = capacity;
@@ -1412,8 +1445,8 @@
   }
 
   global.VEILVegetation = {
-    create(scene) {
-      return new VegetationRenderer(scene);
+    create(scene, options) {
+      return new VegetationRenderer(scene, options);
     },
   };
 })(window);

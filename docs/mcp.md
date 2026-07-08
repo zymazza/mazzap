@@ -1,15 +1,17 @@
 # MCP server over the twin store
 
-`scripts/mcp_server.py` exposes the twin store (`data/twin.gpkg`) and the live
-telemetry side store (`data/live/telemetry.sqlite`) to LLM agents over MCP
-(stdio). The durable twin store is **read-only** except for explicit scenario,
-live-export, drawing, and layer-view tools.
+`scripts/mcp_server.py` exposes the twin store (`data/twin.gpkg`), the live
+telemetry side store (`data/live/telemetry.sqlite`), and the local astronomy
+engine to LLM agents over MCP (stdio). The durable twin store is **read-only**
+except for explicit scenario, live-export, drawing, and layer-view tools.
 The one viewer-facing writable surface is the map-drawing trio
 (`draw_polygon` / `draw_point` / `clear_drawings`) plus the layer-view trio
-(`set_layer_visibility` / `filter_layer` / `reset_layer_views`), which
+(`set_layer_visibility` / `filter_layer` / `reset_layer_views`) plus the
+sky-view tools (`set_view_time` / `highlight_sky` / `clear_sky_highlights`),
+which
 together maintain `data/annotations.json` — ephemeral orange shapes and
-atlas-layer overrides the 3D viewer polls and applies so an agent can point
-at places (and reveal the exact map layer/region) instead of reciting
+atlas-layer/sky directives the 3D viewer polls and applies so an agent can point
+at places, reveal the exact map layer/region, or scrub/highlight the sky instead of reciting
 coordinates (see "Drawing on the map" below). All logic lives in
 `scripts/twin_query.py` (tested by
 `scripts/twin_query_test.py` against the real store); the MCP layer is thin
@@ -104,6 +106,13 @@ python3 scripts/twin_query_test.py
 | `set_layer_visibility(layer_id, visible?)` | Show/hide one atlas map layer on the user's terrain |
 | `filter_layer(layer_id, values, field?)` | Reveal ONLY the selected regions of a layer (turns it on) |
 | `reset_layer_views()` | Drop every agent layer override (user toggles back in control) |
+| `sky_at(time?)` | Sun/moon, twilight, visible planets, and rise/set events at the twin site |
+| `body_position(body, time?)` | Alt/az, RA/Dec, magnitude/phase/size, constellation, and next rise/set for a body or named star |
+| `next_sky_event(kind, from_time?, count?)` | Solar/lunar eclipses, moon phases, rise/set, solstice/equinox, golden hour |
+| `set_view_time(time, rate?)` | Scrub the viewer astronomy clock; `time="now"` returns it to realtime |
+| `highlight_sky(name, label?)` | Highlight a body, named star, or constellation in the live sky |
+| `clear_sky_highlights()` | Remove sky highlights only |
+| `solar_irradiance(time?)` | Bird-Hulstrom clear-sky GHI/DNI/DHI and sun geometry |
 
 ## Drawing on the map
 
@@ -158,6 +167,21 @@ user's own manual toggles win, and a manual toggle reclaims a layer from the
 agent. `reset_layer_views` drops every override (the **Clear drawings**
 button leaves layer views untouched — they have their own reset). Layer
 control, like drawings, never touches the store or the journal.
+
+## Astronomy
+
+Astronomy tools use the local `astronomy-engine` wrapper in
+`scripts/twin_astro.py`, with the observer taken from the twin georef. Results
+echo UTC ISO time and `unix_ms` and include provenance noting the engine version
+and the local JPL Horizons validation fixture.
+
+Use `sky_at`, `body_position`, `next_sky_event`, and `solar_irradiance` for
+facts. Use `set_view_time` and `highlight_sky` only when the answer should move
+the live viewer: they write `view_time` and `sky_views` in
+`data/annotations.json`, which `public/annotations.js` edge-triggers into the
+Astronomy pane. User clock edits and layer toggles win until the next directive
+change. `set_view_time("now")` clears the directive and returns the viewer to
+browser realtime; `clear_sky_highlights` clears only sky highlights.
 
 ## Live telemetry
 
@@ -305,8 +329,10 @@ The store stays read-only except for two deliberate writers: `run_scenario`
 (a `scenario` pipeline run + the scenario drape layers, exactly what the
 viewer's Simulation window writes) and the viewer-directive tools — the
 `draw_*` tools and the layer-view tools (`set_layer_visibility` /
-`filter_layer` / `reset_layer_views`) — which touch only `annotations.json`,
-never the store. No sensors/actuators, no HTTP
+`filter_layer` / `reset_layer_views`) plus astronomy viewer directives
+(`set_view_time` / `highlight_sky` / `clear_sky_highlights`) — which touch only
+`annotations.json`, never the store. Astronomy fact tools are pure functions of
+site and time; they add no store writers. No sensors/actuators, no HTTP
 transport, no auth — later phases. The MCP server reads `data/twin.gpkg`
 (plus the atlas/hydrology/soils/survey files under `data/`) directly via
 `scripts/twin_store.py`; `run_scenario` shells out to `hydro_scenario.py`

@@ -22,6 +22,7 @@ os.environ.setdefault("TWIN_DATA_DIR",
                       os.path.join(PROJECT, "tests", "fixtures", "mini-twin", "data"))
 sys.path.insert(0, HERE)
 
+import twin_astro  # noqa: E402
 import twin_query  # noqa: E402
 import twin_store  # noqa: E402
 from twin_query import (TwinQuery, TwinQueryError, resolve_region,  # noqa: E402
@@ -233,6 +234,158 @@ check("origin matches georef", d["origin_utm"][:2] == list(twin_georef.origin())
 check("run history present", len(d["pipeline_runs"]) >= 1)
 check("extent corners carry lat/lon",
       "lat" in d["extent_corners"]["southwest"])
+
+print("== astronomy ==")
+astro_site = twin_astro.site_from_georef()
+winter_sky = tq.sky_at("2026-01-15T17:00:00Z")
+check("sky_at returns sun/moon/twilight shape",
+      "sun" in winter_sky and "moon" in winter_sky and winter_sky.get("twilight"))
+polaris = tq.body_position("polaris", "2026-01-01T05:00:00Z")
+check("Polaris altitude tracks site latitude",
+      abs(polaris["altitude_deg"] - astro_site.lat) < 1.0,
+      f"{polaris['altitude_deg']} vs {astro_site.lat}")
+noon_sun = tq.body_position("sun", "2026-06-21T19:00:00Z")
+check("solstice solar-noon sun altitude matches site latitude",
+      abs(noon_sun["altitude_deg"] - (90.0 - astro_site.lat + 23.44)) < 3.0,
+      str(noon_sun["altitude_deg"]))
+
+eclipse = tq.next_sky_event("solar_eclipse", from_time="2024-04-01T00:00:00Z")
+first_eclipse = eclipse["events"][0] if eclipse.get("events") else {}
+check("April 2024 local solar eclipse found with partial coverage here",
+      str(first_eclipse.get("peak", {}).get("iso", "")).startswith("2024-04-08")
+      and 0.2 < first_eclipse.get("obscuration", 0) < 0.95,
+      json.dumps({k: first_eclipse.get(k) for k in ("peak", "obscuration", "local_kind")},
+                 sort_keys=True))
+
+twin_site_dict = {"lat": astro_site.lat, "lon": astro_site.lon, "height_m": astro_site.height_m}
+dallas = {"lat": 32.7767, "lon": -96.797, "height_m": 150.0}
+tse = twin_astro.next_sky_event("total_solar_eclipse", from_time="2024-03-01T00:00:00Z",
+                                site=dallas, horizon_years=1.0)
+check("path of totality found for Dallas 2024-04-08",
+      tse["count"] == 1 and tse["events"][0]["local_kind"] == "total"
+      and tse["events"][0]["peak"]["iso"].startswith("2024-04-08")
+      and tse["events"][0]["total_begin"] is not None)
+tse_here = twin_astro.next_sky_event("total_solar_eclipse", from_time="2024-03-01T00:00:00Z",
+                                     site=twin_site_dict, horizon_years=2.0)
+check("a partial eclipse at the twin site does not count as totality",
+      tse_here["count"] == 0 and "no total_solar_eclipse" in str(tse_here.get("note", "")))
+
+lun = tq.next_sky_event("lunar_eclipse", from_time="2025-03-01T00:00:00Z")
+lun_ev = lun["events"][0]
+check("2025-03-14 total lunar eclipse visible from the twin site",
+      lun_ev["eclipse_kind"] == "total" and lun_ev["peak"]["iso"].startswith("2025-03-14")
+      and lun_ev["visible_from_site"] is True and lun_ev["total_begin"] is not None)
+lun_away = twin_astro.next_sky_event("lunar_eclipse", from_time="2025-08-01T00:00:00Z",
+                                     site=twin_site_dict)
+check("2025-09-07 total lunar eclipse correctly not visible from the twin site",
+      lun_away["events"][0]["peak"]["iso"].startswith("2025-09-07")
+      and lun_away["events"][0]["visible_from_site"] is False)
+blood = twin_astro.next_sky_event("blood_moon", from_time="2025-08-01T00:00:00Z",
+                                  site=twin_site_dict, horizon_years=3.0)
+check("blood moon search skips the eclipse the site cannot see",
+      bool(blood["events"]) and blood["events"][0]["peak"]["iso"].startswith("2026-03-03")
+      and blood["events"][0]["visible_from_site"] is True,
+      json.dumps((blood.get("events") or [{}])[0].get("peak"), sort_keys=True))
+
+align = twin_astro.next_sky_event("planetary_alignment", from_time="2040-08-01T00:00:00Z",
+                                  site=twin_site_dict, max_span_deg=20.0, horizon_years=2.0)
+align_ev = align["events"][0] if align.get("events") else {}
+check("September 2040 five-planet gathering found",
+      str(align_ev.get("peak", {}).get("iso", "")).startswith("2040-09")
+      and align_ev.get("span_deg", 99.0) <= 20.0
+      and len(align_ev.get("planets", [])) == 5,
+      json.dumps(align_ev.get("peak"), sort_keys=True))
+
+supermoon = twin_astro.next_sky_event("supermoon", from_time="2026-01-01T00:00:00Z",
+                                      site=twin_site_dict, horizon_years=2.0)
+check("next supermoon is the 2026-12-24 perigee full moon",
+      bool(supermoon["events"])
+      and supermoon["events"][0]["time"]["iso"].startswith("2026-12-24")
+      and supermoon["events"][0]["time"]["distance_km"] <= twin_astro.SUPERMOON_MAX_DISTANCE_KM,
+      json.dumps((supermoon.get("events") or [{}])[0].get("time"), sort_keys=True))
+
+irr = tq.solar_irradiance("2026-06-21T19:00:00Z")
+check("clear-sky irradiance is physical at solar noon",
+      700.0 < irr["ghi_wm2"] < 1200.0 and irr["dni_wm2"] > irr["dhi_wm2"],
+      json.dumps({k: irr.get(k) for k in ("ghi_wm2", "dni_wm2", "dhi_wm2")}))
+
+print("== sky directives ==")
+astro_ann_backup = open(ANN).read() if os.path.exists(ANN) else None
+try:
+    seeded = {
+        "version": 1,
+        "updated_at": "2000-01-01T00:00:00Z",
+        "annotations": [{"id": "drawing:0001", "type": "point", "x": 1, "y": 2}],
+        "layer_views": [{"layer_id": "dummy", "visible": True}],
+        "sky_views": [],
+        "view_time": None,
+    }
+    with open(ANN, "w") as fh:
+        json.dump(seeded, fh)
+    view_time = tq.set_view_time("9999-01-01T00:00:00Z", rate=1e9)
+    check("set_view_time clamps time and rate",
+          view_time["view_time"]["iso"].startswith("2500-01-01")
+          and view_time["view_time"]["rate"] == twin_astro.MAX_RATE)
+    sky_highlight = tq.highlight_sky("orion", label="winter hunter")
+    check("highlight_sky resolves a constellation",
+          sky_highlight["sky_view"]["target_type"] == "constellation"
+          and sky_highlight["sky_view"]["name"] == "Orion")
+    with open(ANN) as fh:
+        doc = json.load(fh)
+    check("sky directives preserve drawings and layer views",
+          len(doc["annotations"]) == 1 and len(doc["layer_views"]) == 1
+          and doc["view_time"]["iso"].startswith("2500-01-01")
+          and len(doc["sky_views"]) == 1)
+    tq.draw_point({"x": 3, "y": 4}, label="preserve sky")
+    with open(ANN) as fh:
+        doc = json.load(fh)
+    check("drawing writers preserve sky directives",
+          len(doc["annotations"]) == 2 and len(doc["sky_views"]) == 1
+          and doc["view_time"]["iso"].startswith("2500-01-01"))
+    drape_ids = [l["id"] for l in tq._atlas_layers()
+                 if l.get("type") in twin_query.DRAPE_TYPES]
+    if drape_ids:
+        tq.set_layer_visibility(drape_ids[0], visible=False)
+        with open(ANN) as fh:
+            doc = json.load(fh)
+        check("layer writers preserve sky directives",
+              len(doc["sky_views"]) == 1
+              and doc["view_time"]["iso"].startswith("2500-01-01"))
+    else:
+        print("  skip  layer writer sky-preservation check (no drape-able layers)")
+    cleared = tq.clear_sky_highlights()
+    with open(ANN) as fh:
+        doc = json.load(fh)
+    check("clear_sky_highlights empties only sky_views",
+          cleared["cleared"] == 1 and doc["sky_views"] == []
+          and len(doc["annotations"]) == 2 and len(doc["layer_views"]) >= 1)
+    now = tq.set_view_time("now")
+    with open(ANN) as fh:
+        doc = json.load(fh)
+    check("set_view_time now clears to realtime",
+          now["view_time"] is None and doc["view_time"] is None)
+    demo = tq.next_sky_event("solar_eclipse", from_time="2024-04-01T00:00:00Z", demonstrate=True)
+    with open(ANN) as fh:
+        doc = json.load(fh)
+    check("demonstrate scrubs the clock and highlights the sun",
+          str(demo["demonstration"]["view_time"]["iso"]).startswith("2024-04-08")
+          and demo["demonstration"]["view_time"]["rate"] == 60.0
+          and demo["demonstration"]["highlighted"]
+          and doc["view_time"]["iso"].startswith("2024-04-08")
+          and any(str(v.get("name", "")).lower() == "sun"
+                  and v.get("label") == "Solar eclipse" for v in doc["sky_views"]),
+          json.dumps(demo.get("demonstration"), sort_keys=True))
+finally:
+    if astro_ann_backup is None:
+        if os.path.exists(ANN):
+            os.remove(ANN)
+    else:
+        with open(ANN, "w") as fh:
+            fh.write(astro_ann_backup)
+err = expect_error("unknown sky target rejected with suggestions",
+                   tq.body_position, "__not_a_sky_target__")
+check("unknown sky target error carries suggestions",
+      isinstance(err.get("suggestions"), list))
 
 required_full_kinds = {"building_model", "parcel", "stream"}
 available_kinds = set(d["entity_counts"].keys())
