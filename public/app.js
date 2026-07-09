@@ -280,6 +280,17 @@
       ensureData: ensureLayerDataById,
       refresh: refreshSimulationLayers,
     });
+    window.__twin.solar = window.VEILSolar?.create({
+      viewer,
+      scene,
+      catalog: () => state.simulation,
+      isEnabled: (id) => !!state.enabled.get(id),
+      isLoading: (id) => isLayerLoading(id),
+      setEnabled: async (layer, on) => {
+        await setDrapeLayerEnabled(layer, on);
+      },
+      refresh: refreshSimulationLayers,
+    });
     window.__twin.live = state.hosted?.hosted ? null : window.VEILLiveInputs?.create(viewer, scene);
     renderKey();
     loadSpeciesGrids();
@@ -342,13 +353,14 @@
         return [];
       }
     };
-    const [hydro, et, etScenario, viewshed] = await Promise.all([
+    const [hydro, et, etScenario, viewshed, solar] = await Promise.all([
       fetchLayers('/data/hydrology/simulation-layers.json'),
       fetchLayers('/data/et/et-layers.json'),
       fetchLayers('/data/et/et-scenario-layers.json'),
       fetchLayers('/data/viewshed/viewshed-layers.json'),
+      fetchLayers('/data/solar/solar-layers.json'),
     ]);
-    return { layers: [...hydro, ...et, ...etScenario, ...viewshed] };
+    return { layers: [...hydro, ...et, ...etScenario, ...viewshed, ...solar] };
   }
 
   // Called by the Simulation window after a scenario run: refetch the catalog
@@ -1364,10 +1376,11 @@
     }
   }
 
-  function identifyResultsHtml(results, speciesHtml, simHtml, fireHtml, etHtml) {
+  function identifyResultsHtml(results, speciesHtml, simHtml, fireHtml, etHtml, solarHtml) {
     return (simHtml ? `<div class="info-card sim-info-card">${simHtml}</div>` : '') +
       (fireHtml ? `<div class="info-card sim-info-card">${fireHtml}</div>` : '') +
       (etHtml ? `<div class="info-card sim-info-card">${etHtml}</div>` : '') +
+      (solarHtml ? `<div class="info-card sim-info-card">${solarHtml}</div>` : '') +
       results.map((r) => {
         const layerLabel = r.layer?.label || 'Layer';
         const title = r.title || layerLabel;
@@ -1438,6 +1451,7 @@
     const simSamples = []; // simulation layers speak in sentences, not rows
     const fireSamples = [];
     const etSamples = [];
+    const solarSamples = [];
     const hitRadius = Number.isFinite(hitRadiusMeters)
       ? clampNumber(hitRadiusMeters, IDENTIFY_HIT_RADIUS.minMeters, IDENTIFY_HIT_RADIUS.maxMeters)
       : IDENTIFY_HIT_RADIUS.fallbackMeters;
@@ -1463,6 +1477,10 @@
         }
         if (layer.group === 'water_balance' || layer.group === 'et_scenario') {
           etSamples.push({ layer, grid, value: s.value });
+          return;
+        }
+        if (layer.group === 'solar') {
+          solarSamples.push({ layer, grid, value: s.value });
           return;
         }
         const leg = grid.legend && grid.legend[String(s.value)];
@@ -1516,7 +1534,10 @@
     const etHtml = etSamples.length
       ? (window.__twin?.et?.interpretAt?.(x, y, etSamples) || '')
       : '';
-    return { results, speciesHtml, simHtml, fireHtml, etHtml };
+    const solarHtml = solarSamples.length
+      ? (window.__twin?.solar?.interpretAt?.(x, y, solarSamples) || '')
+      : '';
+    return { results, speciesHtml, simHtml, fireHtml, etHtml, solarHtml };
   }
 
   let warnedMissingIdentifyHost = false;
@@ -1530,13 +1551,13 @@
       }
       return;
     }
-    const { results, speciesHtml, simHtml, fireHtml, etHtml } = identify(x, y, hitRadiusMeters);
-    if (!results.length && !speciesHtml && !simHtml && !fireHtml && !etHtml) {
+    const { results, speciesHtml, simHtml, fireHtml, etHtml, solarHtml } = identify(x, y, hitRadiusMeters);
+    if (!results.length && !speciesHtml && !simHtml && !fireHtml && !etHtml && !solarHtml) {
       host.innerHTML = '<p class="readout-hint">No active layer has a feature at that spot.</p>';
       notifyInspect('identify');
       return;
     }
-    host.innerHTML = identifyResultsHtml(results, speciesHtml, simHtml, fireHtml, etHtml);
+    host.innerHTML = identifyResultsHtml(results, speciesHtml, simHtml, fireHtml, etHtml, solarHtml);
     notifyInspect('identify');
   }
 
@@ -1665,6 +1686,20 @@
       marker.position.copy(point);
     }
 
+    function selectTerrainPoint(point, options = {}) {
+      const g = georef.worldToGeo(point.x, point.y, point.z);
+      placeMarker(point);
+      updatePickReadout(readout, g);
+      renderIdentify(point.x, -point.z, identifyHitRadiusMeters(viewer));
+      if (options.selectLive !== false) window.__twin?.live?.selectNear?.(point.x, -point.z);
+      try {
+        document.dispatchEvent(new CustomEvent('veil:map-pick', {
+          detail: { source: options.source || 'map', point: { x: point.x, y: -point.z }, geo: g },
+        }));
+      } catch (_err) { /* pick events are UI-only */ }
+      return g;
+    }
+
     function pick(clientX, clientY) {
       const firePicking = window.__twin?.wildfire?.state?.mode === 'pick';
       if (!firePicking && window.__twin?.live?.pickAtScreen?.(clientX, clientY)) return;
@@ -1682,12 +1717,25 @@
         window.__twin.wildfire.pickIgnition?.(hit, g);
         return;
       }
-      placeMarker(hit.point);
-      updatePickReadout(readout, g);
-
-      renderIdentify(hit.point.x, -hit.point.z, identifyHitRadiusMeters(viewer));
-      window.__twin?.live?.selectNear?.(hit.point.x, -hit.point.z);
+      selectTerrainPoint(hit.point);
     }
+
+    window.__twin.pick = {
+      selectLocal(x, yNorth, options = {}) {
+        const localX = Number(x);
+        const localY = Number(yNorth);
+        if (!Number.isFinite(localX) || !Number.isFinite(localY)) return null;
+        const terrainY = window.VEILTerrain?.sampleTerrainHeightAtLocal
+          ? window.VEILTerrain.sampleTerrainHeightAtLocal(grid, localX, localY)
+          : 0;
+        const point = new THREE.Vector3(localX, terrainY, -localY);
+        return selectTerrainPoint(point, options);
+      },
+      selectWorld(point, options = {}) {
+        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z)) return null;
+        return selectTerrainPoint(point, options);
+      },
+    };
 
     canvas.addEventListener('pointerdown', (e) => { downAt = { x: e.clientX, y: e.clientY }; });
     canvas.addEventListener('pointerup', (e) => {
@@ -1701,6 +1749,10 @@
       if (window.__twin?.chat?.state?.mode) return;
       if (window.__twin?.viewshed?.isPicking?.()) {
         if (moved < 5) window.__twin.viewshed.pickAtScreen?.(e.clientX, e.clientY);
+        return;
+      }
+      if (window.__twin?.solar?.isPicking?.()) {
+        if (moved < 5) window.__twin.solar.pickAtScreen?.(e.clientX, e.clientY);
         return;
       }
       if (window.__twin?.wildfire?.state?.mode === 'pick') {

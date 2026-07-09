@@ -56,7 +56,9 @@ mcp = FastMCP(
         "storm scenarios), an evapotranspiration/water-balance model, a wildfire "
         "fuels/scenario model (fuel model, ROS, crown potential, arrival/flame/"
         "intensity scenario drapes), a local astronomy/sky model (sun, moon, "
-        "planets, stars, eclipses, viewer clock and sky highlights), and any "
+        "planets, stars, eclipses, viewer clock and sky highlights), a solar "
+        "panel siting model (terrain/canopy horizon shading, Daymet cloud "
+        "normals, fixed-panel angle/yield recommendations), and any "
         "field-survey uploads. The store is "
         "read-only; run_scenario, run_fire_scenario, the draw_* tools, the "
         "layer-view tools "
@@ -77,6 +79,8 @@ mcp = FastMCP(
         "For visibility questions use viewshed_from/can_see/horizon_at/best_viewpoints, "
         "or pass region={visible_from:{point,agl_m,surface}} / hidden_from to "
         "find_entities, aggregate_entities, summarize_region, or recommend_sites. "
+        "For solar-panel planning use solar_at, solar_profile, compare_solar_sites, "
+        "or recommend_solar_sites; show recommended sites with demonstrate=true. "
         "For water questions use hydrology_at / hydrology_summary, and run_scenario "
         "for 'what if it …' events. For fire questions use fire_at / fire_summary, "
         "and run_fire_scenario for ignition/weather scenarios; fire scenario layers "
@@ -771,6 +775,51 @@ def solar_irradiance(time: str | None = None, point: dict | None = None,
     available; point optionally uses that observer instead of the precomputed
     AOI horizon."""
     return _run(_query().solar_irradiance, time=time, point=point, surface=surface)
+
+
+@mcp.tool()
+def solar_at(point: dict, tilt_deg: float | None = None,
+             azimuth_deg: float | None = None, system_kw: float = 1.0,
+             surface: str = "canopy", objective: str = "annual_kwh") -> dict:
+    """Plan a fixed solar-panel site at a point. Returns optimized or requested
+    tilt/azimuth, annual/monthly plane-of-array radiation, PV kWh/kWdc, shade
+    loss, vegetation footprint clearance, and Daymet cloud/climate adjustment.
+    Default surface is canopy/as-is; pass bare_earth only for cleared/no-tree
+    scenario planning. Azimuth is true degrees clockwise from north:
+    180=south, 0=north."""
+    return _run(_query().solar_at, point, tilt_deg=tilt_deg, azimuth_deg=azimuth_deg,
+                system_kw=system_kw, surface=surface, objective=objective)
+
+
+@mcp.tool()
+def solar_profile(point: dict, surface: str = "canopy",
+                  system_kw: float = 1.0) -> dict:
+    """Monthly and seasonal solar/PV profile for a proposed panel site,
+    including vegetation footprint clearance."""
+    return _run(_query().solar_profile, point, surface=surface, system_kw=system_kw)
+
+
+@mcp.tool()
+def compare_solar_sites(points: list[dict], surface: str = "canopy",
+                        system_kw: float = 1.0,
+                        objective: str = "annual_kwh") -> dict:
+    """Compare multiple proposed solar-panel sites and rank them by annual or
+    winter solar objective; each site reports vegetation clearance."""
+    return _run(_query().compare_solar_sites, points, surface=surface,
+                system_kw=system_kw, objective=objective)
+
+
+@mcp.tool()
+def recommend_solar_sites(region: dict | None = None, objective: str = "annual_kwh",
+                          count: int = 5, surface: str = "canopy",
+                          system_kw: float = 1.0,
+                          demonstrate: bool = True) -> dict:
+    """Rank ideal fixed-panel solar sites inside a region. Recommended sites
+    exclude vegetation-crown footprint conflicts when an inventory is available.
+    Demonstrate draws orange numbered markers on the live VEIL map."""
+    return _run(_query().recommend_solar_sites, region=region, objective=objective,
+                count=count, surface=surface, system_kw=system_kw,
+                demonstrate=demonstrate)
 
 
 if __name__ == "__main__":

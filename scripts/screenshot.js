@@ -97,6 +97,30 @@ const GL = ['--use-gl=angle','--use-angle=gl-egl','--no-sandbox','--disable-gpu-
     await page.waitForTimeout(300);
   }
 
+  if (mode === 'solar') {
+    await page.click('[data-mode="simulation"]');
+    await page.click('[data-simtab="solar"]');
+    await page.waitForSelector('#solar-pick', { timeout: 10000 });
+    await page.evaluate(() => {
+      const row = [...document.querySelectorAll('#solar-layer-toggles .toggle-row')]
+        .find((el) => /pv yield|panel radiation|solar/i.test(el.textContent || ''));
+      const cb = row?.querySelector('input');
+      if (cb && !cb.checked) {
+        cb.checked = true;
+        cb.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    });
+    await page.waitForTimeout(1000);
+    await page.click('#solar-pick');
+    const box = await page.locator('#viewer-root canvas').boundingBox();
+    await page.mouse.click(box.x + box.width * 0.52, box.y + box.height * 0.58);
+    await page.waitForFunction(() => {
+      const text = document.getElementById('solar-site-results')?.textContent || '';
+      return /Annual PV|failed/i.test(text);
+    }, { timeout: 30000 }).catch(() => {});
+    await page.waitForTimeout(400);
+  }
+
   await page.screenshot({ path: out });
   console.log('shot ->', out);
   if (errs.length) console.log('ERRORS:', errs.slice(0,8));

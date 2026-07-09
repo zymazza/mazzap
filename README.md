@@ -63,9 +63,13 @@ optional **regional pack**, never hardcoded in the engine.
 - **Simulation** — model the processes that move across the land, not just what's
   on it: terrain **hydrology** (flow, wetness, ponding, seeps, and snowmelt/storm
   runoff scenarios), **evapotranspiration & water balance** (FAO-56 reference and
-  actual ET, closing the land's water budget), and **wildfire** behavior
-  scenarios. Each renders as draped, clickable layers in the viewer's Simulation
+  actual ET, closing the land's water budget), **wildfire** behavior scenarios,
+  and **solar siting** (panel radiation, PV yield, shade/cloud losses, and angle
+  recommendations). Each renders as draped, clickable layers in the viewer's Simulation
   window, and is honest about its uncertainty. See ["Simulation"](#simulation).
+- **Solar panel planning** — combine astronomy, viewshed horizons, and Daymet
+  climate normals to rank panel sites, answer proposed-site questions, and
+  visualize annual/winter PV potential. See ["Solar siting"](#solar-siting).
 - **Astronomy** — a local ephemeris-driven sky, lighting model, and time scrubber
   for sun, moon, planets, stars, constellations, eclipses, rise/set, golden hour,
   and terrain-aware solar context. See ["Astronomy"](#astronomy).
@@ -161,6 +165,24 @@ MCP via `et_summary`, `et_at`, and `water_balance`.
 - **Agriculture** — read the modeled crop-coefficient AET and soil-water-stress signal to see when and where the root zone draws down, flagging the seasonal windows most exposed to irrigation deficit.
 - **Ecology** — use the daily AET and antecedent soil-moisture series to characterize drought stress and growing-season water availability across the VEIL's vegetation communities.
 - **Conservation** — combine the closed water balance's runoff and recharge terms with wet/dry antecedent state to compare how land-cover scenarios shift where water leaves versus infiltrates.
+
+### Solar siting
+
+Mazzap plans fixed solar-panel sites inside the Simulation window. It combines
+the local astronomy model, terrain/canopy horizons from viewshed, the VEIL
+vegetation inventory, and Daymet shortwave climate normals when available to
+estimate annual panel radiation, winter panel radiation, PV yield per installed
+kWdc, shade loss, cloud loss, and whether the assumed panel footprint is clear
+of tree/shrub crowns. The Solar sidebar shows the three best as-is
+vegetation-aware sites and the three best bare-earth/cleared-potential sites
+side by side. Pick any point to ask what tilt and azimuth a panel should use
+there, or let G.A.I.A. rank candidate sites and draw them on the live map.
+Honest framing: this is a planning-grade PVWatts-style estimate for strategy and
+comparison, not a bankable production report; validate promising sites with
+NSRDB/PVGIS or measurements before spending money. See
+[docs/solar.md](docs/solar.md).
+
+![Mazzap solar siting simulation: annual PV yield heatmap and a picked panel-site recommendation over the Flatirons demo VEIL](docs/img/solar-flatirons.png)
 
 ## Astronomy
 

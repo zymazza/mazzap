@@ -161,6 +161,9 @@
           <button type="button" role="tab" data-simtab="et" title="Evapotranspiration &amp; water balance">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 13s4 4.3 4 7a4 4 0 01-8 0c0-2.7 4-7 4-7z"/><path d="M7 4v4M12 3v3M17 4v4"/></svg><span>Water &amp; ET</span>
           </button>
+          <button type="button" role="tab" data-simtab="solar" title="Solar panel siting">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9L7 7M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg><span>Solar</span>
+          </button>
           <button type="button" role="tab" data-simtab="viewshed" title="Viewshed &amp; distant terrain">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.8-6.5 10-6.5S22 12 22 12s-3.8 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg><span>Viewshed</span>
           </button>
@@ -341,6 +344,48 @@
         </div>
 
         <p id="et-status" class="sim-status"></p>
+        </div>
+
+        <div class="sim-view" data-simview="solar" id="solar-panel">
+          <div class="group">
+            <p class="group-label">Solar layers</p>
+            <div id="solar-layer-toggles" class="toggle-list">
+              <p class="hint">Run <code>npm run analyze-solar</code> to build solar planning layers.</p>
+            </div>
+          </div>
+
+          <div class="group">
+            <p class="group-label">Site model</p>
+            <div class="sim-field-row">
+              <label>Surface <select id="solar-surface">
+                <option value="canopy" selected>Canopy blockers</option>
+                <option value="bare_earth">Bare ground / cleared</option>
+              </select></label>
+              <label>Objective <select id="solar-objective">
+                <option value="annual_kwh" selected>Annual yield</option>
+                <option value="winter_kwh">Winter yield</option>
+              </select></label>
+            </div>
+            <div class="sim-field-row">
+              <label>System <input id="solar-system-kw" type="number" min="0.05" max="200" step="0.05" value="1" /> kWdc</label>
+              <label>Tilt <input id="solar-tilt" type="number" min="0" max="90" step="1" placeholder="auto" /> deg</label>
+              <label>Azimuth <input id="solar-azimuth" type="number" min="0" max="359" step="1" placeholder="auto" /> deg</label>
+            </div>
+            <button type="button" id="solar-run" class="primary-btn">Analyze solar layers</button>
+            <p id="solar-status" class="sim-status"></p>
+          </div>
+
+          <div class="group">
+            <p class="group-label">Proposed site</p>
+            <button type="button" id="solar-pick" class="wide-btn">Pick panel site</button>
+            <p id="solar-pick-readout" class="readout-hint">none - pick a point on the terrain</p>
+            <div id="solar-site-results" class="sim-results"></div>
+          </div>
+
+          <div class="group" id="solar-summary-group" hidden>
+            <p class="group-label">Best sites</p>
+            <div id="solar-summary" class="sim-results"></div>
+          </div>
         </div>
 
         <div class="sim-view" data-simview="viewshed" id="viewshed-panel">
@@ -610,6 +655,7 @@
   <script src="/simulation.js"></script>
   <script src="/et.js"></script>
   <script src="/wildfire.js"></script>
+  <script src="/solar.js"></script>
   <script src="/live-inputs.js"></script>
   <script src="/layer-upload.js"></script>
   <script src="/viewshed.js"></script>

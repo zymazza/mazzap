@@ -48,6 +48,7 @@ sys.path.insert(0, HERE)
 import twin_store  # noqa: E402
 import twin_astro  # noqa: E402
 import twin_viewshed  # noqa: E402
+import twin_solar  # noqa: E402
 
 PROJECT = twin_store.PROJECT
 DATA = twin_store.DATA_DIR
@@ -81,6 +82,9 @@ ET0_SUMMARY = os.path.join(ET_DIR, "et0-summary.json")
 ET_SUMMARY = os.path.join(ET_DIR, "summary.json")
 ET_SOIL_WATER_DAILY = os.path.join(ET_DIR, "soil_water_daily.csv")
 ET_LAYER_CATALOG = os.path.join(ET_DIR, "et-layers.json")
+SOLAR_DIR = os.path.join(DATA, "solar")
+SOLAR_LAYER_CATALOG = os.path.join(SOLAR_DIR, "solar-layers.json")
+SOLAR_SUMMARY = os.path.join(SOLAR_DIR, "solar-summary.json")
 
 # Pad (degrees) added around the twin's extent to form the geographic window
 # used to auto-detect lon/lat polygon vertices. Scene-local meters never look
@@ -693,7 +697,7 @@ class TwinQuery:
             return twin_viewshed.RingStack.from_local_files(DATA)
         return self._cache("viewshed_stack", build)
 
-    def _viewshed_key(self, x, y, agl, target_agl, refraction, max_km, surface):
+    def _viewshed_key(self, x, y, agl, target_agl, refraction, max_km, surface, n_az=720):
         stack = self._viewshed_stack()
         return (
             "viewshed_sweep",
@@ -702,6 +706,7 @@ class TwinQuery:
             str(refraction or "optical").lower(),
             None if max_km is None else round(float(max_km), 3),
             str(surface or "canopy").lower(),
+            int(n_az),
             stack.manifest_hash,
         )
 
@@ -709,7 +714,7 @@ class TwinQuery:
                                refraction="optical", max_km=None, surface="bare_earth",
                                n_az=720):
         x, y = resolve_point(point, self.georef)
-        key = self._viewshed_key(x, y, agl_m, target_agl_m, refraction, max_km, surface)
+        key = self._viewshed_key(x, y, agl_m, target_agl_m, refraction, max_km, surface, n_az=n_az)
         def build():
             stack = self._viewshed_stack()
             return twin_viewshed.sweep(
@@ -1952,6 +1957,17 @@ class TwinQuery:
         identify_at evidence for reproducibility and field-check planning.
         """
         raw_intent = str(purpose if purpose is not None else objective or "overlook")
+        if re.search(r"\b(solar|pv|panel|photovoltaic|sun|insolation|irradiance)\b", raw_intent, re.I):
+            solar_objective = "winter_kwh" if re.search(r"\bwinter\b", raw_intent, re.I) else "annual_kwh"
+            return self.recommend_solar_sites(
+                region=region,
+                objective=solar_objective,
+                count=count,
+                surface=("bare_earth" if re.search(r"\b(bare|cleared|no[- ]?tree|remove trees?)\b", raw_intent, re.I)
+                         else "canopy"),
+                system_kw=1.0,
+                demonstrate=draw,
+            )
         if preferences:
             raise TwinQueryError(
                 "recommend_sites_preferences_not_implemented",
@@ -4289,6 +4305,253 @@ class TwinQuery:
             result["horizon_adjusted"] = False
             result["terrain"] = terrain
         return result
+
+    # -- solar siting --------------------------------------------------------
+
+    def _solar_site_for_point(self, point):
+        x, y = resolve_point(point, self.georef)
+        elev = self._terrain_elevation(x, y)
+        if elev is None:
+            raise TwinQueryError("solar point is outside available terrain", point=self.georef.echo(x, y))
+        echo = self.georef.echo(x, y)
+        return x, y, twin_solar.SolarSite(float(echo["lat"]), float(echo["lon"]), float(elev))
+
+    def _solar_horizon(self, point, surface="bare_earth", n_az=360):
+        try:
+            _stack, result, _x, _y, _key = self._viewshed_sweep_cached(
+                point, agl_m=1.7, refraction="optical", surface=surface, n_az=n_az)
+            return result["horizon_deg"], {
+                "available": True,
+                "surface": result.get("surface", surface),
+                "source": "observer_point_viewshed",
+                "sky_view_fraction": twin_solar.sky_view_fraction(result["horizon_deg"]),
+                "analyzed_extent_km": result.get("stats", {}).get("analyzed_extent_km"),
+                "manifest_hash": result.get("manifest_hash"),
+            }
+        except Exception as exc:
+            return None, {
+                "available": False,
+                "surface": surface,
+                "source": "none",
+                "message": str(exc),
+            }
+
+    @staticmethod
+    def _solar_default_tilt(site):
+        return max(5.0, min(60.0, abs(float(site.lat))))
+
+    @staticmethod
+    def _solar_default_azimuth(site):
+        return 180.0 if float(site.lat) >= 0.0 else 0.0
+
+    def _solar_store_vegetation_records(self):
+        records = []
+        for kind in ("tree", "shrub"):
+            if kind not in self.kinds():
+                continue
+            latest = self._latest_full(kind)
+            for eid, (x, y) in self._positions(kind).items():
+                attrs = latest.get(eid, {})
+                def attr_value(*names):
+                    for name in names:
+                        if name in attrs:
+                            return twin_store.decode_value(attrs[name][0])
+                    return None
+                height = attr_value("height", "height_m") or 0.0
+                radius = attr_value("radius", "radius_m", "crown_radius", "crown_radius_m")
+                ref = attrs.get("height") or attrs.get("radius")
+                records.append({
+                    "id": eid,
+                    "kind": kind,
+                    "x": x,
+                    "y": y,
+                    "height": height,
+                    "radius": radius,
+                    "type": attr_value("type"),
+                    "species": attr_value("species"),
+                    "source": ref[3] if ref else "twin_store",
+                    "confidence": ref[4] if ref else None,
+                })
+        return records
+
+    def _solar_vegetation_index(self):
+        def build():
+            index = twin_solar.SolarVegetationIndex.from_data_dir(DATA)
+            if index.available:
+                return index
+            return twin_solar.SolarVegetationIndex.from_records(
+                self._solar_store_vegetation_records(),
+                source="twin_store tree/shrub entities",
+            )
+        return self._cache("solar_vegetation_index", build)
+
+    def _solar_vegetation_clearance(self, x, y, system_kw=1.0):
+        return self._solar_vegetation_index().clearance_at(x, y, system_kw=system_kw)
+
+    def solar_at(self, point, tilt_deg=None, azimuth_deg=None, system_kw=1.0,
+                 surface="canopy", objective="annual_kwh"):
+        """Solar resource and fixed-panel PV estimate at a proposed site.
+
+        If both tilt and azimuth are omitted, VEIL optimizes a fixed panel for
+        the objective. If only one is supplied, the missing angle falls back to
+        the local latitude-facing default so users can ask partial questions.
+        """
+        x, y, site = self._solar_site_for_point(point)
+        horizon, horizon_meta = self._solar_horizon({"x": x, "y": y}, surface=surface, n_az=360)
+        if tilt_deg is not None and azimuth_deg is None:
+            azimuth_deg = self._solar_default_azimuth(site)
+        if azimuth_deg is not None and tilt_deg is None:
+            tilt_deg = self._solar_default_tilt(site)
+        try:
+            result = twin_solar.analyze_site(
+                site, data_dir=DATA, horizon_deg=horizon,
+                tilt_deg=None if tilt_deg is None else float(tilt_deg),
+                azimuth_deg=None if azimuth_deg is None else float(azimuth_deg),
+                system_kw=float(system_kw or 0.0),
+                objective=objective or "annual_kwh")
+        except Exception as exc:
+            raise TwinQueryError(str(exc))
+        result["point"] = self.georef.echo(x, y)
+        result["surface"] = surface
+        result["horizon"] = horizon_meta
+        vegetation = self._solar_vegetation_clearance(x, y, system_kw=system_kw)
+        result["vegetation"] = vegetation
+        result["recommendation"] = {
+            "tilt_deg": result["tilt_deg"],
+            "azimuth_deg": result["azimuth_deg"],
+            "azimuth_note": "degrees clockwise from true north; 180 is true south, 0 is true north",
+            "why": ("optimized fixed-panel angle for the requested objective"
+                    if result.get("optimized") else "user-specified fixed-panel angle"),
+            "vegetation": vegetation.get("recommendation"),
+        }
+        return result
+
+    def solar_profile(self, point, surface="canopy", system_kw=1.0):
+        """Monthly/seasonal solar profile at a proposed panel site."""
+        result = self.solar_at(point, system_kw=system_kw, surface=surface)
+        return {
+            "point": result["point"],
+            "surface": result["surface"],
+            "tilt_deg": result["tilt_deg"],
+            "azimuth_deg": result["azimuth_deg"],
+            "annual": result["annual"],
+            "monthly": result["monthly"],
+            "climate": result["climate"],
+            "horizon": result["horizon"],
+            "vegetation": result["vegetation"],
+            "model": result["model"],
+        }
+
+    def compare_solar_sites(self, points, surface="canopy", system_kw=1.0,
+                            objective="annual_kwh"):
+        if not isinstance(points, list) or not points:
+            raise TwinQueryError("compare_solar_sites needs a non-empty points list")
+        rows = []
+        for i, point in enumerate(points[:20], start=1):
+            result = self.solar_at(point, system_kw=system_kw, surface=surface,
+                                   objective=objective)
+            rows.append({
+                "rank_input": i,
+                "point": result["point"],
+                "tilt_deg": result["tilt_deg"],
+                "azimuth_deg": result["azimuth_deg"],
+                "annual": result["annual"],
+                "climate": result["climate"],
+                "horizon": result["horizon"],
+                "vegetation": result["vegetation"],
+            })
+        metric = "winter_poa_kwh_m2" if "winter" in str(objective).lower() else "pv_kwh_per_kwdc"
+        rows.sort(key=lambda r: (-(r["annual"].get(metric) or 0.0), r["rank_input"]))
+        for rank, row in enumerate(rows, start=1):
+            row["rank"] = rank
+        return {"objective": objective, "surface": surface, "sites": rows}
+
+    def recommend_solar_sites(self, region=None, objective="annual_kwh", count=5,
+                              surface="canopy", system_kw=1.0, demonstrate=True):
+        reg = self._resolve_region(region or {"aoi": True})
+        if reg is None:
+            raise TwinQueryError("recommend_solar_sites needs a region")
+        count = max(1, min(10, int(count or 5)))
+        pts, spacing = self._regular_lattice_points(reg, target=max(40, count * 24))
+        prelim = []
+        vegetation_excluded = 0
+        vegetation_unknown = 0
+        for x, y in pts:
+            elev = self._terrain_elevation(x, y)
+            if elev is None:
+                continue
+            vegetation = self._solar_vegetation_clearance(x, y, system_kw=system_kw)
+            if vegetation.get("installable") is False:
+                vegetation_excluded += 1
+                continue
+            if vegetation.get("installable") is None:
+                vegetation_unknown += 1
+            echo = self.georef.echo(x, y)
+            site = twin_solar.SolarSite(float(echo["lat"]), float(echo["lon"]), float(elev))
+            horizon, horizon_meta = self._solar_horizon({"x": x, "y": y}, surface=surface, n_az=180)
+            fixed = twin_solar.analyze_site(
+                site, data_dir=DATA, horizon_deg=horizon,
+                tilt_deg=self._solar_default_tilt(site),
+                azimuth_deg=self._solar_default_azimuth(site),
+                system_kw=float(system_kw or 0.0),
+                objective=objective or "annual_kwh")
+            metric = "winter_poa_kwh_m2" if "winter" in str(objective).lower() else "pv_kwh_per_kwdc"
+            prelim.append({
+                "x": x, "y": y, "site": site, "horizon": horizon,
+                "horizon_meta": horizon_meta,
+                "vegetation": vegetation,
+                "score": float(fixed["annual"].get(metric) or 0.0),
+            })
+        prelim.sort(key=lambda r: (-r["score"], r["x"], r["y"]))
+        selected = []
+        min_sep = max(10.0, spacing * 0.8)
+        for row in prelim:
+            if any(math.hypot(row["x"] - s["x"], row["y"] - s["y"]) < min_sep for s in selected):
+                continue
+            selected.append(row)
+            if len(selected) >= count:
+                break
+        sites = []
+        for rank, row in enumerate(selected, start=1):
+            result = twin_solar.analyze_site(
+                row["site"], data_dir=DATA, horizon_deg=row["horizon"],
+                system_kw=float(system_kw or 0.0), objective=objective or "annual_kwh")
+            rec = {
+                "rank": rank,
+                "point": self.georef.echo(row["x"], row["y"]),
+                "tilt_deg": result["tilt_deg"],
+                "azimuth_deg": result["azimuth_deg"],
+                "annual": result["annual"],
+                "climate": result["climate"],
+                "horizon": row["horizon_meta"],
+                "vegetation": row["vegetation"],
+            }
+            if demonstrate:
+                rec["drawn"] = self.draw_point({"x": row["x"], "y": row["y"]},
+                                               label=f"Solar #{rank}").get("drawn")
+            sites.append(rec)
+        return {
+            "objective": objective,
+            "surface": surface,
+            "system_kw": float(system_kw or 0.0),
+            "region": reg.describe(),
+            "candidate_spacing_m": round(spacing, 3),
+            "vegetation_policy": {
+                "source": self._solar_vegetation_index().source,
+                "available": self._solar_vegetation_index().available,
+                "tree_count": len(self._solar_vegetation_index().records),
+                "excluded_candidates": vegetation_excluded,
+                "unknown_candidates": vegetation_unknown,
+                "best_sites_require_installable_footprint": self._solar_vegetation_index().available,
+                "clearance_radius_m": twin_solar.required_vegetation_clearance_radius_m(system_kw),
+            },
+            "recommended_sites": sites,
+            "notes": [
+                "PV yield is planning-grade, fixed-panel, PVWatts-style; not a bankable production guarantee.",
+                "Recommended sites exclude vegetation-crown footprint conflicts when a vegetation inventory is available.",
+                "Use surface='bare_earth' only for cleared/no-tree scenario planning; default canopy is the as-is conservative mode.",
+            ],
+        }
 
     def set_view_time(self, time, rate=1.0):
         """Set the viewer's shared astronomy clock through annotations.json.

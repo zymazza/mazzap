@@ -486,7 +486,7 @@ body.chat-open .inspector { right: calc(28px + var(--chat-w)); }
 .sim-results { margin-top: 4px; }
 .sim-results .info-row { font-size: 12px; }
 .sim-note { margin-top: 6px; font-size: 11px; }
-#sim-hydro-toggles code, #et-layer-toggles code { font-size: 10.5px; background: var(--glass-3); padding: 1px 4px; border-radius: 4px; }
+#sim-hydro-toggles code, #et-layer-toggles code, #solar-layer-toggles code { font-size: 10.5px; background: var(--glass-3); padding: 1px 4px; border-radius: 4px; }
 
 /* Water & ET tab */
 .et-methods { display: flex; flex-direction: column; gap: 5px; margin-bottom: 8px; }
@@ -506,6 +506,19 @@ body.chat-open .inspector { right: calc(28px + var(--chat-w)); }
 .et-pm { color: var(--ink-faint); font-size: 10px; }
 .et-scenario-head { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--ink); }
 .et-series { line-height: 1.45; }
+.solar-site-section { margin-top: 8px; }
+.solar-site-section:first-child { margin-top: 0; }
+.solar-site-heading { margin: 0 0 4px; color: var(--ink-faint); font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; }
+.solar-site-row {
+  display: flex; flex-direction: column; gap: 3px;
+  width: 100%; padding: 7px 0; border: 0; border-top: 1px solid var(--line);
+  background: transparent; text-align: left; cursor: pointer;
+  font: inherit; font-size: 11.5px; color: var(--ink-dim);
+}
+.solar-site-row:first-child { border-top: 0; padding-top: 0; }
+.solar-site-row:hover, .solar-site-row.active { color: var(--ink); }
+.solar-site-row.active strong { color: #e8b84a; }
+.solar-site-row strong { color: var(--ink); font-weight: 620; }
 
 /* ===========================================================================
    SURVEY FORM (generated + static)

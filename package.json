@@ -43,6 +43,7 @@
     "hydro-scenario": "python3 scripts/hydro_scenario.py",
     "fetch-distant-terrain": "python3 scripts/fetch_distant_terrain.py",
     "analyze-viewshed": "python3 scripts/analyze_viewshed.py",
+    "analyze-solar": "python3 scripts/analyze_solar.py",
     "fire-scenario": "python3 scripts/fire_scenario.py",
     "migrate": "python3 scripts/migrate_to_store.py",
     "export": "python3 scripts/export_viewer_payloads.py",

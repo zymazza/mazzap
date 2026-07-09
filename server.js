@@ -4252,6 +4252,99 @@ function handleEtScenario(req, res, dataDir = DATA_DIR) {
   });
 }
 
+function handleSolarAnalyze(req, res, dataDir = DATA_DIR) {
+  readBodyJson(req, LIVE_MAX_BODY, (err, params) => {
+    if (err) {
+      const tooLarge = /too large/i.test(String(err.message || ''));
+      return send(res, tooLarge ? 413 : 400,
+        JSON.stringify({ error: tooLarge ? 'request body too large' : 'invalid JSON body' }),
+        { 'Content-Type': 'application/json' });
+    }
+    const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const surface = params.surface === 'bare_earth' ? 'bare_earth' : 'canopy';
+    const samples = Math.min(600, Math.max(40, Math.round(num(params.samples) || 220)));
+    const systemKw = Math.min(200, Math.max(0.05, num(params.system_kw) || 1));
+    const argv = [
+      path.join(ROOT, 'scripts', 'analyze_solar.py'),
+      '--json',
+      '--surface', surface,
+      '--samples', String(samples),
+      '--system-kw', String(systemKw),
+    ];
+    const py = spawn(HYDRO_PYTHON, argv,
+      { cwd: ROOT, env: { ...process.env, TWIN_DATA_DIR: dataDir } });
+    let stdout = '';
+    let stderr = '';
+    let done = false;
+    const finish = (status, payload) => {
+      if (done) return;
+      done = true;
+      send(res, status, JSON.stringify(payload), { 'Content-Type': 'application/json' });
+    };
+    py.stdout.on('data', (c) => { stdout += c; });
+    py.stderr.on('data', (c) => { stderr += c; });
+    py.on('error', (err2) => finish(500, { error: `could not run solar analysis: ${err2.message}` }));
+    py.on('close', (code) => {
+      if (code !== 0) {
+        return finish(500, { error: `solar analysis exited ${code}: ${stderr.slice(-600).trim()}` });
+      }
+      const text = stdout.trim();
+      try {
+        finish(200, JSON.parse(text));
+      } catch (_err) {
+        const lines = text.split('\n').filter(Boolean);
+        try {
+          finish(200, JSON.parse(lines[lines.length - 1]));
+        } catch (_lineErr) {
+          finish(500, { error: `unparseable solar analysis output: ${stdout.slice(-600).trim()}` });
+        }
+      }
+    });
+    setTimeout(() => {
+      if (!done) { py.kill(); finish(504, { error: 'solar analysis timed out' }); }
+    }, 5 * 60 * 1000);
+  });
+}
+
+function handleSolarSite(req, res, dataDir = DATA_DIR) {
+  readBodyJson(req, LIVE_MAX_BODY, async (err, params) => {
+    if (err) {
+      const tooLarge = /too large/i.test(String(err.message || ''));
+      return send(res, tooLarge ? 413 : 400,
+        JSON.stringify({ error: tooLarge ? 'request body too large' : 'invalid JSON body' }),
+        { 'Content-Type': 'application/json' });
+    }
+    const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const point = params.point && typeof params.point === 'object' ? params.point : null;
+    if (!point) {
+      return send(res, 400, JSON.stringify({ error: 'point is required' }),
+        { 'Content-Type': 'application/json' });
+    }
+    const args = {
+      point,
+      surface: params.surface === 'bare_earth' ? 'bare_earth' : 'canopy',
+      objective: typeof params.objective === 'string' ? params.objective : 'annual_kwh',
+      system_kw: Math.min(200, Math.max(0.05, num(params.system_kw) || 1)),
+    };
+    if (num(params.tilt_deg) !== null) args.tilt_deg = Math.min(90, Math.max(0, params.tilt_deg));
+    if (num(params.azimuth_deg) !== null) args.azimuth_deg = ((params.azimuth_deg % 360) + 360) % 360;
+    try {
+      const raw = await mcpCall('solar_at', args, dataDir);
+      let result;
+      try {
+        result = JSON.parse(raw);
+      } catch (_parse) {
+        result = { error: `unparseable solar result: ${String(raw).slice(0, 300)}` };
+      }
+      return send(res, result?.error ? 400 : 200, JSON.stringify(result),
+        { 'Content-Type': 'application/json' });
+    } catch (error) {
+      return send(res, 500, JSON.stringify({ error: error?.message || String(error) }),
+        { 'Content-Type': 'application/json' });
+    }
+  });
+}
+
 function fireGridBounds(dataDir = DATA_DIR) {
   const gridPath = path.join(dataDir, 'terrain', 'grid.json');
   const grid = JSON.parse(fs.readFileSync(gridPath, 'utf8'));
@@ -4684,6 +4777,14 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && pathname === '/api/et-scenario') {
     return handleEtScenario(req, res, requestDataDir(req, res));
+  }
+
+  if (req.method === 'POST' && pathname === '/api/solar/analyze') {
+    return handleSolarAnalyze(req, res, requestDataDir(req, res));
+  }
+
+  if (req.method === 'POST' && pathname === '/api/solar/site') {
+    return handleSolarSite(req, res, requestDataDir(req, res));
   }
 
   if (req.method === 'GET' && pathname === '/api/fire-presets') {

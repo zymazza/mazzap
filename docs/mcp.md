@@ -123,6 +123,10 @@ python3 scripts/twin_query_test.py
 | `highlight_sky(name, label?)` | Highlight a body, named star, or constellation in the live sky |
 | `clear_sky_highlights()` | Remove sky highlights only |
 | `solar_irradiance(time?, point?, surface?)` | Bird-Hulstrom clear-sky GHI/DNI/DHI adjusted by the terrain/canopy horizon when available |
+| `solar_at(point, tilt_deg?, azimuth_deg?, system_kw?, surface?, objective?)` | Fixed-panel solar/PV estimate for a proposed site, with angle and vegetation-clearance recommendation |
+| `solar_profile(point, surface?, system_kw?)` | Monthly/seasonal solar, PV, and vegetation-clearance profile for one site |
+| `compare_solar_sites(points, surface?, system_kw?, objective?)` | Rank user-proposed panel sites and report vegetation conflicts |
+| `recommend_solar_sites(region?, objective?, count?, surface?, system_kw?, demonstrate?)` | Rank ideal installable panel sites, excluding vegetation-crown conflicts when possible, and optionally draw numbered markers |
 
 ## Drawing on the map
 
@@ -230,6 +234,28 @@ Astronomy pane. User clock edits and layer toggles win until the next directive
 change. `set_view_time("now")` clears the directive and returns the viewer to
 browser realtime; `clear_sky_highlights` clears only sky highlights.
 
+## Solar siting
+
+Solar siting tools use `scripts/twin_solar.py` plus the viewshed horizon core.
+Use `solar_at` when the user proposes a point, `compare_solar_sites` when they
+offer several points, and `recommend_solar_sites` when they ask GAIA to choose.
+If the user asks through generic `recommend_sites("solar panel ...")`, it routes
+to the solar recommender. Azimuth is true degrees clockwise from north
+(`180` = true south, `0` = true north).
+
+The model is planning-grade: clear-sky shape, Daymet all-sky monthly normals
+when available, terrain/canopy horizon blocking, isotropic POA transposition,
+and PVWatts-style losses. Say when `climate.available` is false; that means the
+answer used a clear-sky fallback and should not be treated as cloud-adjusted.
+
+Solar defaults to `surface="canopy"` for as-is planning. In this mode,
+recommended sites are filtered through the vegetation inventory: the assumed
+panel footprint plus service clearance must not intersect tree/shrub crowns
+taller than 1.5 m. `solar_at` still answers proposed blocked sites, but the
+returned `vegetation` block says `installable=false` and lists conflicts.
+Use `surface="bare_earth"` only when the user explicitly asks about a cleared
+or no-tree scenario.
+
 ## Live telemetry
 
 Live inputs are deliberately split from the durable twin store. The web server
@@ -331,8 +357,9 @@ Natural-language questions and the tool calls they become:
     on the winner.
 
 12. **"Best spot for solar that neither the ridge nor the treeline shades in winter?"**
-    `best_viewpoints(surface="canopy")` → `horizon_at(date="2026-12-21",
-    surface="canopy")` → `solar_irradiance(point=..., surface="canopy")`.
+    `recommend_solar_sites(objective="winter_kwh", surface="canopy",
+    demonstrate=true)`; for a user-proposed point use
+    `solar_at(point=..., surface="canopy", objective="winter_kwh")`.
 
 13. **"How much would clearing the trees open up the view from here?"**
     Compare `viewshed_from(point=…, surface="canopy")` with

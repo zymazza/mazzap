@@ -25,6 +25,7 @@ os.environ.setdefault("TWIN_DATA_DIR",
 sys.path.insert(0, HERE)
 
 import twin_astro  # noqa: E402
+import twin_solar  # noqa: E402
 import twin_viewshed  # noqa: E402
 import twin_query  # noqa: E402
 import twin_store  # noqa: E402
@@ -445,6 +446,67 @@ hz = tq.horizon_at({"x": vx, "y": vy}, date="2026-12-21", surface="canopy")
 check("horizon_at returns sun windows and GEO arc",
       len(hz["horizon_72_deg"]) == 72 and any(w["blocked"] for w in hz["sun_windows"])
       and len(hz["geo_arc"]["samples"]) == 72)
+
+print("== solar siting ==")
+solar_site = twin_solar.SolarSite(astro_site.lat, astro_site.lon, astro_site.height_m)
+solar_normals = twin_solar.climate_normals(twin_store.DATA_DIR, round(solar_site.lat, 6),
+                                           round(solar_site.elevation_m, 1))
+fixed_solar = twin_solar.evaluate_fixed(solar_site, solar_normals, horizon_deg=None,
+                                        tilt_deg=35, azimuth_deg=180, system_kw=1.0)
+check("fixed-panel solar model returns physical annual yield",
+      fixed_solar["annual"]["poa_kwh_m2"] > 500
+      and fixed_solar["annual"]["pv_kwh_per_kwdc"] > 400,
+      json.dumps(fixed_solar["annual"], sort_keys=True))
+veg_index = twin_solar.SolarVegetationIndex.from_records([
+    {"id": "test-tree", "x": 0, "y": 0, "height": 9, "radius": 3, "species": "test pine"}
+])
+veg_blocked = veg_index.clearance_at(0, 0, system_kw=1.0)
+veg_open = veg_index.clearance_at(40, 40, system_kw=1.0)
+check("solar vegetation clearance blocks crown/footprint conflicts",
+      veg_blocked["installable"] is False and veg_blocked["intersecting_crowns_count"] == 1
+      and veg_open["installable"] is True,
+      json.dumps({"blocked": veg_blocked, "open": veg_open}, sort_keys=True))
+site_solar = tq.solar_at({"x": vx, "y": vy}, surface="bare_earth", system_kw=1.0)
+check("solar_at optimizes angle and reports monthly PV profile",
+      site_solar["optimized"] is True and len(site_solar["monthly"]) == 12
+      and site_solar["annual"]["pv_kwh_per_kwdc"] > 400
+      and "horizon" in site_solar and "recommendation" in site_solar
+      and "vegetation" in site_solar,
+      json.dumps(site_solar["annual"], sort_keys=True))
+fixed_angle = tq.solar_at({"x": vx, "y": vy}, tilt_deg=25, azimuth_deg=180, system_kw=2.0)
+check("solar_at honors proposed tilt/azimuth and system size",
+      fixed_angle["optimized"] is False and abs(fixed_angle["tilt_deg"] - 25) < 0.1
+      and 1.9 < fixed_angle["system_kw"] < 2.1
+      and fixed_angle["annual"]["pv_kwh"] > fixed_angle["annual"]["pv_kwh_per_kwdc"])
+comparison = tq.compare_solar_sites([{"x": vx, "y": vy}, {"x": vx + 30, "y": vy + 30}],
+                                    surface="bare_earth", system_kw=1.0)
+check("compare_solar_sites ranks proposed points",
+      len(comparison["sites"]) == 2 and comparison["sites"][0]["rank"] == 1)
+solar_recs = tq.recommend_sites("solar panel", count=1, draw=False)
+check("recommend_sites routes solar intent to solar recommender",
+      solar_recs["objective"] == "annual_kwh" and solar_recs["surface"] == "canopy"
+      and "vegetation_policy" in solar_recs
+      and (not solar_recs["recommended_sites"]
+           or "tilt_deg" in solar_recs["recommended_sites"][0]))
+old_solar_vegetation_index = tq._solar_vegetation_index
+try:
+    tq._solar_vegetation_index = lambda: twin_solar.SolarVegetationIndex.from_records([
+        {"id": "blocking-tree", "x": vx, "y": vy, "height": 20, "radius": 60}
+    ])
+    blocked_recs = tq.recommend_solar_sites(
+        region={"within_m": 8, "point": {"x": vx, "y": vy}},
+        count=1, surface="bare_earth", demonstrate=False)
+    check("recommend_solar_sites excludes vegetation-conflict candidates",
+          len(blocked_recs["recommended_sites"]) == 0
+          and blocked_recs["vegetation_policy"]["excluded_candidates"] > 0,
+          json.dumps(blocked_recs.get("vegetation_policy"), sort_keys=True))
+    blocked_site = tq.solar_at({"x": vx, "y": vy}, surface="bare_earth")
+    check("solar_at reports proposed-site vegetation conflict",
+          blocked_site["vegetation"]["installable"] is False
+          and blocked_site["vegetation"]["clearing_required"] is True,
+          json.dumps(blocked_site["vegetation"], sort_keys=True))
+finally:
+    tq._solar_vegetation_index = old_solar_vegetation_index
 
 
 required_full_kinds = {"building_model", "parcel", "stream"}
