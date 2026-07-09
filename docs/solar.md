@@ -27,10 +27,27 @@ say so.
 scales it to Daymet monthly all-sky radiation, splits GHI into diffuse/direct
 with an Erbs-style diffuse fraction, and transposes to a fixed tilted plane with:
 
-- direct beam killed when sun altitude is below the local horizon azimuth;
-- diffuse irradiance reduced by sky-view fraction;
-- isotropic sky diffuse plus ground-reflected POA;
-- PVWatts-style system losses, simple module-temperature derate, and kWh/kWdc.
+- direct beam killed when sun altitude is below the local horizon azimuth,
+  and capped at the clear-sky DNI (the Erbs reconstruction divides by
+  cos(zenith), which blows up near sunrise/sunset);
+- diffuse irradiance reduced by the isotropic sky-view fraction
+  (mean of cos²(horizon elevation) over azimuths — the physical SVF, 0.5 for
+  a uniform 45° horizon);
+- isotropic sky diffuse plus ground-reflected POA; the ground term reflects
+  the horizon-shaded global, and monthly ground albedo is snow-aware
+  (Daymet `swe` blends bare-ground 0.20 toward snow ~0.70) when the
+  climate file carries it;
+- on `surface="canopy"`, the 30 m EVH canopy horizon is additionally lifted
+  per-stem from the vegetation inventory (`vegetation_horizon_lift`,
+  combined by max — a single tree just outside the clearance radius still
+  shades the panel);
+- PVWatts-style system losses and a module-temperature derate driven by the
+  daytime-mean ambient (0.75·tmax + 0.25·tmin), and kWh/kWdc.
+
+Known simplification: the monthly clearness index is diurnally flat, so a
+systematic morning/afternoon cloud asymmetry (e.g. mountain afternoon
+convection) does not influence east-vs-west azimuth choices; hourly all-sky
+forcing (NSRDB/gridMET) is the upgrade path.
 
 `scripts/analyze_solar.py` samples a bounded AOI lattice and writes ordinary
 viewer drape layers under `data/solar/`:

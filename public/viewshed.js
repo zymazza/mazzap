@@ -123,14 +123,30 @@
       }
       return { ring: null, ground: NaN, canopy: 0 };
     }
-    function radialDistances(rings, maxM) {
+    function cornerDistance(ring, x, y) {
+      let best = 0;
+      for (const cx of [ring.minX, ring.maxX]) {
+        for (const cy of [ring.minY, ring.maxY]) {
+          best = Math.max(best, Math.hypot(Number(cx) - x, Number(cy) - y));
+        }
+      }
+      return best;
+    }
+    // Radial sample ladder measured from the observer outward. Ring inner/outer
+    // extents in the manifest are origin-relative; convert them so an off-origin
+    // observer still samples every ring across its true annulus. Mirrors the
+    // Python RingStack.radial_distances exactly (JS<->Python sweep parity).
+    function radialDistances(rings, maxM, ox, oy) {
+      const x = Number(ox) || 0;
+      const y = Number(oy) || 0;
+      const rObs = Math.hypot(x, y);
       const cap = maxM != null && Number.isFinite(Number(maxM))
         ? Math.max(1, Number(maxM))
-        : Math.max(...rings.map((ring) => Number(ring.outerM || 0)));
+        : Math.max(1, ...rings.map((ring) => cornerDistance(ring, x, y)));
       const vals = [];
       rings.slice().sort((a, b) => (a.innerM || 0) - (b.innerM || 0)).forEach((ring) => {
-        const inner = Math.max(0, Number(ring.innerM || 0));
-        const outer = Math.min(cap, Number(ring.outerM || cap));
+        const inner = Math.max(0, Number(ring.innerM || 0) - rObs);
+        const outer = Math.min(cap, cornerDistance(ring, x, y));
         if (outer <= inner) return;
         const step = Math.max(1, Number(ring.resolutionM || 1));
         for (let d = Math.max(step * 0.5, inner + step * 0.5); d <= outer + step * 0.25; d += step) {
@@ -148,46 +164,107 @@
       });
       return new Float32Array(out);
     }
+    // Classify every ring cell against the per-azimuth running horizon.
+    // Marking only ray samples leaves angular gaps beyond r = nAz*res/(2*pi)
+    // and undercounts visible area at range; this tests each cell directly
+    // (nearest azimuth bin, horizon accumulated strictly nearer than the
+    // cell). Mirrors the Python _classify_visible_cells.
+    function classifyCells(rings, masks, ox, oy, eye, running, distances, nAz, k, targetAglM) {
+      const azStep = Math.PI * 2 / nAz;
+      const nS = distances.length;
+      const curve = (1 - k) / (2 * EARTH_RADIUS_M);
+      let maxVisibleM = 0;
+      masks.forEach((entry) => {
+        const ring = rings.find((candidate) => candidate.id === entry.id);
+        if (!ring) return;
+        const xStep = (ring.maxX - ring.minX) / Math.max(1, ring.width - 1);
+        const yStep = (ring.maxY - ring.minY) / Math.max(1, ring.height - 1);
+        const res = Math.max(1e-6, Number(ring.resolutionM || 1));
+        const cap = distances[nS - 1] + 0.5 * res;
+        for (let r = 0; r < ring.height; r += 1) {
+          const dy = (ring.maxY - r * yStep) - oy;
+          for (let c = 0; c < ring.width; c += 1) {
+            const g = ring.ground[r * ring.width + c];
+            if (!Number.isFinite(g)) continue;
+            const dx = (ring.minX + c * xStep) - ox;
+            const d = Math.sqrt(dx * dx + dy * dy);
+            if (d > cap) continue;
+            let azIdx = Math.round(Math.atan2(dx, dy) / azStep) % nAz;
+            if (azIdx < 0) azIdx += nAz;
+            // Last sample strictly nearer than the cell (excluding its own cell).
+            const dq = d - 0.5 * res;
+            let lo = 0;
+            let hi = nS - 1;
+            let di = -1;
+            while (lo <= hi) {
+              const mid = (lo + hi) >> 1;
+              if (distances[mid] <= dq) { di = mid; lo = mid + 1; } else { hi = mid - 1; }
+            }
+            const prior = di >= 0 ? running[azIdx * nS + di] : -1e30;
+            const drop = curve * d * d;
+            const targetAngle = Math.atan2(g + targetAglM - drop - eye, Math.max(d, 0.01));
+            if (targetAngle > prior + 1e-7) {
+              entry.mask[r * ring.width + c] = 1;
+              if (d > maxVisibleM) maxVisibleM = d;
+            }
+          }
+        }
+      });
+      return maxVisibleM;
+    }
     function sweep(stack, opts) {
       const rings = normalizeStack(stack);
       if (!rings.length) throw new Error('viewshed worker has no terrain rings');
       const nAz = Math.max(8, Math.floor(opts.nAz || 720));
       const surface = opts.surface === 'bare_earth' ? 'bare_earth' : 'canopy';
       const k = refractionK(opts.k ?? 'optical');
-      const distances = radialDistances(rings, opts.maxKm ? opts.maxKm * 1000 : null);
+      // cellClassify (default true) classifies every ring cell against the
+      // running horizon — exact masks/areas. false keeps the cheap legacy
+      // ray-sample marking (undercounts at range; POV cull only).
+      const cellClassify = opts.cellClassify !== false;
+      const targetAglM = Number(opts.targetAglM || 0);
+      const distances = radialDistances(rings, opts.maxKm ? opts.maxKm * 1000 : null, opts.x, opts.y);
       if (!distances.length) throw new Error('no radial samples inside loaded viewshed rings');
       const obsGround = sampleComponents(rings, opts.x, opts.y).ground;
       if (!Number.isFinite(obsGround)) throw new Error('observer point is outside available terrain');
       const eye = obsGround + Number(opts.aglM || 1.7);
       const masks = rings.map((ring) => ({ id: ring.id, width: ring.width, height: ring.height, mask: new Uint8Array(ring.width * ring.height) }));
       const horizon = new Float32Array(nAz);
+      const nS = distances.length;
+      const running = cellClassify ? new Float32Array(nAz * nS) : null;
       let maxVisibleM = 0;
       for (let a = 0; a < nAz; a += 1) {
         const az = a * Math.PI * 2 / nAz;
         const sx = Math.sin(az); const cy = Math.cos(az);
-        let running = -1e30;
+        let run = -1e30;
         horizon[a] = NaN;
-        for (let j = 0; j < distances.length; j += 1) {
+        for (let j = 0; j < nS; j += 1) {
           const d = distances[j];
           const x = opts.x + sx * d;
           const y = opts.y + cy * d;
           const sample = sampleComponents(rings, x, y);
           const g = sample.ground;
-          if (!Number.isFinite(g) || !sample.ring) continue;
-          const canopy = surface === 'canopy' ? sample.canopy : 0;
-          const drop = (1 - k) * d * d / (2 * EARTH_RADIUS_M);
-          const blockerAngle = Math.atan2(g + canopy - drop - eye, d);
-          const targetAngle = Math.atan2(g + Number(opts.targetAglM || 0) - drop - eye, d);
-          const visible = targetAngle > running + 1e-7;
-          if (visible) {
-            const maskEntry = masks.find((entry) => entry.id === sample.ring.id);
-            const rc = rowCol(sample.ring, x, y);
-            if (maskEntry && rc) maskEntry.mask[rc[0] * sample.ring.width + rc[1]] = 1;
-            maxVisibleM = Math.max(maxVisibleM, d);
+          if (Number.isFinite(g) && sample.ring) {
+            const canopy = surface === 'canopy' ? sample.canopy : 0;
+            const drop = (1 - k) * d * d / (2 * EARTH_RADIUS_M);
+            const blockerAngle = Math.atan2(g + canopy - drop - eye, d);
+            if (!cellClassify) {
+              const targetAngle = Math.atan2(g + targetAglM - drop - eye, d);
+              if (targetAngle > run + 1e-7) {
+                const maskEntry = masks.find((entry) => entry.id === sample.ring.id);
+                const rc = rowCol(sample.ring, x, y);
+                if (maskEntry && rc) maskEntry.mask[rc[0] * sample.ring.width + rc[1]] = 1;
+                maxVisibleM = Math.max(maxVisibleM, d);
+              }
+            }
+            if (blockerAngle > run) run = blockerAngle;
           }
-          if (blockerAngle > running) running = blockerAngle;
+          if (running) running[a * nS + j] = run;
         }
-        horizon[a] = running > -1e20 ? running * 180 / Math.PI : NaN;
+        horizon[a] = run > -1e20 ? run * 180 / Math.PI : NaN;
+      }
+      if (cellClassify) {
+        maxVisibleM = classifyCells(rings, masks, opts.x, opts.y, eye, running, distances, nAz, k, targetAglM);
       }
       const perRing = {};
       let visibleKm2 = 0;
@@ -214,6 +291,7 @@
       return {
         horizonDeg: horizon,
         masks,
+        maskMode: cellClassify ? 'cell_classified' : 'ray_sampled',
         stats: {
           visibleKm2,
           maxVisibleKm: maxVisibleM / 1000,
@@ -602,6 +680,9 @@
           surface: 'bare_earth',
           k: 'optical',
           nAz: 360,
+          // POV cull re-runs every ~500 ms while walking; the cheap ray-sample
+          // masks are enough for tile-level culling and keep it responsive.
+          cellClassify: false,
         },
       });
     }

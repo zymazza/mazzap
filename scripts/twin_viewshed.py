@@ -215,6 +215,14 @@ class Ring:
         row = np.rint((self.max_y - y_arr) / max(1e-9, self.max_y - self.min_y) * (self.height - 1)).astype(np.int32)
         return np.clip(row, 0, self.height - 1), np.clip(col, 0, self.width - 1), inside
 
+    def corner_distance(self, x: float, y: float) -> float:
+        """Max distance from (x, y) to this ring's bounding-box corners."""
+        return max(
+            math.hypot(cx - float(x), cy - float(y))
+            for cx in (self.min_x, self.max_x)
+            for cy in (self.min_y, self.max_y)
+        )
+
     @classmethod
     def from_grid(cls, name: str, grid: dict[str, Any], canopy: np.ndarray | None = None,
                   source: dict[str, Any] | None = None) -> "Ring":
@@ -376,12 +384,23 @@ class RingStack:
                 canopy[ok] = ring.sample_canopy(x_arr, y_arr)[ok]
         return ground, canopy
 
-    def radial_distances(self, max_m: float | None = None) -> np.ndarray:
-        cap = float(max_m if max_m is not None else self.max_distance_m)
+    def radial_distances(self, max_m: float | None = None,
+                         observer: tuple[float, float] = (0.0, 0.0)) -> np.ndarray:
+        """Radial sample ladder measured from the observer outward.
+
+        Ring inner/outer extents in the manifest are measured from the scene
+        origin; convert them to observer-relative distances so an off-origin
+        observer still samples every ring across its true annulus (and the
+        reported analyzed extent is the observer's, not the origin's).
+        """
+        ox, oy = float(observer[0]), float(observer[1])
+        r_obs = math.hypot(ox, oy)
+        default_cap = max(r.corner_distance(ox, oy) for r in self.rings)
+        cap = float(max_m if max_m is not None else default_cap)
         starts = []
         for ring in sorted(self.rings, key=lambda r: r.inner_m):
-            inner = max(0.0, float(ring.inner_m or 0.0))
-            outer = min(cap, float(ring.outer_m or cap))
+            inner = max(0.0, float(ring.inner_m or 0.0) - r_obs)
+            outer = min(cap, ring.corner_distance(ox, oy))
             if outer <= inner:
                 continue
             step = max(1.0, float(ring.resolution_m))
@@ -443,13 +462,64 @@ def _normalize_surface(surface: str | None) -> str:
     return s
 
 
+def _classify_visible_cells(stack: RingStack, x: float, y: float, eye_z: float,
+                            running: np.ndarray, distances: np.ndarray,
+                            n_az: int, kval: float, target_agl_m: float) -> tuple[dict[str, np.ndarray], float]:
+    """Classify every ring cell against the per-azimuth running horizon.
+
+    Marking only ray *samples* leaves angular gaps beyond r = n_az*res/(2*pi):
+    cross-ray spacing outgrows the cell size and visible cells between rays are
+    silently missed, undercounting visible area and misreporting hidden_from
+    regions at range. Instead, each cell is tested directly: nearest azimuth
+    bin, horizon accumulated over samples strictly nearer than the cell, same
+    curvature/refraction drop and epsilon as the sample test.
+    """
+    masks: dict[str, np.ndarray] = {}
+    max_visible_m = 0.0
+    az_step = 2.0 * math.pi / float(n_az)
+    neg_inf = np.float32(-1e30)
+    eps = np.float32(1e-7)
+    for ring in stack.rings:
+        mask = np.zeros((ring.height, ring.width), dtype=np.uint8)
+        dx_cols = (ring.min_x + np.arange(ring.width, dtype=np.float32) * np.float32(ring.x_step)) - np.float32(x)
+        cap = float(distances[-1]) + 0.5 * float(ring.resolution_m)
+        step_back = np.float32(0.5 * ring.resolution_m)
+        # Chunk rows so the biggest rings stay within a bounded working set.
+        chunk = max(1, 4_000_000 // max(1, ring.width))
+        for r0 in range(0, ring.height, chunk):
+            r1 = min(ring.height, r0 + chunk)
+            dy_rows = (ring.max_y - np.arange(r0, r1, dtype=np.float32) * np.float32(ring.y_step)) - np.float32(y)
+            d = np.hypot(dx_cols[None, :], dy_rows[:, None])
+            ground = ring.ground[r0:r1, :]
+            ok = np.isfinite(ground) & (d <= cap)
+            if not np.any(ok):
+                continue
+            az_idx = np.mod(np.rint(np.arctan2(dx_cols[None, :], dy_rows[:, None]) / az_step).astype(np.int64), n_az)
+            # Last sample strictly nearer than the cell (excluding its own cell).
+            di = (np.searchsorted(distances, (d - step_back).ravel(), side="right") - 1).reshape(d.shape)
+            prior = np.full(d.shape, neg_inf, dtype=np.float32)
+            has_prior = di >= 0
+            prior[has_prior] = running[az_idx[has_prior], di[has_prior]]
+            drop = curvature_drop_m(d, kval).astype(np.float32)
+            with np.errstate(invalid="ignore"):
+                t_angle = np.arctan2(ground + np.float32(target_agl_m) - drop - np.float32(eye_z),
+                                     np.maximum(d, np.float32(0.01)))
+            vis = ok & (t_angle > prior + eps)
+            mask[r0:r1, :][vis] = 1
+            if np.any(vis):
+                max_visible_m = max(max_visible_m, float(np.max(d[vis])))
+        masks[ring.name] = mask
+    return masks, max_visible_m
+
+
 def sweep(stack: RingStack, x: float, y: float, agl_m: float, n_az: int = 1440,
           max_km: float | None = None, surface: str = "canopy",
-          k: str | float = 1.0 / 7.0, target_agl_m: float = 0.0) -> dict[str, Any]:
+          k: str | float = 1.0 / 7.0, target_agl_m: float = 0.0,
+          cell_classify: bool = True) -> dict[str, Any]:
     surface = _normalize_surface(surface)
     kval = refraction_k(k)
     max_m = None if max_km is None else max(0.0, float(max_km) * 1000.0)
-    distances = stack.radial_distances(max_m)
+    distances = stack.radial_distances(max_m, observer=(float(x), float(y)))
     if distances.size == 0:
         raise ValueError("no radial samples inside stack extent")
 
@@ -466,20 +536,27 @@ def sweep(stack: RingStack, x: float, y: float, agl_m: float, n_az: int = 1440,
     ys = np.float32(y) + cos_az * d
     ground, canopy = stack.sample_components(xs, ys)
     blocker_z = ground + (canopy if surface == "canopy" else 0.0)
-    target_z = ground + float(target_agl_m)
     drop = curvature_drop_m(d, kval).astype(np.float32)
     blocker_angle = np.arctan2(blocker_z - drop - eye_z, d)
-    target_angle = np.arctan2(target_z - drop - eye_z, d)
     finite_block = np.isfinite(blocker_angle)
-    finite_target = np.isfinite(target_angle)
     neg_inf = np.float32(-1e30)
     blocker_safe = np.where(finite_block, blocker_angle, neg_inf)
     running = np.maximum.accumulate(blocker_safe, axis=1)
-    prev = np.empty_like(running)
-    prev[:, 0] = neg_inf
-    prev[:, 1:] = running[:, :-1]
-    visible = finite_target & (target_angle > prev + np.float32(1e-7))
-    masks = stack.masks_from_samples(xs, ys, visible)
+    if cell_classify:
+        masks, max_visible_m = _classify_visible_cells(
+            stack, float(x), float(y), eye_z, running, distances, int(n_az), kval, float(target_agl_m))
+    else:
+        # Legacy fast path: mark only ray samples (undercounts at range; kept
+        # for cheap relative estimates, never for area/hidden_from truth).
+        target_z = ground + float(target_agl_m)
+        target_angle = np.arctan2(target_z - drop - eye_z, d)
+        prev = np.empty_like(running)
+        prev[:, 0] = neg_inf
+        prev[:, 1:] = running[:, :-1]
+        visible = np.isfinite(target_angle) & (target_angle > prev + np.float32(1e-7))
+        masks = stack.masks_from_samples(xs, ys, visible)
+        vis_d = np.broadcast_to(distances[None, :], visible.shape)[visible]
+        max_visible_m = float(np.max(vis_d)) if vis_d.size else 0.0
     horizon_rad = np.max(np.where(finite_block, blocker_angle, neg_inf), axis=1)
     horizon_rad = np.where(horizon_rad < -1e20, np.nan, horizon_rad)
     horizon_deg = np.degrees(horizon_rad).astype(np.float32)
@@ -501,14 +578,14 @@ def sweep(stack: RingStack, x: float, y: float, agl_m: float, n_az: int = 1440,
             "resolution_m": ring.resolution_m,
             "canopy_available": ring.canopy is not None,
         }
-    visible_dist = np.broadcast_to(distances[None, :], visible.shape)[visible]
     return {
         "visible": masks,
         "horizon_deg": horizon_deg,
         "azimuth_deg": (np.arange(int(n_az), dtype=np.float32) * (360.0 / float(n_az))),
+        "mask_mode": "cell_classified" if cell_classify else "ray_sampled",
         "stats": {
             "visible_km2": total_area / 1_000_000.0,
-            "max_visible_km": float(np.max(visible_dist) / 1000.0) if visible_dist.size else 0.0,
+            "max_visible_km": max_visible_m / 1000.0,
             "sky_open_fraction_ge_2deg": float(np.count_nonzero(horizon_deg <= 2.0) / len(horizon_deg)),
             "per_ring": per_ring,
             "analyzed_extent_km": float(distances[-1] / 1000.0),
@@ -539,7 +616,7 @@ def line_of_sight(stack: RingStack, x0: float, y0: float, agl0: float,
             "analyzed_extent_km": stack.max_distance_m / 1000.0,
             "message": "target lies beyond the available viewshed terrain; fetch distant terrain before answering visibility",
         }
-    dists = stack.radial_distances(total)
+    dists = stack.radial_distances(total, observer=(float(x0), float(y0)))
     dists = dists[(dists > 0) & (dists < total)]
     if dists.size == 0:
         dists = np.asarray([total * 0.5], dtype=np.float32)

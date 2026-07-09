@@ -455,7 +455,12 @@
 
     function fillBodyInfo(name, time, info, includeIllumination = false) {
       const eq = Astronomy.Equator(bodyApiName(name), time, observer, true, true);
-      const hor = Astronomy.Horizon(time, observer, eq.ra, eq.dec, null);
+      // 'normal' refraction: bodies render where the eye sees them (~0.5 deg
+      // high at the horizon), so viewer sunsets match MCP rise/set times.
+      // Stars stay airless (EQJ->HOR rotation); the sub-half-degree mismatch
+      // against refracted bodies only exists at the horizon, where stars are
+      // extincted anyway.
+      const hor = Astronomy.Horizon(time, observer, eq.ra, eq.dec, 'normal');
       let illum = null;
       if (includeIllumination) {
         try { illum = Astronomy.Illumination(bodyApiName(name), time); } catch (_err) {}

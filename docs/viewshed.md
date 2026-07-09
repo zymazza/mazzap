@@ -145,14 +145,18 @@ that share the same scene-local coordinate frame.
   register their runs/artifacts in the store (standard pipeline pattern);
   the interactive observer is viewer-local state; MCP `viewshed_from` writes
   files + catalog only (like scenario layers).
-- **Honest accuracy claim.** "100 % accurate" means: exact R2 visibility on
-  the chosen surface, GDAL-identical curvature/refraction, oracle-validated
-  (bare-earth mode against gdal_viewshed; canopy mode is exact on the
-  DEM+EVH surface). It does *not* mean survey-grade at 200 km — accuracy is
-  bounded by ring resolution (±1 cell), DEM/EVH vintage, and the fact that
-  EVH is a 30 m *class-binned* canopy height (§12.2), not per-stem. Every
-  MCP payload says which rings, resolutions, and **surface** the answer
-  came from.
+- **Honest accuracy claim.** "100 % accurate" means: exact per-cell
+  visibility on the chosen surface (every ring cell classified against the
+  per-azimuth horizon — no radial-ray sampling gaps), GDAL-identical
+  curvature/refraction, oracle-validated (bare-earth mode against
+  gdal_viewshed; canopy mode is exact on the DEM+EVH surface). It does
+  *not* mean survey-grade at 200 km — accuracy is bounded by ring
+  resolution (±1 cell), the azimuth quantization (360°/n_az per cell), DEM/
+  EVH vintage, and the fact that EVH is a 30 m *class-binned* canopy height
+  (§12.2), not per-stem. `hidden_from` regions claim hidden only for
+  terrain the rings actually analyzed — outside them the answer is
+  "unknown", never "hidden". Every MCP payload says which rings,
+  resolutions, and **surface** the answer came from.
 
 ## 4. Distant terrain data (`scripts/fetch_distant_terrain.py`, pack-hosted here; engine-level in veil)
 
@@ -225,17 +229,26 @@ API (mirrors `twin_hydrology.py` discipline — no file I/O in the core):
   bilinear — it's class-binned) canopy height where the ring has EVH, else
   ground alone. One sampler feeds the sweep, `line_of_sight`, and MCP point
   queries; `surface` threads through all of them.
-- `sweep(stack, x, y, agl_m, n_az=1440, max_km=None, surface="canopy", k=1/7)` →
-  `{visible: per-ring uint8 masks, horizon_deg: float32[n_az],
+- `sweep(stack, x, y, agl_m, n_az=1440, max_km=None, surface="canopy", k=1/7,
+  cell_classify=True)` →
+  `{visible: per-ring uint8 masks, horizon_deg: float32[n_az], mask_mode,
     stats: {visible_km2, max_visible_km, per-ring fractions}, surface, k}`.
   Core math: for each azimuth, radial samples of the **chosen surface** at
   each ring's own step; **observer z = ground(x,y) + agl_m always** (never
   canopy-lifted — you stand on the ground/tower); target angle
-  `atan2(z_surface(d) − drop(d) − z_eye, d)`; visible iff angle > running
-  max; `drop(d) = cc·d²/(2R)`, `cc = 1−k`, R = 6,371,000 m — byte-for-byte
-  GDAL's convention; `k` from the refraction preset (optical 1/7, radio
-  ~0.25–0.33). Vectorized: one (n_az × n_samples) elevation matrix,
-  `np.maximum.accumulate` along the radial axis. No loops over azimuths.
+  `atan2(z_surface(d) − drop(d) − z_eye, d)`; `drop(d) = cc·d²/(2R)`,
+  `cc = 1−k`, R = 6,371,000 m — byte-for-byte GDAL's convention; `k` from
+  the refraction preset (optical 1/7, radio ~0.25–0.33). Vectorized: one
+  (n_az × n_samples) elevation matrix, `np.maximum.accumulate` along the
+  radial axis. **Masks classify every ring cell** against the running
+  per-azimuth horizon (nearest azimuth bin, blockers strictly nearer than
+  the cell): marking only ray samples leaves angular gaps beyond
+  `r = n_az·res/(2π)` and undercounts visible area at range.
+  `cell_classify=False` keeps the cheap sampled marking for relative
+  estimates only (the viewer's POV cull); `mask_mode` records which one an
+  answer used. The radial ladder and analyzed extent are **observer-
+  relative** (ring inner/outer manifest extents are origin-relative and
+  converted per observer).
 - `line_of_sight(stack, x0, y0, agl0, x1, y1, agl1, k, surface="canopy")` →
   the intervisibility primitive behind `can_see`: march the single A→B ray
   over the chosen surface, return

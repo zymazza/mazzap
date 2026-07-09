@@ -750,7 +750,14 @@ class TwinQuery:
         area = (total_area - visible_area) if negate else visible_area
         def contains(px, py):
             val = stack.mask_contains(masks, px, py)
-            return not val if negate else val
+            if not negate:
+                return val
+            if val:
+                return False
+            # hidden_from means "analyzed and not visible" -- terrain outside
+            # the loaded rings is unknown, never claimed hidden.
+            ground = stack.sample_components(np.asarray([px]), np.asarray([py]))[0][0]
+            return bool(np.isfinite(ground))
         return Region(
             shape,
             (minx, miny, maxx, maxy),
@@ -4096,7 +4103,9 @@ class TwinQuery:
             "min_horizon_deg": round(float(np.nanmin(horizon)), 3),
             "max_horizon_deg": round(float(np.nanmax(horizon)), 3),
             "sun_windows": self._sun_block_windows(horizon, date=date),
-            "geo_arc": {"refraction": "radio", "samples": geo},
+            "geo_arc": {"refraction": "none",
+                        "note": "geometric spherical-earth elevation of the GEO belt; no atmospheric refraction applied",
+                        "samples": geo},
             "provenance": self._viewshed_provenance(result),
         }
 
@@ -4318,16 +4327,31 @@ class TwinQuery:
 
     def _solar_horizon(self, point, surface="bare_earth", n_az=360):
         try:
-            _stack, result, _x, _y, _key = self._viewshed_sweep_cached(
+            _stack, result, x, y, _key = self._viewshed_sweep_cached(
                 point, agl_m=1.7, refraction="optical", surface=surface, n_az=n_az)
-            return result["horizon_deg"], {
+            horizon = result["horizon_deg"]
+            meta = {
                 "available": True,
                 "surface": result.get("surface", surface),
                 "source": "observer_point_viewshed",
-                "sky_view_fraction": twin_solar.sky_view_fraction(result["horizon_deg"]),
                 "analyzed_extent_km": result.get("stats", {}).get("analyzed_extent_km"),
                 "manifest_hash": result.get("manifest_hash"),
             }
+            if surface == "canopy":
+                # The viewshed canopy horizon is 30 m class-binned EVH; lift it
+                # with the per-stem inventory so a single tree just outside the
+                # clearance radius still shades the panel. Combined by max, so
+                # EVH canopy is never double-counted.
+                lift = twin_solar.vegetation_horizon_lift(
+                    self._solar_vegetation_index(), x, y, horizon)
+                horizon = np.asarray(lift["horizon_deg"], dtype=np.float32)
+                meta["vegetation_lift"] = {
+                    "applied": lift["applied"],
+                    "stems_in_range": lift["stems_in_range"],
+                    "stems_lifting": lift["stems_lifting"],
+                }
+            meta["sky_view_fraction"] = twin_solar.sky_view_fraction(horizon)
+            return horizon, meta
         except Exception as exc:
             return None, {
                 "available": False,
@@ -4357,7 +4381,12 @@ class TwinQuery:
                         if name in attrs:
                             return twin_store.decode_value(attrs[name][0])
                     return None
-                height = attr_value("height", "height_m") or 0.0
+                height = attr_value("height", "height_m")
+                if height is None:
+                    # Unknown height: assume a canonical blocking stem rather
+                    # than 0 m, which would silently fall below
+                    # min_blocker_height_m and vanish from clearance checks.
+                    height = 8.0 if kind == "tree" else 1.0
                 radius = attr_value("radius", "radius_m", "crown_radius", "crown_radius_m")
                 ref = attrs.get("height") or attrs.get("radius")
                 records.append({

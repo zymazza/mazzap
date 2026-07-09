@@ -484,6 +484,8 @@ def sky_at(time: Any | None = None, site: Site | dict[str, Any] | None = None) -
             "illuminated_fraction": _round((1.0 - math.cos(math.radians(phase))) / 2.0, 6),
         },
         "is_night": sun["altitude_deg"] < -6.0,
+        "night_definition": "is_night means sun below -6 deg (end of civil twilight); "
+                            "the twilight field's 'night' means below -18 deg (astronomical dark)",
         "twilight": twilight_kind(sun["altitude_deg"]),
         "visible_planets": planets,
         "events_today": {
@@ -643,6 +645,9 @@ def next_planetary_alignment(start_time: Any, site: Site, max_span_deg: float = 
     limit_ut = _horizon_limit_ut(start_time, horizon_years)
     # Adaptive daily scan: the span changes at most ~5°/day (Mercury
     # dominates), so far-from-threshold days can be strided over safely.
+    # The 10-day stride needs >60° of headroom: worst-case slew (retrograde
+    # Mercury against direct Venus) approaches ~5-6°/day, and a 45° margin
+    # could in principle jump a brief, deep window.
     t = start_time
     hit = None
     while t.ut <= limit_ut:
@@ -650,7 +655,7 @@ def next_planetary_alignment(start_time: Any, site: Site, max_span_deg: float = 
         if span <= threshold:
             hit = t
             break
-        t = t.AddDays(10.0 if span > threshold + 45.0 else 3.0 if span > threshold + 12.0 else 1.0)
+        t = t.AddDays(10.0 if span > threshold + 60.0 else 3.0 if span > threshold + 12.0 else 1.0)
     if hit is None:
         return None
     begin = hit

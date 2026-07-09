@@ -37,6 +37,15 @@ tone-mapped perceptual model tuned to look right, not a radiometric transfer —
 the radiometric numbers (clear-sky DNI/GHI/DHI) come from `scripts/twin_astro.py`
 and are reported as data, groundwork for the future solar-siting work.
 
+Two rendering-accuracy caveats inside that claim: the viewer draws sun/moon/
+planets at their **refracted** altitude ('normal' refraction, so on-screen
+sunsets match MCP rise/set times) while the star field stays airless — the
+sub-half-degree mismatch only exists at the horizon, where stars are extincted
+anyway; and the star catalog has **no proper motion** (J2000 positions used
+across the full 1600–2500 clock range — high-PM stars like Arcturus drift
+~17 arcmin over ±450 years, well beyond the planetary arcminute claim, which
+is unaffected).
+
 ## 1. Goals / non-goals
 
 **Goals (v1):**

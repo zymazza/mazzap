@@ -110,7 +110,10 @@ def horizon_for(stack: twin_viewshed.RingStack, x: float, y: float, surface: str
     try:
         result = twin_viewshed.sweep(stack, x, y, 1.7, n_az=n_az, surface=surface, k="optical")
         return result["horizon_deg"]
-    except Exception:
+    except Exception as exc:
+        # A failed sweep means "no shading data", not "no shade" -- say so
+        # instead of silently treating the point as fully open.
+        print(f"warning: horizon sweep failed at ({x:.1f},{y:.1f}) [{surface}]: {exc}", file=sys.stderr)
         return None
 
 
@@ -235,6 +238,7 @@ def main() -> int:
     valid_points = 0
     vegetation_excluded = 0
     vegetation_unknown = 0
+    horizon_failures = 0
     first_site = None
 
     for row in range(ny):
@@ -258,6 +262,14 @@ def main() -> int:
                 vegetation_unknown += 1
             bare_horizon = horizon_for(stack, x, y, "bare_earth", args.n_az)
             canopy_horizon = horizon_for(stack, x, y, "canopy", args.n_az)
+            if bare_horizon is None or canopy_horizon is None:
+                horizon_failures += 1
+            if canopy_horizon is not None and vegetation_index.available:
+                # Per-stem crown lift on top of the 30 m EVH canopy horizon
+                # (combined by max; see twin_solar.vegetation_horizon_lift).
+                canopy_horizon = np.asarray(
+                    twin_solar.vegetation_horizon_lift(vegetation_index, x, y, canopy_horizon)["horizon_deg"],
+                    dtype=np.float32)
             horizon = canopy_horizon if args.surface == "canopy" else bare_horizon
             default_tilt = max(5.0, min(60.0, abs(site.lat)))
             default_az = 180.0 if site.lat >= 0 else 0.0
@@ -302,11 +314,11 @@ def main() -> int:
 
     layers = [
         write_layer(data_dir, "solar_pv_annual", "Solar PV yield", pv, bounds, "pv",
-                    "kWh/kWdc/yr", "Estimated annual PV yield per installed kWdc."),
+                    "kWh/kWdc/yr", "Estimated annual PV yield per installed kWdc at the default fixed angle (latitude tilt, equator-facing); ranked sites optimize angles."),
         write_layer(data_dir, "solar_poa_annual", "Solar panel radiation", poa, bounds, "pv",
-                    "kWh/m2/yr", "Estimated annual plane-of-array solar radiation."),
+                    "kWh/m2/yr", "Estimated annual plane-of-array solar radiation at the default fixed angle (latitude tilt, equator-facing)."),
         write_layer(data_dir, "solar_winter_poa", "Winter panel radiation", winter, bounds, "winter",
-                    "kWh/m2", "November-February plane-of-array solar radiation."),
+                    "kWh/m2", "November-February plane-of-array solar radiation at the default fixed angle."),
         write_layer(data_dir, "solar_shade_loss", "Solar shade loss", shade, bounds, "shade",
                     "%", "Annual plane-of-array loss from terrain/canopy horizon shading."),
         write_layer(data_dir, "solar_cloud_loss", "Solar cloud loss", cloud, bounds, "cloud",
@@ -333,6 +345,7 @@ def main() -> int:
             "installable_points": len(vegetation_aware_candidates),
             "vegetation_excluded_points": vegetation_excluded,
             "vegetation_unknown_points": vegetation_unknown,
+            "horizon_failures": horizon_failures,
         },
         "vegetation_policy": {
             "source": vegetation_index.source,

@@ -263,6 +263,64 @@ class SolarVegetationIndex:
         return out
 
 
+def vegetation_horizon_lift(index: "SolarVegetationIndex", x: float, y: float,
+                            horizon_deg: Any, panel_height_m: float = 1.0,
+                            max_range_m: float = 80.0,
+                            min_blocker_height_m: float = 1.5) -> dict[str, Any]:
+    """Raise a horizon profile with per-stem crown blockers near the panel.
+
+    The viewshed horizon sees canopy only through the 30 m class-binned
+    LANDFIRE EVH raster; an individual tree just outside the clearance radius
+    casts a real shadow that raster can miss. Each inventoried stem within
+    max_range_m lifts the horizon bins its crown subtends to at least the
+    elevation angle of its top (flat-ground approximation; the terrain part of
+    the horizon still comes from the viewshed sweep, and the two combine by
+    max, so this never double-counts EVH canopy).
+
+    Returns {"horizon_deg": [...], "applied": bool, "stems_in_range": int,
+    "stems_lifting": int}; the input profile is never mutated.
+    """
+    base = [] if horizon_deg is None else [float(v) for v in list(horizon_deg)]
+    out = {"horizon_deg": base, "applied": False, "stems_in_range": 0, "stems_lifting": 0}
+    if not base or index is None or not index.available:
+        return out
+    n = len(base)
+    lifted = list(base)
+    stems_in_range = 0
+    stems_lifting = 0
+    for rec in index._nearby(x, y, max_range_m):
+        if rec.height_m < min_blocker_height_m or rec.height_m <= panel_height_m:
+            continue
+        dx = rec.x - float(x)
+        dy = rec.y - float(y)
+        dist = math.hypot(dx, dy)
+        if dist > max_range_m:
+            continue
+        stems_in_range += 1
+        near_edge = max(0.3, dist - rec.radius_m)
+        angle = math.degrees(math.atan2(rec.height_m - panel_height_m, near_edge))
+        az_center = math.degrees(math.atan2(dx, dy)) % 360.0
+        half_span = math.degrees(math.atan2(max(0.1, rec.radius_m), max(0.3, dist)))
+        i0 = int(math.floor((az_center - half_span) / 360.0 * n))
+        i1 = int(math.ceil((az_center + half_span) / 360.0 * n))
+        changed = False
+        for i in range(i0, i1 + 1):
+            j = i % n
+            cur = lifted[j]
+            if not math.isfinite(cur) or angle > cur:
+                lifted[j] = angle
+                changed = True
+        if changed:
+            stems_lifting += 1
+    out.update({
+        "horizon_deg": lifted,
+        "applied": stems_lifting > 0,
+        "stems_in_range": stems_in_range,
+        "stems_lifting": stems_lifting,
+    })
+    return out
+
+
 def _round(value: float | None, digits: int = 3) -> float | None:
     if value is None or not math.isfinite(float(value)):
         return None
@@ -298,12 +356,18 @@ def read_daymet_csv(path: str) -> list[dict[str, Any]]:
         tmin = float(_col(r, "tmin"))
         srad = float(_col(r, "srad"))
         dayl = float(_col(r, "dayl"))
+        swe_raw = _col(r, "swe")
         rows.append({
             "date": _daymet_date(year, yday),
             "year": year,
             "month": int(_daymet_date(year, yday)[5:7]),
             "yday": yday,
             "tmean_c": (tmax + tmin) / 2.0,
+            # Daytime mean runs above the daily midpoint; the standard
+            # 0.75*tmax + 0.25*tmin approximation feeds the PV cell-temperature
+            # model, which only sees the sun-up hours.
+            "tday_c": 0.75 * tmax + 0.25 * tmin,
+            "swe_kg_m2": _finite_number(swe_raw),
             "srad_w_m2": srad,
             "dayl_s": dayl,
             "rs_mj_m2_d": max(0.0, srad * dayl / 1_000_000.0),
@@ -360,6 +424,11 @@ def clear_sky_components(lat_deg: float, elev_m: float, yday: int, solar_hour: f
     diffuse_rayleigh = i0 * cosz * t_ozone * t_gas * t_water * (1.0 - t_rayleigh) * 0.5
     diffuse_aerosol = i0 * cosz * t_ozone * t_gas * t_water * t_rayleigh * (1.0 - t_aerosol) * 0.75
     dhi = max(0.0, diffuse_rayleigh + diffuse_aerosol)
+    # Ground/sky multiple-reflection enhancement, matching
+    # twin_astro.solar_irradiance so the two clear-sky paths agree.
+    base_global = max(0.0, dni * cosz + dhi)
+    sky_albedo = 0.0685 + (1.0 - 0.84) * (1.0 - t_aerosol)
+    dhi = max(0.0, dhi + base_global * GROUND_ALBEDO * sky_albedo / max(1e-6, 1.0 - GROUND_ALBEDO * sky_albedo))
     ghi = max(0.0, dni * cosz + dhi)
     return {**pos, "ghi_wm2": ghi, "dni_wm2": dni, "dhi_wm2": dhi, "e0h_wm2": i0 * cosz}
 
@@ -386,6 +455,8 @@ def climate_normals(data_dir: str, lat_deg: float, elev_m: float) -> dict[str, A
                 "yday": yday,
                 "days": MONTH_DAYS[m - 1],
                 "tmean_c": 15.0,
+                "tday_c": 15.0,
+                "ground_albedo": GROUND_ALBEDO,
                 "all_sky_rs_mj_m2_d": clear,
                 "clear_sky_rs_mj_m2_d": clear,
                 "clearness_index": 1.0,
@@ -404,6 +475,12 @@ def climate_normals(data_dir: str, lat_deg: float, elev_m: float) -> dict[str, A
         recs = [r for r in rows if r["month"] == m]
         all_sky = sum(r["rs_mj_m2_d"] for r in recs) / len(recs) if recs else 0.0
         tmean = sum(r["tmean_c"] for r in recs) / len(recs) if recs else 15.0
+        tday = sum(r["tday_c"] for r in recs) / len(recs) if recs else tmean
+        # Snow-aware ground albedo: fraction of month-days with snow on the
+        # ground (Daymet swe) blends bare-ground 0.20 toward snow ~0.70.
+        swe_recs = [r for r in recs if r.get("swe_kg_m2") is not None]
+        snow_frac = (sum(1 for r in swe_recs if r["swe_kg_m2"] > 5.0) / len(swe_recs)) if swe_recs else 0.0
+        albedo = min(0.70, GROUND_ALBEDO + 0.50 * snow_frac)
         clear = _daily_clear_ghi_mj(lat_deg, elev_m, yday)
         kt = max(0.15, min(1.10, all_sky / clear)) if clear > 0 else 0.0
         annual_all += all_sky * MONTH_DAYS[m - 1]
@@ -413,6 +490,9 @@ def climate_normals(data_dir: str, lat_deg: float, elev_m: float) -> dict[str, A
             "yday": yday,
             "days": MONTH_DAYS[m - 1],
             "tmean_c": tmean,
+            "tday_c": tday,
+            "ground_albedo": albedo,
+            "snow_day_fraction": snow_frac,
             "all_sky_rs_mj_m2_d": all_sky,
             "clear_sky_rs_mj_m2_d": clear,
             "clearness_index": kt,
@@ -461,13 +541,20 @@ def horizon_at_azimuth(horizon_deg: list[float] | tuple[float, ...] | Any, azimu
 
 
 def sky_view_fraction(horizon_deg: Any) -> float:
+    """Isotropic sky-view factor from a per-azimuth horizon profile.
+
+    For a horizon at elevation theta in one azimuth sector, the visible
+    fraction of the isotropic sky radiance on a horizontal receiver is
+    cos^2(theta); averaging over azimuths gives the site SVF. (The previous
+    linear 1 - theta/45 proxy hit zero at 45 deg where physics says 0.5,
+    over-penalizing diffuse 2-4x in enclosed terrain.)
+    """
     if horizon_deg is None:
         return 1.0
     vals = [float(v) for v in list(horizon_deg) if v is not None and math.isfinite(float(v))]
     if not vals:
         return 1.0
-    # A compact diffuse-sky proxy: fully open at/below horizon, linearly closed by 45 deg.
-    factors = [max(0.0, min(1.0, 1.0 - max(0.0, v) / 45.0)) for v in vals]
+    factors = [math.cos(math.radians(max(0.0, min(90.0, v)))) ** 2 for v in vals]
     return sum(factors) / len(factors)
 
 
@@ -505,22 +592,32 @@ def evaluate_fixed(
                 continue
             clear_ghi_wh += clear["ghi_wm2"] * step_h
             clearness = float(month.get("clearness_index", 1.0))
+            albedo = float(month.get("ground_albedo", GROUND_ALBEDO))
             ghi = max(0.0, clear["ghi_wm2"] * clearness)
             e0h = max(1e-6, clear["e0h_wm2"])
             kt = max(0.0, min(1.2, ghi / e0h))
             kd = erbs_diffuse_fraction(kt)
             dhi = min(ghi, ghi * kd)
-            dni = max(0.0, (ghi - dhi) / max(1e-6, clear["cos_zenith"]))
+            # Reconstructed beam can never exceed the clear-sky DNI: the Erbs
+            # split divides by cos(zenith), which blows up near sunrise/sunset.
+            dni = max(0.0, min((ghi - dhi) / max(1e-6, clear["cos_zenith"]), clear["dni_wm2"]))
             ci = cos_incidence(clear["altitude_deg"], clear["azimuth_deg"], tilt, panel_az)
             beam_no_shade = dni * ci
             diffuse_no_shade = dhi * (1.0 + math.cos(math.radians(tilt))) / 2.0
-            ground = ghi * GROUND_ALBEDO * (1.0 - math.cos(math.radians(tilt))) / 2.0
-            no_shade = max(0.0, beam_no_shade + diffuse_no_shade + ground)
+            ground_no_shade = ghi * albedo * (1.0 - math.cos(math.radians(tilt))) / 2.0
+            no_shade = max(0.0, beam_no_shade + diffuse_no_shade + ground_no_shade)
             blocked = clear["altitude_deg"] <= horizon_at_azimuth(horizon_deg, clear["azimuth_deg"])
             beam = 0.0 if blocked else beam_no_shade
             diffuse = diffuse_no_shade * sky_view
+            # Ground the panel sees is shaded by the same horizon: reflect the
+            # shaded global, not the open-sky one.
+            ghi_shaded = (0.0 if blocked else dni * clear["cos_zenith"]) + dhi * sky_view
+            ground = ghi_shaded * albedo * (1.0 - math.cos(math.radians(tilt))) / 2.0
             poa = max(0.0, beam + diffuse + ground)
-            cell_temp = float(month.get("tmean_c", 15.0)) + (poa / 800.0) * 20.0
+            # Cell temperature from the daytime mean (0.75*tmax + 0.25*tmin),
+            # not the 24 h midpoint -- the panel only runs while the sun is up.
+            ambient = float(month.get("tday_c", month.get("tmean_c", 15.0)))
+            cell_temp = ambient + (poa / 800.0) * 20.0
             temp_factor = max(0.75, min(1.08, 1.0 + TEMP_COEFF_PER_C * (cell_temp - 25.0)))
             pv_wh_per_kw += poa * step_h * temp_factor * max(0.0, 1.0 - losses)
             poa_wh += poa * step_h
@@ -644,10 +741,12 @@ def analyze_site(
         },
         "model": {
             "irradiance": "clear-sky Bird-Hulstrom-style shape scaled to Daymet all-sky monthly normals",
-            "decomposition": "Erbs diffuse fraction",
-            "transposition": "isotropic sky diffuse + direct beam + ground-reflected POA",
-            "pv": "PVWatts-style fixed panel, 14% default system losses, -0.4%/C module temperature coefficient",
-            "bankability": "planning-grade; validate with NSRDB/PVGIS or site measurements before investment",
+            "decomposition": "Erbs diffuse fraction, beam capped at clear-sky DNI",
+            "transposition": "isotropic sky diffuse x cos^2 sky-view + direct beam + horizon-shaded ground-reflected POA (snow-aware monthly albedo when Daymet swe exists)",
+            "pv": "PVWatts-style fixed panel, 14% default system losses, -0.4%/C module temperature coefficient on daytime-mean ambient",
+            "bankability": ("planning-grade; validate with NSRDB/PVGIS or site measurements before investment. "
+                            "Monthly clearness is diurnally flat, so systematic morning/afternoon cloud "
+                            "asymmetry (e.g. mountain convection) is not resolved in azimuth choices."),
         },
     })
     return result
