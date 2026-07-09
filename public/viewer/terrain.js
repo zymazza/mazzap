@@ -557,6 +557,15 @@
     }
     const xStep = (ring.maxX - ring.minX) / Math.max(1, ring.width - 1);
     const yStep = (ring.maxY - ring.minY) / Math.max(1, ring.height - 1);
+    // Distant meshes are decimated, so triangles can span well beyond one
+    // source pixel. Clip them back by the decimated triangle scale; otherwise
+    // semi-transparent POV viewshed tiles can bleed over the high-resolution
+    // local AOI and make valid land appear blue/transparent.
+    const clipMargin = Math.max(
+      Math.abs(xStep),
+      Math.abs(yStep),
+      Math.max(0, Number(ring.resolutionM || 0)) * Math.max(2, stride * 2)
+    );
     const meshRows = shape.rows + (shape.row0 + shape.rows < ring.height ? 1 : 0);
     const meshCols = shape.cols + (shape.col0 + shape.cols < ring.width ? 1 : 0);
     const rows = decimatedIndices(shape.row0, meshRows, stride);
@@ -574,7 +583,7 @@
         const x = ring.minX + col * xStep;
         const elevation = ring.ground[row * ring.width + col];
         const ok = Number.isFinite(elevation) &&
-          !insideClipBounds(clipBounds, x, y, Math.max(0, Number(ring.resolutionM || 0)));
+          !insideClipBounds(clipBounds, x, y, clipMargin);
         const vi = rr * cols.length + cc;
         valid[vi] = ok ? 1 : 0;
         positions[p] = x;
