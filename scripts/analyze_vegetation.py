@@ -173,6 +173,21 @@ def main():
         water_dropped = len(trees) - len(kept)
         trees = kept
 
+    # When a pack maps land cover, a stem whose cell types as open water
+    # (e.g. LANDFIRE EVT "Open Water") can't stand in a lake either. This
+    # catches twins whose imagery ships an unreliable NIR band: there the
+    # NDWI mask is blind AND the NDVI detector sees glint as canopy.
+    pack_is_water = getattr(pack, "is_water", None) if pack else None
+    if pack_is_water:
+        kept = []
+        for t in trees:
+            phys, _ = community_at(t["x"], t["y"])
+            if pack_is_water(phys):
+                water_dropped += 1
+                continue
+            kept.append(t)
+        trees = kept
+
     out_trees = []
     counts = {"evergreen": 0, "deciduous": 0, "unknown": 0}
     communities = {}
@@ -276,7 +291,7 @@ def main():
               stats["observations"], left, retired))
 
     print("trees [%s]: %d detected + %d canopy-fill = %d" % (capability, n0, added, total))
-    if water is not None and water_dropped:
+    if water_dropped:
         print("water mask: dropped %d detected stem(s) on open water" % water_dropped)
     if can_type:
         print("evergreen %d (%.0f%%) / deciduous %d (%.0f%%)" % (

@@ -53,7 +53,10 @@ html, body {
 }
 
 #viewer-root { position: fixed; inset: 0; }
-#viewer-root canvas { display: block; }
+/* Explicit CSS size: renderer.setSize(..., false) skips style updates, so on
+   hi-DPI displays (pixelRatio > 1) an unstyled canvas would render at buffer
+   size — 2x the window — cropping the view and breaking click raycasts. */
+#viewer-root canvas { display: block; width: 100%; height: 100%; }
 
 :where(button, a, input, select, textarea, [tabindex]):focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;

@@ -128,6 +128,12 @@ class NationalVegetation:
     def is_forest(self, phys):
         return phys in FOREST_PHYS
 
+    def is_water(self, phys):
+        # EVT physiognomy for lakes/rivers — a stem can't stand in open water.
+        # Complements the engine's imagery NDWI mask, which needs a trustworthy
+        # NIR band (some snapshots ship a bogus 4th band that fools it).
+        return (phys or "").strip().lower() in ("open water", "water")
+
     # -- type classification ----------------------------------------------
     def classify_type(self, x, y, sample_nir, phys=None):
         if phys is None:
