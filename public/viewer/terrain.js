@@ -528,7 +528,26 @@
     return out;
   }
 
-  function buildDistantTileMesh(ring, tile, baseElevation, minElevation, maxElevation) {
+  function terrainClipBounds(viewer) {
+    const grid = viewer?.terrainGrid;
+    if (!grid) return null;
+    return {
+      minX: Number(grid.minX),
+      maxX: Number(grid.maxX),
+      minY: Number(grid.minY),
+      maxY: Number(grid.maxY),
+    };
+  }
+
+  function insideClipBounds(bounds, x, y, margin = 0) {
+    if (!bounds) return false;
+    return (
+      x >= bounds.minX - margin && x <= bounds.maxX + margin &&
+      y >= bounds.minY - margin && y <= bounds.maxY + margin
+    );
+  }
+
+  function buildDistantTileMesh(ring, tile, baseElevation, minElevation, maxElevation, clipBounds = null) {
     const stride = ring.id === 'B'
       ? Math.max(1, Math.round(60 / Math.max(1, ring.resolutionM)))
       : Math.max(1, Math.round(300 / Math.max(1, ring.resolutionM)));
@@ -554,7 +573,8 @@
         const col = cols[cc];
         const x = ring.minX + col * xStep;
         const elevation = ring.ground[row * ring.width + col];
-        const ok = Number.isFinite(elevation);
+        const ok = Number.isFinite(elevation) &&
+          !insideClipBounds(clipBounds, x, y, Math.max(0, Number(ring.resolutionM || 0)));
         const vi = rr * cols.length + cc;
         valid[vi] = ok ? 1 : 0;
         positions[p] = x;
@@ -683,6 +703,7 @@
       viewer.camera.updateProjectionMatrix();
     }
     const baseElevation = Number(viewer.terrainGrid?.minElevation || 0);
+    const clipBounds = terrainClipBounds(viewer);
     const range = finiteRange(
       rings,
       Number(viewer.terrainGrid?.minElevation || 0),
@@ -691,7 +712,7 @@
     const meshes = [];
     rings.forEach((ring) => {
       ring.tiles.forEach((tile) => {
-        const mesh = buildDistantTileMesh(ring, tile, baseElevation, range.min, range.max);
+        const mesh = buildDistantTileMesh(ring, tile, baseElevation, range.min, range.max, clipBounds);
         if (mesh) {
           group.add(mesh);
           meshes.push(mesh);
@@ -701,14 +722,14 @@
     });
     let enabled = true;
 
-    // Opacity for a tile with the given viewshed-visible fraction. Any visible
-    // tile renders near-solid (0.82..0.96) so distant terrain reads as real
-    // land, not a ghost; fully-hidden tiles stay 0 (culled). The atmospheric
-    // haze in the shader still supplies depth — that is separate from alpha.
+    // Opacity for a tile with the given viewshed-visible fraction. The mask is
+    // cell-accurate, but distant meshes are coarse tiles; suppress tiny slivers
+    // so one visible cell does not reveal an entire distant tile.
     const SOLID_ALPHA = 0.96;
+    const MIN_VISIBLE_TILE_FRACTION = 0.015;
     function targetFromFraction(fraction) {
       const f = clamp(Number(fraction) || 0, 0, 1);
-      return f > 0 ? Math.min(SOLID_ALPHA, Math.max(0.82, 0.82 + 0.14 * Math.sqrt(f))) : 0;
+      return f >= MIN_VISIBLE_TILE_FRACTION ? Math.min(SOLID_ALPHA, Math.max(0.82, 0.82 + 0.14 * Math.sqrt(f))) : 0;
     }
 
     return {

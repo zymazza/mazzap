@@ -498,6 +498,22 @@
       applyDistantVisibility(latest);
     }
 
+    function placeObserverLocal(x, y) {
+      const localX = Number(x);
+      const localY = Number(y);
+      if (!Number.isFinite(localX) || !Number.isFinite(localY)) return false;
+      if (VEILTerrain.hasValidTerrainAtLocal && !VEILTerrain.hasValidTerrainAtLocal(viewer.terrainGrid, localX, localY)) {
+        return false;
+      }
+      observer = { x: localX, y: localY };
+      const ground = VEILTerrain.sampleTerrainHeightAtLocal(viewer.terrainGrid, localX, localY);
+      const base = new THREE.Vector3(localX, ground, -localY);
+      if (marker) viewer.scene.remove(marker);
+      marker = createMarker(viewer, base, Number(els.agl?.value || 1.7));
+      runSweep();
+      return true;
+    }
+
     function pickAtScreen(clientX, clientY) {
       if (!picking) return false;
       const canvas = viewer.renderer?.domElement;
@@ -508,10 +524,7 @@
       raycaster.setFromCamera(ndc, viewer.camera);
       const hit = raycaster.intersectObject(viewer.terrainMesh, false)[0];
       if (!hit) return true;
-      observer = { x: hit.point.x, y: -hit.point.z };
-      if (marker) viewer.scene.remove(marker);
-      marker = createMarker(viewer, hit.point, Number(els.agl?.value || 1.7));
-      runSweep();
+      placeObserverLocal(hit.point.x, -hit.point.z);
       return true;
     }
 
@@ -623,6 +636,7 @@
     return {
       isPicking: () => picking,
       pickAtScreen,
+      placeObserverLocal,
       horizonAt(azimuthDeg) {
         return latest?.horizonDeg ? core.horizonAt(latest.horizonDeg, azimuthDeg) : null;
       },
