@@ -174,6 +174,59 @@ def rasterize_polygons(features, grid, prop):
     return out.reshape(h, w)
 
 
+def root_zone_taw_mm(rec, root_depth_cm=70.0):
+    """Plant-available water in the modeled root zone, in millimeters.
+
+    SSURGO AWC is a volumetric fraction (cm water / cm soil). Integrate the
+    dominant-component horizons down to the shallower of ``root_depth_cm`` and
+    a mapped bedrock / seasonal-water-table restriction. The map-unit AWS value
+    is a coarser fallback when horizon AWC is unavailable.
+    """
+    depths = [float(d) for d in (
+        rec.get("depth_to_bedrock_min_cm"),
+        rec.get("water_table_depth_annual_min_cm"),
+    ) if d is not None]
+    limit_cm = min([float(root_depth_cm), *depths]) if depths else float(root_depth_cm)
+    limit_cm = max(0.0, limit_cm)
+
+    water_cm = 0.0
+    saw_awc = False
+    for horizon in rec.get("horizons") or []:
+        top = horizon.get("top_cm")
+        bottom = horizon.get("bottom_cm")
+        awc = horizon.get("awc_cm_cm")
+        if top is None or bottom is None or awc is None:
+            continue
+        thickness = max(0.0, min(float(bottom), limit_cm) - max(0.0, float(top)))
+        if thickness > 0.0:
+            saw_awc = True
+            water_cm += thickness * max(0.0, float(awc))
+    if saw_awc:
+        return water_cm * 10.0
+
+    aws_150_cm = rec.get("available_water_storage_0_150cm_cm")
+    if aws_150_cm is None:
+        return None
+    return max(0.0, float(aws_150_cm)) * min(limit_cm, 150.0) / 150.0 * 10.0
+
+
+def surface_texture_fractions(rec):
+    """Return the first horizon with a complete sand/silt/clay analysis.
+
+    The organic surface horizon is not always complete in SSURGO.  Green-Ampt
+    texture parameters therefore use the shallowest mineral horizon for which
+    all three fractions are present instead of silently turning missing clay
+    into zero.
+    """
+    for horizon in rec.get("horizons") or []:
+        values = tuple(horizon.get(k) for k in ("sand_pct", "silt_pct", "clay_pct"))
+        if all(v is not None for v in values):
+            total = sum(float(v) for v in values)
+            if total > 0.0:
+                return tuple(100.0 * float(v) / total for v in values)
+    return (None, None, None)
+
+
 def soil_fields(grid):
     """Per-cell mukey + derived hydro properties from the pack's SSURGO tabular
     fetch. Returns dict of 2D arrays (NaN/None where no soil polygon).
@@ -182,14 +235,21 @@ def soil_fields(grid):
     DEM-only or non-US AOI), this returns empty arrays of the grid shape with
     available=False, so the terrain layers (flow/wetness/ponding) and the
     terrain components of seep scoring still compute. The soil-dependent pieces
-    (restrictive-layer seep weight, per-cell curve numbers) simply drop out."""
+    (restrictive-layer seep weight and hydraulic parameters) simply drop out."""
     feats_path = os.path.join(D, "soils", "features.geojson")
     if not os.path.exists(feats_path):
         h, w = grid["height"], grid["width"]
         return {"mukey": np.full((h, w), None, dtype=object),
                 "restrictive_cm": np.full((h, w), np.nan),
+                "bedrock_cm": np.full((h, w), np.nan),
+                "water_table_cm": np.full((h, w), np.nan),
                 "hsg": np.full((h, w), None, dtype=object),
                 "ksat_min": np.full((h, w), np.nan),
+                "surface_ksat": np.full((h, w), np.nan),
+                "root_zone_taw_mm": np.full((h, w), np.nan),
+                "sand_pct": np.full((h, w), np.nan),
+                "silt_pct": np.full((h, w), np.nan),
+                "clay_pct": np.full((h, w), np.nan),
                 "per_mukey": {}, "available": False}
     feats = json.load(open(feats_path))["features"]
     tab_path = os.path.join(D, "soils", "tabular.json")
@@ -198,17 +258,30 @@ def soil_fields(grid):
 
     h, w = mukey.shape
     restrictive_cm = np.full((h, w), np.nan)   # depth to bedrock / perched table
+    bedrock_cm = np.full((h, w), np.nan)
+    water_table_cm = np.full((h, w), np.nan)
     hsg = np.full((h, w), None, dtype=object)  # hydrologic soil group string
     ksat_min = np.full((h, w), np.nan)         # profile bottleneck Ksat, mm/hr
+    surface_ksat = np.full((h, w), np.nan)     # surface Ksat, mm/hr
+    root_zone_taw = np.full((h, w), np.nan)    # available water over 0-70 cm, mm
+    sand_pct = np.full((h, w), np.nan)
+    silt_pct = np.full((h, w), np.nan)
+    clay_pct = np.full((h, w), np.nan)
 
     per_mukey = {}
     for mk, rec in tabular.items():
+        sand, silt, clay = surface_texture_fractions(rec)
         depths = [d for d in (rec.get("depth_to_bedrock_min_cm"),
                               rec.get("water_table_depth_annual_min_cm")) if d is not None]
         per_mukey[mk] = {
             "restrictive_cm": min(depths) if depths else np.nan,
+            "bedrock_cm": rec.get("depth_to_bedrock_min_cm"),
+            "water_table_cm": rec.get("water_table_depth_annual_min_cm"),
             "hsg": rec.get("hydrologic_group"),
             "ksat_min": rec.get("profile_ksat_min_mm_hr"),
+            "surface_ksat": rec.get("surface_ksat_mm_hr"),
+            "root_zone_taw_mm": root_zone_taw_mm(rec),
+            "sand_pct": sand, "silt_pct": silt, "clay_pct": clay,
             "muname": rec.get("muname"),
         }
     for r in range(h):
@@ -218,11 +291,28 @@ def soil_fields(grid):
             if not rec:
                 continue
             restrictive_cm[r, c] = rec["restrictive_cm"]
+            if rec["bedrock_cm"] is not None:
+                bedrock_cm[r, c] = rec["bedrock_cm"]
+            if rec["water_table_cm"] is not None:
+                water_table_cm[r, c] = rec["water_table_cm"]
             hsg[r, c] = rec["hsg"]
             if rec["ksat_min"] is not None:
                 ksat_min[r, c] = rec["ksat_min"]
-    return {"mukey": mukey, "restrictive_cm": restrictive_cm, "hsg": hsg,
-            "ksat_min": ksat_min, "per_mukey": per_mukey, "available": True}
+            if rec["surface_ksat"] is not None:
+                surface_ksat[r, c] = rec["surface_ksat"]
+            if rec["root_zone_taw_mm"] is not None:
+                root_zone_taw[r, c] = rec["root_zone_taw_mm"]
+            for values, key in ((sand_pct, "sand_pct"), (silt_pct, "silt_pct"),
+                                (clay_pct, "clay_pct")):
+                if rec[key] is not None:
+                    values[r, c] = rec[key]
+    return {"mukey": mukey, "restrictive_cm": restrictive_cm,
+            "bedrock_cm": bedrock_cm, "water_table_cm": water_table_cm,
+            "hsg": hsg,
+            "ksat_min": ksat_min, "surface_ksat": surface_ksat,
+            "root_zone_taw_mm": root_zone_taw,
+            "sand_pct": sand_pct, "silt_pct": silt_pct, "clay_pct": clay_pct,
+            "per_mukey": per_mukey, "available": True}
 
 
 # ------------------------------------------------------------- seep scoring

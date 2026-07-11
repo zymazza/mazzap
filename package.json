@@ -51,7 +51,8 @@
     "canopy-history": "python3 scripts/canopy_density.py",
     "build-test-fixture": "python3 scripts/build_test_fixture.py",
     "test": "TWIN_DATA_DIR=tests/fixtures/mini-twin/data python3 scripts/twin_query_test.py",
-    "test:demo": "TWIN_DATA_DIR=twins/demo/data python3 scripts/twin_query_test.py"
+    "test:demo": "TWIN_DATA_DIR=twins/demo/data python3 scripts/twin_query_test.py",
+    "test:hydrology": "python3 scripts/hydro_scenario_test.py && node scripts/simulation_flow_units_test.mjs"
   },
   "author": "Zy Mazza",
   "license": "MIT"

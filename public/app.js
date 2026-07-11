@@ -370,7 +370,11 @@
     const fresh = await loadSimulationCatalog();
     fresh.layers.forEach((l) => {
       state.layerData.delete(l.id);
-      if (enableIds && enableIds.includes(l.id)) state.enabled.set(l.id, true);
+      if (enableIds && l.group === 'scenario') {
+        state.enabled.set(l.id, enableIds.includes(l.id));
+      } else if (enableIds && enableIds.includes(l.id)) {
+        state.enabled.set(l.id, true);
+      }
       if (!state.enabled.has(l.id)) state.enabled.set(l.id, false);
     });
     state.simulation = fresh;

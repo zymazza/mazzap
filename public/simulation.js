@@ -59,7 +59,8 @@
       ['partition.runoff_m3', result.partition?.runoff_m3, (v) => numberOrNull(v) != null],
       ['partition.infiltration_mm_mean', result.partition?.infiltration_mm_mean, (v) => numberOrNull(v) != null],
       ['partition.infiltration_m3', result.partition?.infiltration_m3, (v) => numberOrNull(v) != null],
-      ['outlet.peak_discharge_cfs_est', result.outlet?.peak_discharge_cfs_est, (v) => numberOrNull(v) != null],
+      ['outlet.peak_discharge_cfs_est', result.outlet?.peak_discharge_cfs_est,
+        (v) => numberOrNull(v) != null || result.outlet?.below_screening_resolution === true],
       ['outlet.event_volume_m3', result.outlet?.event_volume_m3, (v) => numberOrNull(v) != null],
     ];
     return fields.filter(([, value, present]) => !present(value)).map(([path]) => path);
@@ -75,16 +76,43 @@
 
     const rows = [
       ['Water input', `${fmtMaybe(waterInput.total_mm)} mm · ${fmtMaybe(waterInput.total_m3_on_aoi)} m³ on the land`],
-      ['Runs off', `${fmtMaybe(partition.runoff_mm_mean)} mm (${pctMaybe(partition.runoff_pct)}) · ${fmtMaybe(partition.runoff_m3)} m³`],
-      ['Soaks in', `${fmtMaybe(partition.infiltration_mm_mean)} mm · ${fmtMaybe(partition.infiltration_m3)} m³`],
-      ['Outlet peak', `~${textMaybeNumber(outlet.peak_discharge_cfs_est)} cfs (±50%)`],
-      ['Outlet volume', `${fmtMaybe(outlet.event_volume_m3)} m³ over the event`],
+      ['Not infiltrated', `${fmtMaybe(partition.runoff_mm_mean)} mm (${pctMaybe(partition.runoff_pct)}) · ${fmtMaybe(partition.runoff_m3)} m³`],
+      ['Infiltrated', `${fmtMaybe(partition.infiltration_mm_mean)} mm · ${fmtMaybe(partition.infiltration_m3)} m³`],
     ];
+    if (numberOrNull(partition.root_zone_storage_mm_mean) != null) {
+      rows.push(['Profile water gain', `${fmtMaybe(partition.root_zone_storage_mm_mean)} mm · ${fmtMaybe(partition.root_zone_storage_m3)} m³`]);
+    }
+    if (numberOrNull(partition.deep_drainage_mm_mean) != null) {
+      rows.push(['Profile percolation', `${fmtMaybe(partition.deep_drainage_mm_mean)} mm · ${fmtMaybe(partition.deep_drainage_m3)} m³`]);
+    }
+    if (numberOrNull(partition.saturation_excess_mm_mean) != null) {
+      rows.push(['Local saturation excess', `${fmtMaybe(partition.saturation_excess_mm_mean)} mm · ${fmtMaybe(partition.saturation_excess_m3)} m³ generated`]);
+    }
+    if (numberOrNull(partition.profile_saturation_pct_mean) != null) {
+      const initial = numberOrNull(partition.initial_profile_saturation_pct_mean);
+      const change = numberOrNull(partition.profile_saturation_change_pct_points_mean);
+      rows.push(['Mean profile saturation',
+        `${fmtMaybe(partition.profile_saturation_pct_mean, 1)}% final`
+        + `${initial != null ? ` · ${fmt(initial, 1)}% antecedent` : ''}`
+        + `${change != null ? ` · +${fmt(change, 1)} points` : ''}`]);
+    }
+    const belowResolution = outlet.below_screening_resolution === true;
+    rows.push(
+      ['Outlet peak', belowResolution
+        ? 'Below screening resolution (<0.2% of input)'
+        : `~${textMaybeNumber(outlet.peak_discharge_cfs_est)} cfs (screening)`],
+      ['Outlet volume', `${fmtMaybe(outlet.event_volume_m3)} m³ over the event`
+        + `${belowResolution ? ' · budget bookkeeping only' : ''}`],
+    );
     const storageM3 = numberOrNull(ponding.depression_storage_m3);
     if (storageM3 != null) {
-      rows.push(['Ponds & pools', ponding.storage_filled
-        ? `fill (${fmt(storageM3)} m³ of storage)`
-        : 'partial filling']);
+      const retainedM3 = numberOrNull(ponding.retained_water_m3);
+      const fillPct = numberOrNull(ponding.storage_fill_pct);
+      rows.push(['Ponds & pools', retainedM3 != null
+        ? `${fmt(retainedM3)} m³ retained${fillPct != null ? ` · ${fmt(fillPct, 1)}% of ${fmt(storageM3)} m³ capacity` : ''}`
+        : ponding.storage_filled
+          ? `fill (${fmt(storageM3)} m³ of storage)`
+          : 'partial filling']);
     }
     const missing = [];
     if (r.soil_available === false) missing.push('soil');
@@ -100,7 +128,7 @@
         : 'Scenario result',
       rows,
       degraded,
-      note: Array.isArray(r.notes) ? String(r.notes[0] || '') : '',
+      note: Array.isArray(r.notes) ? r.notes.slice(0, 2).filter(Boolean).join(' ') : '',
       missingFields: missingSimulationResultFields(result),
     };
   }
@@ -228,8 +256,8 @@
     function toggleRow(layer) {
       const row = document.createElement('label');
       row.className = 'toggle-row';
-      const swatch = layer.group === 'scenario' ? '#f57e3c'
-        : layer.group === 'water_balance' ? '#2aa198' : '#3e7cb1';
+      const swatch = layer.swatch || (layer.group === 'scenario' ? '#f57e3c'
+        : layer.group === 'water_balance' ? '#2aa198' : '#3e7cb1');
       const loading = !!api.isLoading?.(layer.id);
       row.classList.toggle('loading', loading);
       row.innerHTML =
@@ -240,6 +268,15 @@
       row.querySelector('input').addEventListener('change', async (e) => {
         e.target.disabled = true;
         try {
+          if (e.target.checked && layer.group === 'scenario') {
+            const otherScenarioLayers = (api.catalog()?.layers || []).filter((candidate) =>
+              candidate.group === 'scenario'
+              && candidate.id !== layer.id
+              && api.isEnabled(candidate.id));
+            for (const candidate of otherScenarioLayers) {
+              await api.setEnabled(candidate, false);
+            }
+          }
           await api.setEnabled(layer, e.target.checked);
         } finally {
           renderToggles();
@@ -376,7 +413,7 @@
         els.status.textContent = view.missingFields.length
           ? 'Scenario result is incomplete; showing available values.'
           : '';
-        await api.refresh(data.layers || []);
+        await api.refresh(data.default_visible_layers || data.layers || []);
         renderToggles();
       } catch (err) {
         els.status.textContent = 'Scenario failed: ' + (err?.message || err);
@@ -467,18 +504,51 @@
       const label = r?.scenario?.label
         || (api.catalog()?.layers || []).find((l) => l.scenario)?.scenario;
       const parts = [];
+      const absorbed = numberOrNull(byId.scenario_infiltration);
+      const stored = numberOrNull(byId.scenario_soil_storage);
+      const drained = numberOrNull(byId.scenario_deep_drainage);
+      const saturationExcess = numberOrNull(byId.scenario_saturation_excess);
+      const saturationPct = numberOrNull(byId.scenario_saturation);
+      const runon = numberOrNull(byId.scenario_runon);
+      const ponded = numberOrNull(byId.scenario_ponded_water);
       if (byId.scenario_runoff != null && r) {
         const total = numberOrNull(r?.water_input?.total_mm);
         const ro = numberOrNull(byId.scenario_runoff);
         if (ro != null && total != null) {
           const pct = total ? Math.round((ro / total) * 100) : null;
-          parts.push(`this spot sheds ~${Math.round(ro)} mm of the ${Math.round(total)} mm event${pct != null ? ` (${pct}% runs off, the rest soaks in)` : ''}`);
+          parts.push(`~${Math.round(ro)} mm of the local ${Math.round(total)} mm input stays on the surface here${pct != null ? ` (${pct}% locally unabsorbed)` : ''} before routing`);
         } else if (ro != null) {
-          parts.push(`this spot sheds ~${Math.round(ro)} mm of runoff`);
+          parts.push(`~${Math.round(ro)} mm of local input stays on the surface here before routing`);
         }
       } else if (byId.scenario_runoff != null) {
         const ro = numberOrNull(byId.scenario_runoff);
-        if (ro != null) parts.push(`this spot sheds ~${Math.round(ro)} mm of runoff`);
+        if (ro != null) parts.push(`~${Math.round(ro)} mm of local input stays on the surface here before routing`);
+      }
+      if (absorbed != null) {
+        const total = numberOrNull(r?.water_input?.total_mm);
+        parts.push(`~${Math.round(absorbed)} mm enters the soil${total != null && absorbed > total + 0.5 ? ', including upstream runon' : ''}`);
+      }
+      if (stored != null) {
+        parts.push(`~${Math.round(stored)} mm remains as modeled profile water gain`);
+      }
+      if (drained != null) {
+        parts.push(`~${Math.round(drained)} mm percolates below the modeled profile`);
+      }
+      if (saturationExcess != null) {
+        parts.push(saturationExcess >= 0.05
+          ? `~${Math.round(saturationExcess)} mm of local input becomes saturation excess here and may re-infiltrate downslope`
+          : 'no local saturation excess is generated here');
+      }
+      if (saturationPct != null) {
+        parts.push(`the modeled profile ends ~${Math.round(saturationPct)}% water-filled`);
+      }
+      if (runon != null) {
+        parts.push(runon >= 0.05
+          ? `~${fmt(runon, runon < 10 ? 1 : 0)} m³ of upstream surface water arrives here before infiltration`
+          : 'almost no upstream surface runon arrives here');
+      }
+      if (ponded != null && ponded >= 0.05) {
+        parts.push(`~${fmt(ponded, ponded < 10 ? 1 : 0)} mm remains ponded at event end`);
       }
       if (byId.scenario_flow != null) {
         const v = numberOrNull(byId.scenario_flow);
@@ -488,9 +558,9 @@
         const outlet = numberOrNull(r?.outlet?.event_volume_m3);
         const pct = outlet ? Math.round((v / outlet) * 100) : null;
         if (v >= 1) {
-          parts.push(`about ${fmt(v)} m³ of water passes through here over the event${pct ? ` — ${pct}% of everything leaving the property` : ''}`);
+          parts.push(`about ${fmt(v)} m³ of surface water leaves this cell over the event${pct ? ` — ${pct}% of the combined outlet volume` : ''}`);
         } else {
-          parts.push('almost no routed flow reaches this exact spot');
+          parts.push('almost no surface throughflow leaves this exact spot');
         }
       }
       if (!parts.length) return null;

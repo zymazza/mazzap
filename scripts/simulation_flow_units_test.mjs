@@ -73,20 +73,38 @@ test('simulation result view keeps full response wording', () => {
       runoff_m3: 1542,
       infiltration_mm_mean: 141.7,
       infiltration_m3: 38607,
+      root_zone_storage_mm_mean: 50.0,
+      root_zone_storage_m3: 13625,
+      deep_drainage_mm_mean: 91.7,
+      deep_drainage_m3: 24982,
+      saturation_excess_mm_mean: 0.0,
+      saturation_excess_m3: 0,
+      profile_saturation_pct_mean: 74.4,
+      initial_profile_saturation_pct_mean: 43.3,
+      profile_saturation_change_pct_points_mean: 31.1,
     },
     outlet: { peak_discharge_cfs_est: 8.2, event_volume_m3: 1200 },
-    ponding: { depression_storage_m3: 350, storage_filled: true },
+    ponding: {
+      depression_storage_m3: 350,
+      retained_water_m3: 140,
+      storage_fill_pct: 40,
+      storage_filled: false,
+    },
     notes: ['geometry is reliable; discharge magnitude is scenario-grade'],
   });
 
   assert.equal(view.label, 'Big winter');
   assert.deepEqual(plain(view.rows), [
     ['Water input', '147 mm · 40,149 m³ on the land'],
-    ['Runs off', '6 mm (3.8%) · 1,542 m³'],
-    ['Soaks in', '142 mm · 38,607 m³'],
-    ['Outlet peak', '~8.2 cfs (±50%)'],
+    ['Not infiltrated', '6 mm (3.8%) · 1,542 m³'],
+    ['Infiltrated', '142 mm · 38,607 m³'],
+    ['Profile water gain', '50 mm · 13,625 m³'],
+    ['Profile percolation', '92 mm · 24,982 m³'],
+    ['Local saturation excess', '0 mm · 0 m³ generated'],
+    ['Mean profile saturation', '74.4% final · 43.3% antecedent · +31.1 points'],
+    ['Outlet peak', '~8.2 cfs (screening)'],
     ['Outlet volume', '1,200 m³ over the event'],
-    ['Ponds & pools', 'fill (350 m³ of storage)'],
+    ['Ponds & pools', '140 m³ retained · 40% of 350 m³ capacity'],
   ]);
   assert.equal(view.note, 'geometry is reliable; discharge magnitude is scenario-grade');
   assert.deepEqual(plain(view.missingFields), []);
@@ -104,9 +122,9 @@ test('simulation result view tolerates partial responses with fallbacks', () => 
   assert.equal(view.label, 'Scenario result');
   assert.deepEqual(plain(view.rows), [
     ['Water input', '42 mm · unknown m³ on the land'],
-    ['Runs off', 'unknown mm (unknown) · unknown m³'],
-    ['Soaks in', 'unknown mm · unknown m³'],
-    ['Outlet peak', '~unknown cfs (±50%)'],
+    ['Not infiltrated', 'unknown mm (unknown) · unknown m³'],
+    ['Infiltrated', 'unknown mm · unknown m³'],
+    ['Outlet peak', '~unknown cfs (screening)'],
     ['Outlet volume', '900 m³ over the event'],
   ]);
   assert.deepEqual(plain(view.missingFields), [
@@ -119,4 +137,30 @@ test('simulation result view tolerates partial responses with fallbacks', () => 
     'partition.infiltration_m3',
     'outlet.peak_discharge_cfs_est',
   ]);
+});
+
+test('simulation result suppresses unresolved trace peak flow', () => {
+  const api = loadSimulationTestApi();
+  const view = api.simulationResultView({
+    scenario: { label: 'Slow melt' },
+    water_input: { total_mm: 177.8, total_m3_on_aoi: 48456 },
+    partition: {
+      runoff_mm_mean: 0.3,
+      runoff_pct: 0.2,
+      runoff_m3: 76,
+      infiltration_mm_mean: 177.5,
+      infiltration_m3: 48380,
+    },
+    outlet: {
+      event_volume_m3: 56,
+      peak_discharge_cfs_est: null,
+      below_screening_resolution: true,
+    },
+  });
+
+  assert.deepEqual(plain(view.rows.slice(3, 5)), [
+    ['Outlet peak', 'Below screening resolution (<0.2% of input)'],
+    ['Outlet volume', '56 m³ over the event · budget bookkeeping only'],
+  ]);
+  assert.equal(view.missingFields.includes('outlet.peak_discharge_cfs_est'), false);
 });

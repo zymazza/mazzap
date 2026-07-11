@@ -470,8 +470,9 @@ def hydrology_at(point: dict) -> dict:
     """The terrain-hydrology read at one point (the Simulation window's
     click-to-identify, server-side): upslope contributing area, TWI wetness
     percentile, ponding depth, the spring/seep score, and — if a scenario has
-    been run — its per-cell runoff and routed flow, plus the SSURGO soil here
-    and a plain-language reading matching the viewer. point: {"lat","lon"} or
+    been run — local surface excess, infiltration, profile state, runon,
+    retained pond water, and surface throughflow, plus the SSURGO soil here and
+    a plain-language reading matching the viewer. point: {"lat","lon"} or
     {"x","y"} scene-local meters. Needs `npm run analyze-hydrology` to have run."""
     return _run(_query().hydrology_at, point)
 
@@ -481,8 +482,9 @@ def hydrology_summary() -> dict:
     """Property-wide hydrology: the Tier-1 analysis summary (drainage outlet,
     depression/pond storage, hydrologic soil-group fractions, soil map units,
     the top spring/seep candidates with lat/lon, stream/wetland validation)
-    plus the last scenario run (water input, runoff/infiltration partition,
-    outlet discharge with its ±50% uncertainty band, ponding). The headline
+    plus the last scenario run (water input, terminal surface water,
+    infiltration, profile water gain/percolation/saturation, finite pond
+    retention, outlet flow, and mass-balance closure). The headline
     "what does the water do here" call."""
     return _run(_query().hydrology_summary)
 
@@ -528,10 +530,10 @@ def run_scenario(mode: str = "snowmelt", swe_in: float | None = None,
     climatology); melt_days 0.5-30. mode="rain": storm_hours 0.5-240. rain_in:
     rain (or rain-on-snow) inches 0-15. antecedent: "dry"|"normal"|"wet"|"auto"
     soil moisture; auto uses ET root-zone depletion/wetness when available.
-    as_of: YYYY-MM-DD for auto antecedent. frozen: frozen-ground floor (higher
-    runoff). After running, draw on the map or cite hydrology_summary numbers;
-    the geometry is reliable, discharge magnitude is scenario-grade (±50%), not
-    a forecast."""
+    as_of: YYYY-MM-DD for auto antecedent. frozen: restricted frozen-ground
+    screening state. After running, draw on the map or cite hydrology_summary
+    numbers; every absolute flux is
+    uncalibrated screening output, not a forecast."""
     return _run(_query().run_scenario, mode=mode, swe_in=swe_in, preset=preset,
                 melt_days=melt_days, rain_in=rain_in, storm_hours=storm_hours,
                 antecedent=antecedent, frozen=frozen, as_of=as_of)

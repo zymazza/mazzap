@@ -109,7 +109,7 @@ python3 scripts/twin_query_test.py
 | `manage_live_device(action, device_id, gateway_id?, label?, visible?, color?, command?, channel_index?, hop_limit?)` | Update/remove tracked devices or queue position/traceroute commands |
 | `hydrology_at(point)` | Water at a point: flow/wetness/ponding/seep (+ live scenario) + soil + a plain-language reading |
 | `hydrology_summary()` | Property-wide water: outlet, depression storage, top seeps, validation + the last scenario |
-| `run_scenario(mode, swe_in?/preset?, melt_days?, rain_in?, storm_hours?, antecedent?, frozen?)` | "What if it …" — run a snowmelt/rain event (**writes** scenario layers + a store run) |
+| `run_scenario(mode, swe_in?/preset?, melt_days?, rain_in?, storm_hours?, antecedent?, frozen?, as_of?)` | "What if it …" — run a snowmelt/rain event (**writes** scenario layers + a store run) |
 | `draw_polygon(polygon, label?)` | Draw a labeled orange polygon on the user's live 3D map |
 | `draw_point(point, label?)` | Drop a labeled orange marker on the user's live 3D map |
 | `clear_drawings()` | Remove every drawn shape from the map |
@@ -328,7 +328,8 @@ Natural-language questions and the tool calls they become:
    `hydrology_summary()` → the drainage outlet, depression storage, and the
    top spring/seep candidates (lat/lon, 0–100 score); then
    `run_scenario(mode="snowmelt", preset="p90", rain_in=1.5)` runs the event
-   and returns the runoff/infiltration partition and outlet discharge.
+   and returns the closed event budget, runon-aware infiltration, profile water
+   gain/percolation/saturation, finite pond retention, and outlet flow.
    `hydrology_at(point=…)` reads flow/wetness/ponding/seep + soil at any spot.
 
 7. **"What did the field survey find here?"**
@@ -378,18 +379,24 @@ The Simulation window's engine is on the MCP server:
 
 - `hydrology_at(point)` samples every Tier-1 derived layer (upslope
   contributing area, TWI wetness percentile, ponding depth, the spring/seep
-  score) plus the live scenario's runoff/routed-flow, joins the SSURGO soil
-  at the point, and returns the **same plain-language reading** the viewer
-  shows (a direct port of `public/simulation.js interpretAt`).
+  score) plus local surface excess, runon-aware infiltration, profile state,
+  arriving runon, retained pond water, and surface throughflow; it joins the
+  SSURGO soil and returns the **same plain-language reading** as the viewer.
 - `hydrology_summary()` is the property-wide read: outlet, depression/pond
   storage, hydrologic soil-group fractions, the top seep candidates, the
   stream/wetland validation, and the last scenario's water budget.
 - `run_scenario(…)` runs `scripts/hydro_scenario.py` with the **same clamps**
   as the viewer's `POST /api/simulate`, then returns the result. It **writes**:
-  it rewrites the `scenario_runoff` / `scenario_flow` drape layers and records
-  a `scenario` pipeline run (so scenario history stays queryable). Honest
-  framing carried in every payload: geometry — where water concentrates — is
-  reliable; discharge magnitude is ±50%-class, not a forecast.
+  it rewrites all nine `scenario_*` drapes and records a `scenario` pipeline
+  run (so history stays queryable). Every payload labels the coupled
+  Green-Ampt + analytic Brooks-Corey + relative-VSA + finite-depression result
+  as uncalibrated screening. Mapped boundaries inside the profile block vertical
+  event leakage, known deeper restrictions have finite sub-profile storage,
+  physical saturation uses physical porosity, D8 has no travel time/backwater,
+  and absolute SSURGO-derived fluxes are not forecasts. Numeric peak flow is
+  suppressed when the surface-water partition is below 0.2% of event input.
+  `antecedent="auto"` continuously interpolates the physical initial state from
+  the ET root-zone/depletion record; `as_of` selects its latest date.
 
 A scenario the agent runs persists to disk immediately, but the viewer's
 Simulation window only repaints on its next refresh (reload or re-toggle the

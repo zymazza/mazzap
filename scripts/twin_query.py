@@ -1216,7 +1216,7 @@ class TwinQuery:
 
     def _soils(self):
         """(scene-local soil polygons, {mukey: tabular attrs}) — the SSURGO
-        join behind the seep score and the per-cell scenario curve numbers."""
+        join behind the seep score and per-cell scenario hydraulic state."""
         def build():
             feats = (self._read_json(SOILS_FEATURES) or {}).get("features", [])
             tab = (self._read_json(SOILS_TABULAR) or {}).get("map_units", {})
@@ -3094,7 +3094,9 @@ class TwinQuery:
         """The terrain-hydrology read at one point — the server-side voice of
         the Simulation window's click-to-identify. Samples every derived layer
         (upslope contributing area, TWI wetness percentile, ponding depth, the
-        spring/seep score, and the live scenario's runoff/routed-flow if a
+        spring/seep score, and the live scenario's runoff, absorption, soil
+        storage, percolation, local saturation excess, profile saturation,
+        arriving runon, retained pond water, and surface throughflow if a
         scenario has been run), reports the SSURGO soil at the point, and
         synthesizes the same plain-language reading the viewer shows. Raises
         if `npm run analyze-hydrology` hasn't produced the layers yet."""
@@ -3143,8 +3145,10 @@ class TwinQuery:
         analysis summary (drainage outlet, depression/pond storage, hydrologic
         soil-group fractions, soil map units, the top spring/seep candidates
         with lat/lon, and the stream/wetland validation) plus the last scenario
-        that was run (water input, runoff/infiltration partition, outlet
-        discharge with its uncertainty band, ponding). Raises until
+        that was run (water input, terminal surface water, infiltrated water,
+        profile water gain, percolation, local saturation excess, outlet flow,
+        finite depression retention, and the closed event water budget with its
+        uncertainty band, ponding). Raises until
         `npm run analyze-hydrology` has run."""
         summ = self._read_json(HYDRO_SUMMARY)
         if not summ:
@@ -3168,8 +3172,8 @@ class TwinQuery:
         median|p90|max; melt_days 0.5-30) or "rain" (storm_hours 0.5-240).
         rain_in: rain-on-snow / storm rain inches 0-15. antecedent:
         dry|normal|wet|auto. auto uses ET water-balance antecedent state when
-        present. frozen: frozen-ground floor. dry_run returns the argv that
-        would run, without executing."""
+        present. frozen: restricted frozen-ground screening state. dry_run
+        returns the argv that would run, without executing."""
         if not os.path.isdir(HYDRO_DIR):
             raise TwinQueryError(
                 "hydrology not initialized — run `npm run analyze-hydrology` first",
@@ -3196,8 +3200,10 @@ class TwinQuery:
             raise TwinQueryError("scenario produced no parseable result",
                                  stdout=proc.stdout[-400:])
         result["note"] = (
-            "scenario written to the store and the viewer's scenario_runoff / "
-            "scenario_flow drape layers; the Simulation window repaints on its "
+            "scenario written to the store and the viewer's local-surface-excess, "
+            "infiltration, profile-water, percolation, saturation, runon, retained-"
+            "pond-water, and surface-throughflow drapes; the Simulation window "
+            "repaints on its "
             "next refresh (reload or re-toggle). Past scenarios stay queryable "
             "as pipeline runs.")
         return result
@@ -3895,26 +3901,58 @@ class TwinQuery:
 
         scen = self._read_json(HYDRO_LAST_SCENARIO)
         ro, flow = val("scenario_runoff"), val("scenario_flow")
-        if (ro is not None or flow is not None) and scen:
+        absorbed = val("scenario_infiltration")
+        stored = val("scenario_soil_storage")
+        drained = val("scenario_deep_drainage")
+        saturation_excess = val("scenario_saturation_excess")
+        saturation_pct = val("scenario_saturation")
+        runon = val("scenario_runon")
+        ponded = val("scenario_ponded_water")
+        scenario_values = (ro, absorbed, stored, drained, saturation_excess,
+                           saturation_pct, runon, ponded, flow)
+        if any(v is not None for v in scenario_values) and scen:
             label = (scen.get("scenario") or {}).get("label")
             parts = []
             total = (scen.get("water_input") or {}).get("total_mm")
             if ro is not None:
                 pct = round(ro / total * 100) if total else None
-                parts.append(f"this spot sheds ~{ro:.0f} mm of the "
-                             f"{round(total)} mm event"
-                             f"{f' ({pct}% runs off, the rest soaks in)' if pct is not None else ''}"
-                             if total else f"this spot sheds ~{ro:.0f} mm of runoff")
+                parts.append(f"~{ro:.0f} mm of the local {round(total)} mm input "
+                             f"stays on the surface here"
+                             f"{f' ({pct}% locally unabsorbed)' if pct is not None else ''} "
+                             "before routing"
+                             if total else f"~{ro:.0f} mm of local input stays on "
+                             "the surface here before routing")
+            if absorbed is not None:
+                runon_note = ", including upstream runon" if total and absorbed > total + 0.5 else ""
+                parts.append(f"~{absorbed:.0f} mm enters the soil{runon_note}")
+            if stored is not None:
+                parts.append(f"~{stored:.0f} mm remains as modeled profile water gain")
+            if drained is not None:
+                parts.append(f"~{drained:.0f} mm percolates below the modeled profile")
+            if saturation_excess is not None:
+                parts.append(
+                    f"~{saturation_excess:.0f} mm of local input becomes saturation "
+                    "excess here and may re-infiltrate downslope"
+                    if saturation_excess >= 0.05
+                    else "no local saturation excess is generated here")
+            if saturation_pct is not None:
+                parts.append(f"the modeled profile ends ~{saturation_pct:.0f}% water-filled")
+            if runon is not None:
+                parts.append(f"~{runon:.1f} m³ of upstream surface water arrives here "
+                             "before infiltration" if runon >= 0.05 else
+                             "almost no upstream surface runon arrives here")
+            if ponded is not None and ponded >= 0.05:
+                parts.append(f"~{ponded:.1f} mm remains ponded at event end")
             if flow is not None:
                 outlet = (scen.get("outlet") or {}).get("event_volume_m3")
                 if flow >= 1:
                     pct = round(flow / outlet * 100) if outlet else None
-                    parts.append(f"about {flow:.0f} m³ passes through here over the "
+                    parts.append(f"about {flow:.0f} m³ of surface water leaves this cell over the "
                                  "event"
-                                 + (f" — {pct}% of everything leaving the property"
+                                 + (f" — {pct}% of the combined outlet volume"
                                     if pct else ""))
                 else:
-                    parts.append("almost no routed flow reaches this exact spot")
+                    parts.append("almost no surface throughflow leaves this exact spot")
             if parts:
                 tag = f'“{label}”' if label else "scenario"
                 out.append(f"In the simulated {tag}: " + "; ".join(parts) + ".")
