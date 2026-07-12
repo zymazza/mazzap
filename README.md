@@ -97,6 +97,59 @@ optional **regional pack**, never hardcoded in the engine.
   viewshed against the effective land. G.A.I.A. can draft and visualize proposals
   before an explicitly confirmed apply. See [docs/plan.md](docs/plan.md).
 
+## Plan land alternatives
+
+Plan is a non-destructive workspace for trying changes to the land before making
+decisions in the field. The baseline twin never changes: each completed brush
+gesture becomes an immutable plan revision, and every simulation result stays
+scoped to the exact plan and revision that produced it.
+
+![VEIL Plan workspace showing the Flatirons demo, live Difference view, terrain and vegetation brushes, version controls, and change summary](docs/img/plan-workspace-flatirons.png)
+
+### Use Plan by hand
+
+1. Open **Plan** from the left rail, then click **New** or select an existing
+   plan. Choose **Baseline**, **Planned**, or **Difference** at any time to
+   compare the original land with the active alternative.
+2. Select **Remove plants**, **Add tree**, **Add bush**, **Depression**, or
+   **Mound**. Set brush radius and, where relevant, species, modeled stage,
+   spacing, and earth depth/height. Click once to place a plant; drag to paint
+   plantings or earthworks. The 3D terrain and vegetation update while you draw.
+3. Hold **Ctrl** (or **Command** on macOS) while dragging to move the camera
+   without leaving the brush. **Esc** cancels an unfinished gesture;
+   **Ctrl/Command+Z** undoes the last completed one.
+4. Watch the save indicator and change summary. Finished gestures autosave as
+   immutable revisions, so **Save version** is for naming a checkpoint—not for
+   protecting ordinary work. Select an older version to inspect or simulate it;
+   use **Branch** to turn that read-only version into a new editable alternative.
+   **Discard** archives the whole plan without deleting its revision history.
+5. Open **Simulation** and run hydrology, wildfire, Water & ET, solar, or
+   viewshed normally. With a plan selected, VEIL automatically runs against that
+   revision's effective terrain and vegetation instead of the baseline.
+
+### Plan with G.A.I.A.
+
+1. Open **Ask G.A.I.A.** and describe the outcome and location—for example,
+   “Draft a swale along the main flow path with a capture basin; show me the
+   difference, but do not apply it.” Use **Draw region** or **Pick point** first
+   when the request should be spatially constrained.
+2. G.A.I.A. creates or extends a plan, validates its proposed edits, estimates
+   quantities, and opens the proposal in the already-running viewer's
+   **Difference** view. This is a preview: it does not alter the plan head or the
+   baseline.
+3. Inspect the live terrain, switch among **Baseline**, **Planned**, and
+   **Difference**, and read the proposal quantities. Ask G.A.I.A. to revise the
+   draft if needed. When it is right, click **Approve as new revision** (or give
+   an equally explicit approval in chat). Approval creates one immutable
+   revision; stale proposals are rejected rather than overwriting newer work.
+4. Ask G.A.I.A. to run a plan simulation, or use the Simulation pane yourself,
+   then compare results across saved versions or branches.
+
+![Ask G.A.I.A. showing an unapplied Flatirons land-plan proposal, screening quantities, the live Difference overlay, and the explicit Approve as new revision action](docs/img/plan-gaia-proposal-flatirons.png)
+
+The detailed edit model, simulation coupling, REST endpoints, MCP tools, and
+current limits are documented in [docs/plan.md](docs/plan.md).
+
 ## Simulation
 
 Mapping shows what's *on* the land; **simulation** models the processes that move
@@ -574,10 +627,11 @@ Full details: [docs/survey.md](docs/survey.md).
 `scripts/mcp_server.py` is the MCP surface over the twin store. It exposes
 the same facts the viewer uses — terrain, entities, atlas layers, survey
 layers, provenance, and region summaries — as structured tools for LLM
-agents. The store itself is read-only; the only write tools are
-`draw_polygon` / `draw_point` / `clear_drawings`, which let the LLM put
-labeled orange shapes on the live 3D map (a flat `annotations.json` the
-viewer polls — never the store). It reads the active twin from
+agents. Query tools are read-only. Map drawings and viewer directives only
+write the flat `annotations.json` that the viewer polls. Plan lifecycle tools
+intentionally journal non-destructive plan roots, branches, checkpoints, and
+confirmed revisions; plan simulations write revision-scoped results. None of
+these paths edits the baseline twin. The server reads the active twin from
 `TWIN_DATA_DIR` or `./data`.
 
 Install the Python side once:
@@ -649,7 +703,11 @@ npm test
 Core MCP tools include `describe_twin`, `find_entities`, `get_entity`,
 `entity_history`, `identify_at`, `sample_raster`, `list_layers`,
 `layer_summary`, `summarize_region`, `aggregate_entities`,
-`canopy_change`, and `list_survey_layers`, plus the map-drawing trio
+`canopy_change`, and `list_survey_layers`; planning adds `list_plans`,
+`planning_catalog`, `create_plan`, `branch_plan`, `propose_plan_edits`, the
+semantic `propose_swale` / `propose_orchard` / `propose_garden` helpers,
+`apply_plan_proposal`, `visualize_plan`, and `run_plan_simulation`. The
+map-drawing trio remains
 `draw_polygon` / `draw_point` / `clear_drawings` — answers can point at places
 with labeled orange shapes in the viewer (built-in chat and external MCP
 clients alike; the chat panel's **Clear drawings** button removes them).
