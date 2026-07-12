@@ -6,6 +6,8 @@
   const SHRUB_STRIDE = 3;
   // Fire-reveal tinting: a passing fire front runs bright yellow -> orange, then
   // cools through char brown to near-black as the burn ages behind the front.
+  const SHRUB_GEOMETRY_RADIUS = 0.7;
+  const PLAN_TERRAIN_INDEX_CELL_METERS = 16;
   const FIRE_COLOR_WHITE = Object.freeze({ r: 1, g: 1, b: 1 });
   const FIRE_COLOR_HOT_YELLOW = '#ffcc33';
   const FIRE_COLOR_HOT_ORANGE = '#ff6a1a';
@@ -92,12 +94,169 @@
     assetCounts: Object.freeze({}),
     categoryCounts: Object.freeze({ evergreen: 0, deciduous: 0 }),
     count: 0,
+    entityIds: Object.freeze([]),
     values: new Float32Array(0),
   });
   const EMPTY_SHRUB_DATA = Object.freeze({
     count: 0,
+    entityIds: Object.freeze([]),
     values: new Float32Array(0),
   });
+
+  function createPlanTerrainIndex(cellSize = PLAN_TERRAIN_INDEX_CELL_METERS) {
+    return {
+      cellSize: Math.max(1, Number(cellSize) || PLAN_TERRAIN_INDEX_CELL_METERS),
+      buckets: new Map(),
+      slots: [],
+    };
+  }
+
+  function addPlanTerrainSlot(index, slot) {
+    if (!index || !slot || !Number.isFinite(slot.x) || !Number.isFinite(slot.y)) return;
+    const column = Math.floor(slot.x / index.cellSize);
+    const row = Math.floor(slot.y / index.cellSize);
+    const key = `${column}:${row}`;
+    index.slots.push(slot);
+    if (!index.buckets.has(key)) index.buckets.set(key, []);
+    index.buckets.get(key).push(slot);
+  }
+
+  function planTerrainSlotsInBounds(index, bounds) {
+    if (!index || !bounds || ![bounds.minX, bounds.maxX, bounds.minY, bounds.maxY].every(Number.isFinite)) {
+      return [];
+    }
+    const firstColumn = Math.floor(bounds.minX / index.cellSize);
+    const lastColumn = Math.floor(bounds.maxX / index.cellSize);
+    const firstRow = Math.floor(bounds.minY / index.cellSize);
+    const lastRow = Math.floor(bounds.maxY / index.cellSize);
+    const slots = [];
+    for (let column = firstColumn; column <= lastColumn; column += 1) {
+      for (let row = firstRow; row <= lastRow; row += 1) {
+        const candidates = index.buckets.get(`${column}:${row}`) || [];
+        candidates.forEach((slot) => {
+          if (slot.x >= bounds.minX && slot.x <= bounds.maxX
+              && slot.y >= bounds.minY && slot.y <= bounds.maxY) slots.push(slot);
+        });
+      }
+    }
+    return slots;
+  }
+
+  function planSlotInstances(slot) {
+    if (Array.isArray(slot?.instances)) return slot.instances;
+    return (slot?.meshes || []).map((mesh) => ({
+      mesh,
+      instanceIndex: slot.instanceIndex,
+    }));
+  }
+
+  function recordTouchedInstance(touched, mesh, instanceIndex) {
+    if (!touched || !mesh || !Number.isInteger(instanceIndex)) return;
+    if (touched instanceof Map) {
+      if (!touched.has(mesh)) touched.set(mesh, new Set());
+      touched.get(mesh).add(instanceIndex);
+      return;
+    }
+    touched.add?.(mesh);
+  }
+
+  function markInstanceMatrixIndices(mesh, indices) {
+    const attribute = mesh?.instanceMatrix;
+    if (!attribute || !indices?.size) return;
+    const ordered = [...indices]
+      .filter((index) => Number.isInteger(index) && index >= 0)
+      .sort((left, right) => left - right);
+    if (!ordered.length) return;
+    if (typeof attribute.addUpdateRange === 'function') {
+      let first = ordered[0];
+      let last = first;
+      for (let index = 1; index <= ordered.length; index += 1) {
+        const next = ordered[index];
+        if (next === last + 1) {
+          last = next;
+          continue;
+        }
+        attribute.addUpdateRange(first * 16, (last - first + 1) * 16);
+        first = next;
+        last = next;
+      }
+    }
+    attribute.needsUpdate = true;
+  }
+
+  function markInstanceMatrixFull(mesh) {
+    const attribute = mesh?.instanceMatrix;
+    if (!attribute) return;
+    attribute.clearUpdateRanges?.();
+    attribute.needsUpdate = true;
+  }
+
+  function flushInstanceMatrixUpdates(touched) {
+    if (touched instanceof Map) {
+      touched.forEach((indices, mesh) => markInstanceMatrixIndices(mesh, indices));
+      return;
+    }
+    touched?.forEach?.((mesh) => { if (mesh?.instanceMatrix) mesh.instanceMatrix.needsUpdate = true; });
+  }
+
+  function capturePlanSlotMatrices(slot) {
+    const instances = planSlotInstances(slot);
+    slot.originalMatrices = instances.map(({ mesh, instanceIndex }) => {
+      const values = mesh?.instanceMatrix?.array;
+      const offset = Number(instanceIndex) * 16;
+      return values && Number.isInteger(instanceIndex) && offset + 16 <= values.length
+        ? values.slice(offset, offset + 16) : null;
+    });
+  }
+
+  function hidePlanTerrainSlot(slot, touched = null) {
+    if (!slot || slot.planRemovalHidden) return false;
+    capturePlanSlotMatrices(slot);
+    planSlotInstances(slot).forEach(({ mesh, instanceIndex }) => {
+      const values = mesh?.instanceMatrix?.array;
+      const offset = Number(instanceIndex) * 16;
+      if (!values || !Number.isInteger(instanceIndex) || offset + 16 > values.length) return;
+      // Preserve translation and the homogeneous component, but collapse all
+      // three basis vectors so the instance disappears without repacking.
+      [0, 1, 2, 4, 5, 6, 8, 9, 10].forEach((component) => {
+        values[offset + component] = 0;
+      });
+      recordTouchedInstance(touched, mesh, instanceIndex);
+    });
+    slot.planRemovalHidden = true;
+    return true;
+  }
+
+  function restorePlanTerrainSlot(slot, touched = null) {
+    if (!slot?.planRemovalHidden || !Array.isArray(slot.originalMatrices)) return false;
+    planSlotInstances(slot).forEach(({ mesh, instanceIndex }, index) => {
+      const values = mesh?.instanceMatrix?.array;
+      const original = slot.originalMatrices[index];
+      const offset = Number(instanceIndex) * 16;
+      if (!values || !original || !Number.isInteger(instanceIndex) || offset + 16 > values.length) return;
+      values.set(original, offset);
+      recordTouchedInstance(touched, mesh, instanceIndex);
+    });
+    slot.originalMatrices = null;
+    slot.planRemovalHidden = false;
+    return true;
+  }
+
+  function shiftPlanTerrainSlot(slot, nextGroundHeight, touchedMeshes = new Set()) {
+    if (!slot || !Number.isFinite(nextGroundHeight) || !Number.isFinite(slot.groundHeight)) return false;
+    const delta = nextGroundHeight - slot.groundHeight;
+    if (Math.abs(delta) <= 1e-6) return false;
+    planSlotInstances(slot).forEach(({ mesh, instanceIndex }, index) => {
+      const values = mesh?.instanceMatrix?.array;
+      const matrixOffset = Number(instanceIndex) * 16 + 13;
+      if (!values || !Number.isInteger(instanceIndex) || matrixOffset >= values.length) return;
+      values[matrixOffset] += delta;
+      if (slot.originalMatrices?.[index]) slot.originalMatrices[index][13] += delta;
+      recordTouchedInstance(touchedMeshes, mesh, instanceIndex);
+    });
+    slot.groundHeight = nextGroundHeight;
+    return true;
+  }
 
   function hashUnit(value) {
     const text = String(value);
@@ -210,8 +369,10 @@
     if (payload && isPackedItemsArray(payload.items) && Number(payload.stride) >= 5) {
       const sourceStride = Number(payload.stride);
       const source = payload.items;
+      const sourceEntityIds = payload.entity_ids || payload.ids || [];
       const maxCount = Math.floor(source.length / sourceStride);
       const values = new Float32Array(maxCount * TREE_STRIDE);
+      const entityIds = [];
       const assetCounts = {};
       const categoryCounts = { evergreen: 0, deciduous: 0 };
       let count = 0;
@@ -237,6 +398,7 @@
         values[targetOffset + 3] = radius;
         values[targetOffset + 4] = evergreen ? 1 : 0;
         values[targetOffset + 5] = assetId;
+        entityIds[count] = String(sourceEntityIds[index] || '');
         categoryCounts[evergreen ? 'evergreen' : 'deciduous'] += 1;
         assetCounts[assetKey] = (assetCounts[assetKey] || 0) + 1;
         count += 1;
@@ -246,6 +408,7 @@
         assetCounts,
         categoryCounts,
         count,
+        entityIds,
         values: trimFloat32Array(values, count, TREE_STRIDE),
       };
     }
@@ -256,6 +419,7 @@
     }
 
     const values = new Float32Array(rows.length * TREE_STRIDE);
+    const entityIds = [];
     const assetCounts = {};
     const categoryCounts = { evergreen: 0, deciduous: 0 };
     let count = 0;
@@ -278,6 +442,7 @@
       values[offset + 3] = radius;
       values[offset + 4] = key === 'evergreen' ? 1 : 0;
       values[offset + 5] = assetId;
+      entityIds[count] = String(row?.id || '');
       categoryCounts[key] += 1;
       assetCounts[assetKey] = (assetCounts[assetKey] || 0) + 1;
       count += 1;
@@ -287,6 +452,7 @@
       assetCounts,
       categoryCounts,
       count,
+      entityIds,
       values: trimFloat32Array(values, count, TREE_STRIDE),
     };
   }
@@ -396,8 +562,10 @@
     if (payload && isPackedItemsArray(payload.items) && Number(payload.stride) >= SHRUB_STRIDE) {
       const sourceStride = Number(payload.stride);
       const source = payload.items;
+      const sourceEntityIds = payload.entity_ids || payload.ids || [];
       const maxCount = Math.floor(source.length / sourceStride);
       const values = new Float32Array(maxCount * SHRUB_STRIDE);
+      const entityIds = [];
       let count = 0;
 
       for (let index = 0; index < maxCount; index += 1) {
@@ -412,11 +580,13 @@
         values[targetOffset] = x;
         values[targetOffset + 1] = y;
         values[targetOffset + 2] = baseScale;
+        entityIds[count] = String(sourceEntityIds[index] || '');
         count += 1;
       }
 
       return {
         count,
+        entityIds,
         values: trimFloat32Array(values, count, SHRUB_STRIDE),
       };
     }
@@ -427,6 +597,7 @@
     }
 
     const values = new Float32Array(rows.length * SHRUB_STRIDE);
+    const entityIds = [];
     let count = 0;
 
     rows.forEach((row) => {
@@ -440,11 +611,13 @@
       values[offset] = x;
       values[offset + 1] = y;
       values[offset + 2] = baseScale;
+      entityIds[count] = String(row?.id || '');
       count += 1;
     });
 
     return {
       count,
+      entityIds,
       values: trimFloat32Array(values, count, SHRUB_STRIDE),
     };
   }
@@ -509,6 +682,15 @@
         duration: null,
         appliedKey: null,
       };
+      // Plan removals mutate only the touched instance matrices. Preview
+      // matrices are restorable; committed IDs remain hidden optimistically
+      // until an authoritative plan/revision load replaces the land.
+      this.planRemovalPreview = null;
+      this.planCommittedRemovalIds = new Set();
+      this.planExternalTerrainSlots = [];
+      // Every effective entity is indexed by x/y; rendered entities additionally
+      // carry their mesh + instance slots for live terrain/removal mutations.
+      this.planTerrainIndex = createPlanTerrainIndex();
       this.fireColor = {
         natural: new THREE.Color(1, 1, 1),
         target: new THREE.Color(1, 1, 1),
@@ -569,6 +751,7 @@
         asset,
         loaded: false,
         loading: false,
+        loadPromise: null,
         error: null,
         height: 1,
         diameter: 1,
@@ -607,44 +790,81 @@
       this.treeAssetStates.forEach((state) => this.loadTreeAsset(state));
     }
 
-    async loadTreeAsset(state) {
-      if (!state || state.loaded || state.loading || this.disposed) {
-        return;
-      }
+    loadTreeAsset(state) {
+      if (!state || this.disposed) return Promise.resolve(null);
+      if (state.loaded) return Promise.resolve(state);
+      if (state.loadPromise) return state.loadPromise;
       state.loading = true;
-      try {
-        const response = await fetch(state.asset.url);
-        if (!response.ok) {
-          throw new Error(`${state.asset.url}: ${response.status}`);
+      state.loadPromise = (async () => {
+        try {
+          const response = await fetch(state.asset.url);
+          if (!response.ok) {
+            throw new Error(`${state.asset.url}: ${response.status}`);
+          }
+          const parsed = createTreeLibraryGeometry(await response.text());
+          if (!parsed || !parsed.parts.length) {
+            throw new Error(`${state.asset.url}: no usable geometry`);
+          }
+          state.height = parsed.height;
+          state.diameter = parsed.diameter;
+          state.parts = parsed.parts.map((part) => ({
+            kind: part.kind,
+            geometry: part.geometry,
+            material: this.createTreeAssetMaterial(state.asset, part.kind),
+            mesh: null,
+          }));
+          state.loaded = true;
+          state.error = null;
+          this.pendingAssetInvalidation = true;
+          this.requestRender();
+          return state;
+        } catch (err) {
+          state.error = err;
+          console.warn('tree library asset failed:', state.asset.key, err);
+          return null;
+        } finally {
+          state.loading = false;
+          if (!state.loaded) state.loadPromise = null;
         }
-        const parsed = createTreeLibraryGeometry(await response.text());
-        if (!parsed || !parsed.parts.length) {
-          throw new Error(`${state.asset.url}: no usable geometry`);
-        }
-        state.height = parsed.height;
-        state.diameter = parsed.diameter;
-        state.parts = parsed.parts.map((part) => ({
-          kind: part.kind,
+      })();
+      return state.loadPromise;
+    }
+
+    planTreeAssetState(assetKey, type = 'evergreen') {
+      return this.treeAssetStates.get(String(assetKey || ''))
+        || this.treeAssetStates.get(type === 'deciduous' ? 'maple' : 'pine')
+        || null;
+    }
+
+    getPlanTreeRenderSpec(assetKey, type = 'evergreen') {
+      const state = this.planTreeAssetState(assetKey, type);
+      if (!state?.loaded || !state.parts.length) return null;
+      return {
+        assetKey: state.asset.key,
+        diameter: state.diameter,
+        height: state.height,
+        parts: state.parts.map((part, index) => ({
           geometry: part.geometry,
-          material: this.createTreeAssetMaterial(state.asset, part.kind),
-          mesh: null,
-        }));
-        state.loaded = true;
-        state.error = null;
-        this.pendingAssetInvalidation = true;
-        this.requestRender();
-      } catch (err) {
-        state.error = err;
-        console.warn('tree library asset failed:', state.asset.key, err);
-      } finally {
-        state.loading = false;
-      }
+          key: `${part.kind}-${index}`,
+          material: part.material,
+        })),
+      };
+    }
+
+    async ensurePlanTreeRenderSpec(assetKey, type = 'evergreen') {
+      const state = this.planTreeAssetState(assetKey, type);
+      if (!state) return null;
+      await this.loadTreeAsset(state);
+      return this.getPlanTreeRenderSpec(state.asset.key, type);
     }
 
     load({ treeInstances, shrubPoints, grid }) {
       if (this.disposed) {
         return;
       }
+      this.clearPlanRemovalPreview();
+      this.planCommittedRemovalIds.clear();
+      this.planExternalTerrainSlots = [];
       this.data.trees = normalizeTreePayload(treeInstances);
       this.data.shrubs = normalizeShrubPayload(shrubPoints);
       this.grid = grid;
@@ -666,6 +886,15 @@
         shrubs: 0,
         trees: 0,
       };
+      this.fireTint.active = false;
+      this.fireTint.sampleArrival = null;
+      this.fireTint.revealTime = null;
+      this.fireTint.duration = null;
+      this.fireTint.appliedKey = null;
+      this.clearPlanRemovalPreview();
+      this.planCommittedRemovalIds.clear();
+      this.planExternalTerrainSlots = [];
+      this.planTerrainIndex = createPlanTerrainIndex();
       this.disposeTreeMeshes();
       this.disposeShrubMesh();
     }
@@ -727,6 +956,180 @@
         return;
       }
       this.group.visible = Boolean(visible);
+    }
+
+    beginPlanRemovalPreview() {
+      this.clearPlanRemovalPreview();
+      this.planRemovalPreview = {
+        hiddenSlots: new Set(),
+        ids: new Set(),
+      };
+    }
+
+    applyPlanRemovalSegment(start, end, radius) {
+      if (this.disposed) return [];
+      const a = Array.isArray(start) ? start.map(Number) : [];
+      const b = Array.isArray(end) ? end.map(Number) : a;
+      if (![a[0], a[1], b[0], b[1]].every(Number.isFinite)) return [];
+      if (!this.planRemovalPreview) this.beginPlanRemovalPreview();
+      const brushRadius = Math.max(0.1, Number(radius) || 0);
+      const bounds = {
+        minX: Math.min(a[0], b[0]) - brushRadius,
+        maxX: Math.max(a[0], b[0]) + brushRadius,
+        minY: Math.min(a[1], b[1]) - brushRadius,
+        maxY: Math.max(a[1], b[1]) + brushRadius,
+      };
+      const touched = new Map();
+      const added = [];
+      planTerrainSlotsInBounds(this.planTerrainIndex, bounds).forEach((slot) => {
+        const entityId = String(slot.entityId || '');
+        if (!entityId || this.planCommittedRemovalIds.has(entityId)
+            || this.planRemovalPreview.ids.has(entityId)) return;
+        if (pointToSegmentDistance(slot.x, slot.y, ...a, ...b) > brushRadius) return;
+        this.planRemovalPreview.ids.add(entityId);
+        this.planRemovalPreview.hiddenSlots.add(slot);
+        hidePlanTerrainSlot(slot, touched);
+        added.push(entityId);
+      });
+      flushInstanceMatrixUpdates(touched);
+      return added;
+    }
+
+    getPlanRemovalPreviewIds() {
+      return this.planRemovalPreview ? [...this.planRemovalPreview.ids] : [];
+    }
+
+    commitPlanRemovalPreview() {
+      if (!this.planRemovalPreview) return [];
+      const ids = [...this.planRemovalPreview.ids];
+      ids.forEach((id) => this.planCommittedRemovalIds.add(id));
+      this.planRemovalPreview.hiddenSlots.forEach((slot) => {
+        slot.originalMatrices = null;
+        slot.planRemovalHidden = true;
+      });
+      this.planRemovalPreview = null;
+      return ids;
+    }
+
+    // Backward-compatible whole-path entry point. Plan's live brush uses the
+    // segment method directly so each frame touches only the newest capsule.
+    setPlanRemovalPreview(points, radius) {
+      const path = (Array.isArray(points) ? points : [])
+        .filter((point) => Array.isArray(point) && Number.isFinite(Number(point[0])) && Number.isFinite(Number(point[1])))
+        .map((point) => [Number(point[0]), Number(point[1])]);
+      if (!path.length) {
+        this.clearPlanRemovalPreview();
+        return;
+      }
+      this.beginPlanRemovalPreview();
+      this.applyPlanRemovalSegment(path[0], path[0], radius);
+      for (let index = 1; index < path.length; index += 1) {
+        this.applyPlanRemovalSegment(path[index - 1], path[index], radius);
+      }
+    }
+
+    clearPlanRemovalPreview({ restore = true } = {}) {
+      if (!this.planRemovalPreview) return;
+      if (restore) {
+        const touched = new Map();
+        this.planRemovalPreview.hiddenSlots.forEach((slot) => restorePlanTerrainSlot(slot, touched));
+        flushInstanceMatrixUpdates(touched);
+      }
+      this.planRemovalPreview = null;
+    }
+
+    registerPlanTerrainSlot(x, y, groundHeight, instanceIndex, meshes, entityId = '', kind = '') {
+      const slot = {
+        x,
+        y,
+        groundHeight,
+        entityId: String(entityId || ''),
+        kind,
+        instanceIndex,
+        meshes: (meshes || []).filter(Boolean),
+        instances: (meshes || []).filter(Boolean).map((mesh) => ({ mesh, instanceIndex })),
+        originalMatrices: null,
+        planRemovalHidden: false,
+      };
+      addPlanTerrainSlot(this.planTerrainIndex, slot);
+      this.applyPlanRemovalStateToSlot(slot);
+      return slot;
+    }
+
+    setPlanTerrainSlotInstances(slot, instanceIndex, meshes) {
+      if (!slot) return slot;
+      slot.instanceIndex = instanceIndex;
+      slot.meshes = (meshes || []).filter(Boolean);
+      slot.instances = slot.meshes.map((mesh) => ({ mesh, instanceIndex }));
+      slot.originalMatrices = null;
+      slot.planRemovalHidden = false;
+      this.applyPlanRemovalStateToSlot(slot);
+      return slot;
+    }
+
+    applyPlanRemovalStateToSlot(slot) {
+      const entityId = String(slot?.entityId || '');
+      if (!entityId) return;
+      if (this.planRemovalPreview?.ids.has(entityId)) {
+        this.planRemovalPreview.hiddenSlots.add(slot);
+        hidePlanTerrainSlot(slot);
+        return;
+      }
+      if (this.planCommittedRemovalIds.has(entityId)) {
+        hidePlanTerrainSlot(slot);
+        slot.originalMatrices = null;
+      }
+    }
+
+    registerOptimisticPlanVegetation(slots) {
+      const registered = (slots || []).map((source) => {
+        const slot = {
+          x: Number(source.x),
+          y: Number(source.y),
+          groundHeight: Number(source.groundHeight),
+          entityId: String(source.entityId || ''),
+          kind: source.kind || '',
+          instances: (source.instances || []).filter((entry) => entry?.mesh && Number.isInteger(entry.instanceIndex)),
+          originalMatrices: null,
+          planRemovalHidden: false,
+        };
+        slot.meshes = slot.instances.map((entry) => entry.mesh);
+        slot.instanceIndex = slot.instances[0]?.instanceIndex ?? -1;
+        this.planExternalTerrainSlots.push(slot);
+        addPlanTerrainSlot(this.planTerrainIndex, slot);
+        this.applyPlanRemovalStateToSlot(slot);
+        return slot;
+      });
+      return registered;
+    }
+
+    replaceOptimisticPlanVegetationMesh(previousMesh, nextMesh) {
+      if (!previousMesh || !nextMesh || previousMesh === nextMesh) return;
+      this.planExternalTerrainSlots.forEach((slot) => {
+        slot.instances.forEach((entry) => {
+          if (entry.mesh === previousMesh) entry.mesh = nextMesh;
+        });
+        slot.meshes = slot.instances.map((entry) => entry.mesh);
+      });
+    }
+
+    clearOptimisticPlanVegetation() {
+      this.clearPlanRemovalPreview();
+      this.planCommittedRemovalIds.clear();
+      this.planExternalTerrainSlots = [];
+    }
+
+    syncPlanTerrainHeights(bounds) {
+      if (this.disposed || !this.grid || !bounds) return 0;
+      const touchedMeshes = new Map();
+      let changed = 0;
+      planTerrainSlotsInBounds(this.planTerrainIndex, bounds).forEach((slot) => {
+        if (!VEILTerrain.hasValidTerrainAtLocal(this.grid, slot.x, slot.y)) return;
+        const groundHeight = VEILTerrain.sampleTerrainHeightAtLocal(this.grid, slot.x, slot.y);
+        if (shiftPlanTerrainSlot(slot, groundHeight, touchedMeshes)) changed += 1;
+      });
+      flushInstanceMatrixUpdates(touchedMeshes);
+      return changed;
     }
 
     applyMeshShadowFlags(mesh) {
@@ -1235,12 +1638,18 @@
         return;
       }
       this.resetRenderedCounts();
+      if (this.planRemovalPreview) this.planRemovalPreview.hiddenSlots = new Set();
+      this.planTerrainIndex = createPlanTerrainIndex();
       if (!this.grid) {
         return;
       }
 
       this.renderTrees();
       this.renderShrubs();
+      this.planExternalTerrainSlots.forEach((slot) => {
+        addPlanTerrainSlot(this.planTerrainIndex, slot);
+        this.applyPlanRemovalStateToSlot(slot);
+      });
       this.applyFireTintToRenderedTrees(true);
     }
 
@@ -1270,6 +1679,10 @@
         const radius = Math.max(1.2, values[offset + 3] || 1.5);
         const evergreen = values[offset + 4] > 0.5;
         const assetKey = treeAssetKeyFromId(values[offset + 5]);
+        const entityId = String(treeData.entityIds?.[index] || '');
+        if (entityId && this.planCommittedRemovalIds.has(entityId)) continue;
+        const planSlot = this.registerPlanTerrainSlot(
+          x, y, Number.NaN, -1, [], entityId, 'tree');
         if (this.typeFilter === 'evergreen' && !evergreen) continue;
         if (this.typeFilter === 'deciduous' && evergreen) continue;
         if (!VEILTerrain.hasValidTerrainAtLocal(this.grid, x, y)) {
@@ -1285,6 +1698,7 @@
           assetState?.loaded && assetState.parts.length && assetState.capacity > assetState.visibleCount
         );
         const baseHeight = VEILTerrain.sampleTerrainHeightAtLocal(this.grid, x, y);
+        planSlot.groundHeight = baseHeight;
         const rotation = hashUnit(`tree:${Math.round(x * 10)}:${Math.round(y * 10)}`) * Math.PI * 2;
         this.quaternion.setFromAxisAngle(this.rotationAxis, rotation);
 
@@ -1306,6 +1720,8 @@
           assetState.parts.forEach((part) => {
             part.mesh?.setMatrixAt(visibleIndex, this.transform);
           });
+          this.setPlanTerrainSlotInstances(
+            planSlot, visibleIndex, assetState.parts.map((part) => part.mesh));
           if (assetState.fireScenePositions) {
             assetState.fireScenePositions[positionOffset] = x;
             assetState.fireScenePositions[positionOffset + 1] = y;
@@ -1337,6 +1753,8 @@
         this.scale.set(crownR, canopyHeight, crownR);
         this.transform.compose(this.position, this.quaternion, this.scale);
         state.canopyMesh.setMatrixAt(visibleIndex, this.transform);
+        this.setPlanTerrainSlotInstances(
+          planSlot, visibleIndex, [state.trunkMesh, state.canopyMesh]);
         if (state.fireScenePositions) {
           state.fireScenePositions[positionOffset] = x;
           state.fireScenePositions[positionOffset + 1] = y;
@@ -1352,8 +1770,8 @@
         }
         state.trunkMesh.count = visibleCount;
         state.canopyMesh.count = visibleCount;
-        state.trunkMesh.instanceMatrix.needsUpdate = true;
-        state.canopyMesh.instanceMatrix.needsUpdate = true;
+        markInstanceMatrixFull(state.trunkMesh);
+        markInstanceMatrixFull(state.canopyMesh);
         this.renderStats.trees += visibleCount;
       });
 
@@ -1366,7 +1784,7 @@
             return;
           }
           part.mesh.count = state.visibleCount;
-          part.mesh.instanceMatrix.needsUpdate = true;
+          markInstanceMatrixFull(part.mesh);
         });
         this.renderStats.trees += state.visibleCount;
       });
@@ -1392,6 +1810,10 @@
         const x = values[offset];
         const y = values[offset + 1];
         const baseScale = Math.max(0.55, Math.min(3.2, values[offset + 2] || 1));
+        const entityId = String(shrubData.entityIds?.[index] || '');
+        if (entityId && this.planCommittedRemovalIds.has(entityId)) continue;
+        const planSlot = this.registerPlanTerrainSlot(
+          x, y, Number.NaN, -1, [], entityId, 'shrub');
         if (!VEILTerrain.hasValidTerrainAtLocal(this.grid, x, y)) {
           continue; // off the parcel terrain -> don't float it
         }
@@ -1400,17 +1822,19 @@
         }
 
         const baseHeight = VEILTerrain.sampleTerrainHeightAtLocal(this.grid, x, y);
+        planSlot.groundHeight = baseHeight;
         const rotation = hashUnit(`shrub:${Math.round(x * 10)}:${Math.round(y * 10)}`) * Math.PI * 2;
         this.quaternion.setFromAxisAngle(this.rotationAxis, rotation);
         this.position.set(x, baseHeight + baseScale * 0.42, -y);
         this.scale.set(baseScale, baseScale * 0.9, baseScale);
         this.transform.compose(this.position, this.quaternion, this.scale);
         shrubMesh.setMatrixAt(visibleCount, this.transform);
+        this.setPlanTerrainSlotInstances(planSlot, visibleCount, [shrubMesh]);
         visibleCount += 1;
       }
 
       shrubMesh.count = visibleCount;
-      shrubMesh.instanceMatrix.needsUpdate = true;
+      markInstanceMatrixFull(shrubMesh);
       this.renderStats.shrubs = visibleCount;
     }
 
@@ -1447,6 +1871,18 @@
   global.VEILVegetation = {
     create(scene, options) {
       return new VegetationRenderer(scene, options);
+    },
+    _test: {
+      addPlanTerrainSlot,
+      createPlanTerrainIndex,
+      flushInstanceMatrixUpdates,
+      hidePlanTerrainSlot,
+      markInstanceMatrixIndices,
+      normalizeShrubPayload,
+      normalizeTreePayload,
+      planTerrainSlotsInBounds,
+      restorePlanTerrainSlot,
+      shiftPlanTerrainSlot,
     },
   };
 })(window);

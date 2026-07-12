@@ -77,7 +77,12 @@ const OLLAMA_TEMPERATURE = process.env.OLLAMA_TEMPERATURE !== undefined
 // The active chat model label (shown in the panel / echoed in responses).
 const CHAT_MODEL = CHAT_PROVIDER === 'ollama' ? OLLAMA_MODEL : OPENAI_MODEL;
 
-const MAX_TOOL_ROUNDS = 8; // OpenAI batches calls per round, so 8 is plenty
+// GPT reasoning models may choose one function per response even when parallel
+// calls are available. Keep the loop bounded, but leave enough room for a Plan
+// request to discover its plan + target feature and create one review proposal.
+const MAX_TOOL_ROUNDS = Math.max(1, Math.min(64,
+  Math.floor(Number(process.env.OPENAI_MAX_TOOL_ROUNDS) || 16)));
+const OPENAI_NEAR_TOOL_CAP_WARNING = 3;
 // Local reasoning models often emit ONE tool call per turn after thinking, so they
 // need many more rounds to work through a multi-step question. A
 // site-selection question (gather facts at 3 spots + draw 3 points) can spend
@@ -410,6 +415,14 @@ function isEcologyIntent(text) {
     .test(String(text || ''));
 }
 
+function isPlanEditIntent(text) {
+  const value = String(text || '');
+  const mutation = /\b(add|apply|build|clear|cut|delete|dig|fill|grade|lower|modify|move|plant|raise|remove|replace|restore)\b/i.test(value)
+    || /\b(propose|preview)\b/i.test(value);
+  const land = /\b(plan|terrain|earth|soil|tree|trees|shrub|shrubs|vegetation|creek|stream|swale|orchard|garden|pond|berm)\b/i.test(value);
+  return mutation && land;
+}
+
 function isEcologyLayerInspectionTool(name) {
   return new Set([
     'list_layers',
@@ -454,7 +467,7 @@ function ecologyPreflightToolResult() {
 }
 
 function ecologyDynamicInstructions(userText) {
-  if (!isEcologyIntent(userText)) return '';
+  if (!isEcologyIntent(userText) || isPlanEditIntent(userText)) return '';
   return [
     '',
     'CURRENT REQUEST THEMATIC PREFLIGHT',
@@ -468,6 +481,98 @@ function ecologyDynamicInstructions(userText) {
     '- Use layer_summary on promising layers, state missing evidence or proxy',
     '  choices, then filter/reveal layers, recommend sites, or draw points.',
   ].join('\n');
+}
+
+function planEditDynamicInstructions(userText) {
+  if (!isPlanEditIntent(userText)) return '';
+  return [
+    '',
+    'CURRENT REQUEST IS A PLAN EDIT',
+    '- Use the Plan proposal workflow directly. Do not run thematic layer',
+    '  discovery, reveal atlas layers, draw point markers, or call a separate',
+    '  visualization tool; propose_plan_edits demonstrates its preview itself.',
+    '- Reuse facts already present in this conversation. Gather only the current',
+    '  plan/revision and the mapped target geometry actually needed for the edit.',
+    '- For vegetation removal near a stream/road/other mapped feature, do NOT',
+    '  enumerate trees or copy its geometry. Find the target entity, then call',
+    '  propose_vegetation_clearance once with its ID, buffer_m, and tree/shrub',
+    '  kinds. The tool obtains the geometry and freezes the matching entity IDs.',
+    '- If target discovery returns multiple plausible linear features and the user',
+    '  did not identify one by name/location, do not silently choose the first ID;',
+    '  inspect the candidates or ask which feature they mean.',
+    '- After any propose_* tool succeeds, stop calling tools. Briefly report the',
+    '  preview quantities and ask the user to review/confirm. Never apply in the',
+    '  same turn that creates the proposal.',
+  ].join('\n');
+}
+
+function isPlanConfirmationIntent(text) {
+  let value = String(text || '').trim().toLowerCase();
+  if (!value || /\b(do not|don't|dont|not yet|wait|hold|cancel|stop)\b/.test(value)) {
+    return false;
+  }
+  value = value.replace(/[^a-z0-9_\s-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  value = value.replace(/^please\s+/, '').replace(/\s+please$/, '');
+  return /^(?:yes\s+)?(?:yes|apply(?:\s+(?:it|this|that|the proposal|the changes))?|confirm(?:\s+(?:it|this|that|the proposal|the changes))?|confirm and apply|go ahead(?:\s+and\s+(?:apply(?:\s+it)?|make the changes))?|do it|make (?:the|these|those) changes|accept(?:\s+(?:it|this|that|the proposal))?|approve(?:\s+(?:it|this|that|the proposal))?|looks good(?:\s+apply it)?)$/.test(value);
+}
+
+function loadPlanProposal(proposalId, dataDir = DATA_DIR) {
+  if (!/^proposal_[a-z0-9]+$/.test(String(proposalId || ''))) return null;
+  try {
+    const file = path.join(dataDir, 'plans', 'proposals', `${proposalId}.json`);
+    const proposal = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return proposal && typeof proposal === 'object' ? proposal : null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function planConfirmationContext(userText, history, options = {}) {
+  if (!isPlanConfirmationIntent(userText)) return null;
+  const dataDir = options.dataDir || DATA_DIR;
+  let annotations = options.annotations;
+  if (annotations === undefined) {
+    try {
+      annotations = JSON.parse(fs.readFileSync(path.join(dataDir, 'annotations.json'), 'utf8'));
+    } catch (_err) {
+      annotations = null;
+    }
+  }
+  const candidates = [];
+  const explicit = String(userText || '').match(/\bproposal_[a-z0-9]+\b/gi) || [];
+  candidates.push(...explicit.map((value) => value.toLowerCase()));
+  const activeId = annotations?.plan_view?.proposal_id;
+  if (activeId) candidates.push(String(activeId));
+  for (let index = (history || []).length - 1; index >= 0; index -= 1) {
+    const ids = String(history[index]?.content || '').match(/\bproposal_[a-z0-9]+\b/gi) || [];
+    candidates.push(...ids.reverse().map((value) => value.toLowerCase()));
+  }
+  const loader = options.loadProposal || ((proposalId) => loadPlanProposal(proposalId, dataDir));
+  for (const proposalId of [...new Set(candidates)]) {
+    const proposal = loader(proposalId);
+    if (!proposal || !['proposed', 'applied'].includes(proposal.status)) continue;
+    return {
+      proposal_id: proposal.proposal_id,
+      status: proposal.status,
+      applied_revision_id: proposal.applied_revision_id || null,
+      plan_id: proposal.plan_id,
+      expected_revision_id: proposal.expected_revision_id,
+      label: proposal.label || 'Plan proposal',
+      preview: proposal.preview || {},
+    };
+  }
+  return null;
+}
+
+function appliedPlanReply(context, result) {
+  const revisionId = result?.revision?.revision_id;
+  const removed = context?.preview?.vegetation?.entities_removed;
+  const parts = [`Applied **${context?.label || 'the Plan proposal'}**.`];
+  if (Number.isFinite(Number(removed))) {
+    parts.push(`The **${Number(removed).toLocaleString('en-US')}** previewed vegetation removals are now committed.`);
+  }
+  if (revisionId) parts.push(`New revision: **${revisionId}**.`);
+  return parts.join(' ');
 }
 
 const CHAT_SYSTEM_PROMPT = [
@@ -650,6 +755,92 @@ function layerRefsFromToolActivity(args, result) {
   return Array.from(out.values()).slice(0, 8);
 }
 
+const PLAN_PROPOSAL_TOOLS = new Set([
+  'propose_plan_edits', 'propose_vegetation_clearance',
+  'propose_swale', 'propose_orchard', 'propose_garden',
+]);
+const PLAN_TERMINAL_TOOLS = new Set([...PLAN_PROPOSAL_TOOLS, 'apply_plan_proposal']);
+const PLAN_TERMINAL_FINALIZE_PROMPT = [
+  'The Plan tool just succeeded. Do not call another tool in this turn.',
+  'If this was a proposal, report its preview quantities and ask the user to',
+  'review/confirm it; do not apply it yet. If it was an apply, report completion.',
+].join(' ');
+const TOOL_BUDGET_FINALIZE_PROMPT = [
+  'The tool budget is exhausted. Do not call more tools. Give the user a concise',
+  'status that says exactly what completed and what remains. Never claim that a',
+  'proposal, edit, drawing, or analysis happened unless a tool result confirmed it.',
+].join(' ');
+
+function successfulPlanTerminalTool(name, result) {
+  if (!PLAN_TERMINAL_TOOLS.has(name)) return false;
+  let parsed;
+  try { parsed = JSON.parse(String(result || '')); } catch (_err) { return false; }
+  if (!parsed || typeof parsed !== 'object' || parsed.error) return false;
+  if (name === 'apply_plan_proposal') {
+    return !!(parsed.revision && parsed.proposal?.status === 'applied');
+  }
+  return typeof parsed.proposal_id === 'string' && parsed.proposal_id.startsWith('proposal_');
+}
+
+function toolResultForModel(name, result) {
+  if (!PLAN_TERMINAL_TOOLS.has(name)) return cap(String(result || ''));
+  let parsed;
+  try { parsed = JSON.parse(String(result || '')); } catch (_err) {
+    return cap(String(result || ''));
+  }
+  if (!parsed || typeof parsed !== 'object' || parsed.error) {
+    return cap(String(result || ''));
+  }
+  const compactVisualization = parsed.visualization && {
+    plan_id: parsed.visualization.plan_id,
+    revision_id: parsed.visualization.revision_id,
+    proposal_id: parsed.visualization.proposal_id,
+    label: parsed.visualization.label,
+    view: parsed.visualization.view,
+  };
+  if (name === 'apply_plan_proposal') {
+    return JSON.stringify({
+      proposal: parsed.proposal,
+      plan: parsed.plan && {
+        plan_id: parsed.plan.plan_id, name: parsed.plan.name,
+        head_revision_id: parsed.plan.head_revision_id,
+      },
+      revision: parsed.revision && {
+        revision_id: parsed.revision.revision_id,
+        parent_revision_id: parsed.revision.parent_revision_id,
+        message: parsed.revision.message,
+      },
+      diff: parsed.materialized?.diff,
+      visualization: compactVisualization,
+    });
+  }
+  const proposedEdits = (parsed.proposed_edits || []).map((edit) => {
+    const params = { ...(edit.params || {}) };
+    const entityIds = Array.isArray(params.entity_ids) ? params.entity_ids : [];
+    delete params.entity_ids;
+    if (entityIds.length) params.entity_count = entityIds.length;
+    return {
+      edit_id: edit.edit_id,
+      kind: edit.kind,
+      label: edit.label,
+      geometry_type: edit.geometry?.type || null,
+      params,
+    };
+  });
+  return JSON.stringify({
+    proposal_id: parsed.proposal_id,
+    status: parsed.status,
+    plan_id: parsed.plan_id,
+    expected_revision_id: parsed.expected_revision_id,
+    label: parsed.label,
+    proposed_edits: proposedEdits,
+    preview: parsed.preview,
+    clearance_target: parsed.clearance_target,
+    visualization: compactVisualization,
+    next_step: parsed.next_step,
+  });
+}
+
 async function runOpenAI({ history, toolDefs, instructions, apiKey, dataDir = DATA_DIR, onProgress = null, signal = null }) {
   const tools = toolDefs.map((t) => ({
     type: 'function', name: t.name, description: t.description, parameters: t.parameters,
@@ -660,19 +851,31 @@ async function runOpenAI({ history, toolDefs, instructions, apiKey, dataDir = DA
   let input = history;
   const userText = history[history.length - 1] && history[history.length - 1].content || '';
   const wantsJson = looksLikeJsonRequest(userText);
-  const ecologyRequest = isEcologyIntent(userText);
+  const ecologyRequest = isEcologyIntent(userText) && !isPlanEditIntent(userText);
   let ecologyLayerChecked = false;
   let ecologyPreflightNudged = false;
+  let nearCapNudged = false;
+  let planTerminalReached = false;
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
     if (signal?.aborted) break; // client disconnected — stop spending on the loop
-    const data = await openaiResponses({
+    if (!nearCapNudged && !planTerminalReached
+        && round >= MAX_TOOL_ROUNDS - OPENAI_NEAR_TOOL_CAP_WARNING) {
+      nearCapNudged = true;
+      const remaining = Math.max(0, MAX_TOOL_ROUNDS - round);
+      input = [...input, {
+        type: 'message', role: 'user',
+        content: `You have only about ${remaining} tool rounds left. Stop nonessential discovery. Complete the required action now if ready, then answer.`,
+      }];
+    }
+    const payload = {
       model: OPENAI_MODEL,
       reasoning: { effort: OPENAI_REASONING },
       instructions,
-      tools,
       input,
       ...(previousId ? { previous_response_id: previousId } : {}),
-    }, apiKey, signal);
+    };
+    if (!planTerminalReached) payload.tools = tools;
+    const data = await openaiResponses(payload, apiKey, signal);
     previousId = data.id;
     const calls = (data.output || []).filter((o) => o.type === 'function_call');
     if (!calls.length) {
@@ -697,11 +900,35 @@ async function runOpenAI({ history, toolDefs, instructions, apiKey, dataDir = DA
         if (isEcologyLayerInspectionTool(call.name)) ecologyLayerChecked = true;
       }
       onProgress?.({ type: 'tool_result', tool: call.name, layers: layerRefsFromToolActivity(args, result) });
-      trace.push({ tool: call.name, args, result: traceResult(result) });
-      input.push({ type: 'function_call_output', call_id: call.call_id, output: cap(result) });
+      const modelResult = toolResultForModel(call.name, result);
+      trace.push({ tool: call.name, args, result: traceResult(modelResult) });
+      input.push({ type: 'function_call_output', call_id: call.call_id, output: modelResult });
+      if (successfulPlanTerminalTool(call.name, result)) planTerminalReached = true;
+    }
+    if (planTerminalReached) {
+      input.push({ type: 'message', role: 'user', content: PLAN_TERMINAL_FINALIZE_PROMPT });
     }
   }
-  if (reply === null) reply = '(stopped after too many tool calls — try a narrower question)';
+  if (reply === null && !signal?.aborted) {
+    try {
+      const finalData = await openaiResponses({
+        model: OPENAI_MODEL,
+        reasoning: { effort: OPENAI_REASONING },
+        instructions,
+        input: [...input, {
+          type: 'message', role: 'user', content: TOOL_BUDGET_FINALIZE_PROMPT,
+        }],
+        ...(previousId ? { previous_response_id: previousId } : {}),
+      }, apiKey, signal);
+      const finalText = openaiOutputToText(finalData.output).trim();
+      if (finalText) {
+        reply = finalText;
+        trace.push({ finalize: { provider: 'openai', tools_disabled: true,
+          reason: 'tool_budget' } });
+      }
+    } catch (_err) { /* retain the bounded fallback below */ }
+  }
+  if (reply === null) reply = '(GAIA reached its tool budget before completing the request.)';
   if (!signal?.aborted && wantsJson && !hasContractJson(reply)) {
     try {
       const finalizePayload = {
@@ -742,7 +969,7 @@ async function runOllama({ history, toolDefs, instructions, dataDir = DATA_DIR, 
   const trace = [];
   const userText = history[history.length - 1].content || '';
   const wantsJson = looksLikeJsonRequest(userText);
-  const ecologyRequest = isEcologyIntent(userText);
+  const ecologyRequest = isEcologyIntent(userText) && !isPlanEditIntent(userText);
   let ecologyLayerChecked = false;
   let ecologyPreflightNudged = false;
   const drawPoints = new Set();
@@ -833,8 +1060,9 @@ async function runOllama({ history, toolDefs, instructions, dataDir = DATA_DIR, 
         if (isEcologyLayerInspectionTool(fn.name)) ecologyLayerChecked = true;
       }
       onProgress?.({ type: 'tool_result', tool: fn.name, layers: layerRefsFromToolActivity(args, result) });
-      trace.push({ tool: fn.name, args, result: traceResult(result) });
-      messages.push({ role: 'tool', tool_call_id: call.id, content: cap(result) });
+      const modelResult = toolResultForModel(fn.name, result);
+      trace.push({ tool: fn.name, args, result: traceResult(modelResult) });
+      messages.push({ role: 'tool', tool_call_id: call.id, content: modelResult });
       if (fn.name === 'draw_point') {
         const pointKey = drawPointCoordinateKey(args.point);
         if (pointKey) drawPoints.add(pointKey);
@@ -981,8 +1209,42 @@ async function handleChat(req, res) {
         name: t.name, description: t.description, parameters: t.inputSchema,
       }));
       const latestUserText = history[history.length - 1].content;
+      const confirmation = planConfirmationContext(latestUserText, history, { dataDir });
+      if (confirmation) {
+        if (confirmation.status === 'applied') {
+          return finishJson(200, {
+            reply: `**${confirmation.label}** is already applied${confirmation.applied_revision_id ? ` as revision **${confirmation.applied_revision_id}**` : ''}. No duplicate proposal or edit was created.`,
+            trace: [], model: CHAT_MODEL, provider: CHAT_PROVIDER,
+          });
+        }
+        const args = {
+          proposal_id: confirmation.proposal_id,
+          confirmed: true,
+          author: 'GAIA',
+        };
+        writeStreamEvent({ type: 'tool_call', tool: 'apply_plan_proposal', args });
+        const resultText = await mcpCall('apply_plan_proposal', args, dataDir);
+        let result;
+        try { result = JSON.parse(resultText); } catch (_err) {
+          throw new Error('apply_plan_proposal returned invalid JSON');
+        }
+        if (result?.error) {
+          return finishJson(result.error === 'plan_conflict' ? 409 : 400, {
+            error: result.message || result.error,
+          });
+        }
+        writeStreamEvent({ type: 'tool_result', tool: 'apply_plan_proposal' });
+        const compact = toolResultForModel('apply_plan_proposal', resultText);
+        return finishJson(200, {
+          reply: appliedPlanReply(confirmation, result),
+          trace: [{ tool: 'apply_plan_proposal', args, result: traceResult(compact) }],
+          model: CHAT_MODEL,
+          provider: CHAT_PROVIDER,
+        });
+      }
       const instructions = [
         CHAT_SYSTEM_PROMPT,
+        planEditDynamicInstructions(latestUserText),
         ecologyDynamicInstructions(latestUserText),
         await scopeContext(scope),
       ].filter(Boolean).join('\n\n');
@@ -2235,6 +2497,7 @@ const LIVE_EVENTS_PATH = path.join(LIVE_DIR, 'events.jsonl');
 const LIVE_REGISTRY_PATH = path.join(LIVE_DIR, 'registry.json');
 const LIVE_COMMAND_DIR = path.join(LIVE_DIR, 'commands');
 const LIVE_MAX_BODY = 1024 * 1024;
+const PLAN_MAX_BODY = 8 * 1024 * 1024;
 const LIVE_KINDS = new Set(['position', 'message', 'data', 'status', 'media', 'command']);
 const LIVE_TRANSPORTS = new Set(['serial', 'internet', 'bluetooth', 'tcp', 'udp', 'websocket', 'replay', 'manual', 'lora', 'mesh']);
 const liveLatest = new Map();
@@ -4565,13 +4828,147 @@ function clearAnnotations(res, dataDir = DATA_DIR) {
   try {
     fs.writeFileSync(annPath, JSON.stringify({
       version: 1, updated_at: new Date().toISOString(),
-      annotations: [], layer_views: [], sky_views: [], view_time: null,
+      annotations: [], layer_views: [], sky_views: [], view_time: null, plan_view: null,
     }, null, 1));
     send(res, 200, JSON.stringify({ ok: true }), { 'Content-Type': 'application/json' });
   } catch (err) {
     send(res, 500, JSON.stringify({ ok: false, error: err.message }),
       { 'Content-Type': 'application/json' });
   }
+}
+
+// -------------------------------------------------------------------- Plan
+// Plan metadata lives in the journaled GeoPackage and materialized terrain /
+// vegetation bundles are content-addressed beneath data/plans/cache, with
+// revision-scoped simulation facades beneath data/plans/revisions. Node
+// remains dependency-free: the Python domain service owns validation,
+// optimistic concurrency, geospatial materialization, and journal writes.
+
+const PLAN_COMMAND_TIMEOUT_MS = 2 * 60 * 1000;
+
+function planHttpStatus(payload, fallback = 500) {
+  const code = payload && payload.error;
+  if (code === 'plan_conflict') return 409;
+  if (code === 'plan_not_found' || code === 'revision_not_found') return 404;
+  if (code === 'invalid_request' || code === 'invalid_action' || code === 'invalid_edit'
+      || code === 'invalid_edits' || code === 'invalid_geometry' || code === 'edit_too_large'
+      || code === 'edit_outside_aoi' || code === 'unknown_vegetation') return 400;
+  return code ? fallback : 200;
+}
+
+function runPlanCommand(action, body, dataDir, callback) {
+  const argv = [path.join(ROOT, 'scripts', 'plan_cli.py'), action, '--data-dir', dataDir];
+  const py = spawn(HYDRO_PYTHON, argv, {
+    cwd: ROOT,
+    env: { ...process.env, TWIN_DATA_DIR: dataDir },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  let finished = false;
+  let timer = null;
+  const finish = (err, payload) => {
+    if (finished) return;
+    finished = true;
+    if (timer) clearTimeout(timer);
+    callback(err, payload);
+  };
+  py.stdout.setEncoding('utf8');
+  py.stderr.setEncoding('utf8');
+  py.stdout.on('data', (chunk) => { stdout += chunk; });
+  py.stderr.on('data', (chunk) => { stderr += chunk; });
+  py.on('error', (err) => finish(err));
+  py.on('close', (code) => {
+    const lines = stdout.trim().split('\n').filter(Boolean);
+    let payload = null;
+    try { payload = JSON.parse(lines[lines.length - 1] || '{}'); } catch (_err) { /* below */ }
+    if (!payload || typeof payload !== 'object') {
+      return finish(new Error(`plan command ${action} returned invalid JSON: ${(stderr || stdout).slice(-500)}`));
+    }
+    if (code !== 0 && !payload.error) {
+      payload = { error: 'plan_command_failed', message: stderr.slice(-500) || `plan command exited ${code}` };
+    }
+    return finish(null, payload);
+  });
+  py.stdin.on('error', (err) => finish(err));
+  py.stdin.end(JSON.stringify(body || {}));
+  timer = setTimeout(() => {
+    if (!finished) {
+      py.kill();
+      finish(new Error(`plan command ${action} timed out`));
+    }
+  }, action === 'simulate' ? 12 * 60 * 1000 : PLAN_COMMAND_TIMEOUT_MS);
+  timer.unref?.();
+}
+
+function sendPlanCommand(res, action, body, dataDir = DATA_DIR) {
+  runPlanCommand(action, body, dataDir, (err, payload) => {
+    if (err) {
+      return send(res, 500, JSON.stringify({ error: 'plan_command_failed', message: err.message }),
+        { 'Content-Type': 'application/json' });
+    }
+    return send(res, planHttpStatus(payload), JSON.stringify(payload),
+      { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+  });
+}
+
+function handlePlanMutation(req, res, action, routeBody = {}, dataDir = DATA_DIR) {
+  readBodyJson(req, PLAN_MAX_BODY, (err, body) => {
+    if (err) {
+      const tooLarge = /too large/i.test(String(err.message || ''));
+      return send(res, tooLarge ? 413 : 400,
+        JSON.stringify({ error: tooLarge ? 'request_too_large' : 'invalid_request',
+          message: tooLarge ? 'plan request body too large' : 'invalid JSON body' }),
+        { 'Content-Type': 'application/json' });
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return send(res, 400, JSON.stringify({ error: 'invalid_request', message: 'expected an object' }),
+        { 'Content-Type': 'application/json' });
+    }
+    return sendPlanCommand(res, action, { ...body, ...routeBody }, dataDir);
+  });
+}
+
+function routePlanRequest(req, res, pathname, requestUrl) {
+  const dataDir = requestDataDir(req, res);
+  if (req.method === 'GET' && pathname === '/api/plans') {
+    return sendPlanCommand(res, 'list', {
+      include_archived: requestUrl.searchParams.get('include_archived') === '1',
+    }, dataDir);
+  }
+  if (req.method === 'GET' && pathname === '/api/plans/catalog') {
+    return sendPlanCommand(res, 'catalog', {}, dataDir);
+  }
+  if (req.method === 'POST' && pathname === '/api/plans') {
+    return handlePlanMutation(req, res, 'create', {}, dataDir);
+  }
+  const simulationMatch = pathname.match(
+    /^\/api\/plans\/([^/]+)\/revisions\/([^/]+)\/simulations\/([^/]+)$/);
+  if (req.method === 'POST' && simulationMatch) {
+    return handlePlanMutation(req, res, 'simulate', {
+      plan_id: simulationMatch[1],
+      revision_id: simulationMatch[2],
+      simulator: simulationMatch[3],
+    }, dataDir);
+  }
+  const revisionMatch = pathname.match(/^\/api\/plans\/([^/]+)\/revisions\/([^/]+)$/);
+  if (req.method === 'GET' && revisionMatch) {
+    return sendPlanCommand(res, 'get', {
+      plan_id: revisionMatch[1], revision_id: revisionMatch[2], materialize: true,
+    }, dataDir);
+  }
+  const actionMatch = pathname.match(/^\/api\/plans\/([^/]+)\/(commit|checkpoint|branch|update)$/);
+  if (req.method === 'POST' && actionMatch) {
+    return handlePlanMutation(req, res, actionMatch[2], { plan_id: actionMatch[1] }, dataDir);
+  }
+  const planMatch = pathname.match(/^\/api\/plans\/([^/]+)$/);
+  if (req.method === 'GET' && planMatch) {
+    return sendPlanCommand(res, 'get', {
+      plan_id: planMatch[1], revision_id: requestUrl.searchParams.get('revision_id') || null,
+      materialize: requestUrl.searchParams.get('materialize') !== '0',
+    }, dataDir);
+  }
+  return false;
 }
 
 // CSRF / drive-by protection for state-changing routes. Browsers always attach
@@ -4649,7 +5046,10 @@ const server = http.createServer((req, res) => {
     return send(res, 400, 'Bad request');
   }
 
-  if (req.method === 'POST' && CSRF_PROTECTED.has(pathname) && !sameOriginOk(req)) {
+  const stateChangingPlanRequest = req.method !== 'GET' && req.method !== 'HEAD'
+    && pathname.startsWith('/api/plans');
+  if ((req.method === 'POST' && CSRF_PROTECTED.has(pathname) || stateChangingPlanRequest)
+      && !sameOriginOk(req)) {
     return send(res, 403, 'Forbidden: cross-origin request rejected');
   }
   if (hostedUnsupported(pathname)) {
@@ -4657,6 +5057,13 @@ const server = http.createServer((req, res) => {
       ok: false,
       error: 'this local hardware/import route is disabled in hosted mode',
     }), { 'Content-Type': 'application/json' });
+  }
+
+  if (pathname === '/api/plans' || pathname.startsWith('/api/plans/')) {
+    const routed = routePlanRequest(req, res, pathname, requestUrl);
+    if (routed !== false) return routed;
+    return send(res, 404, JSON.stringify({ error: 'not_found', message: 'unknown plan route' }),
+      { 'Content-Type': 'application/json' });
   }
 
   if (req.method === 'POST' && pathname === '/api/building-placements') {
@@ -4884,6 +5291,15 @@ if (require.main === module) {
 } else {
   module.exports = {
     _test: {
+      isPlanEditIntent,
+      planEditDynamicInstructions,
+      ecologyDynamicInstructions,
+      isPlanConfirmationIntent,
+      planConfirmationContext,
+      appliedPlanReply,
+      successfulPlanTerminalTool,
+      toolResultForModel,
+      MAX_TOOL_ROUNDS,
       normalizeLiveEvent,
       rememberLiveEvent,
       liveSnapshot,

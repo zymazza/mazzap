@@ -153,6 +153,51 @@ html, body {
 .hint { margin: 0; font-size: 12px; line-height: 1.5; color: var(--ink-dim); }
 .hint code { font-size: 10.5px; background: var(--glass-3); padding: 1px 5px; border-radius: 5px; }
 
+/* Plan workspace */
+#plan-view-group[hidden],
+#plan-tools-group[hidden],
+#plan-summary-group[hidden] { display: none; }
+.plan-save-state {
+  font-size: 10px; color: var(--ink-faint); text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.plan-save-state.busy { color: var(--amber); }
+.plan-save-state.saved { color: var(--accent); }
+.plan-save-state.error { color: var(--red); }
+.plan-select, .plan-field select, .plan-field input[type="number"], .plan-field input[type="text"] {
+  width: 100%; min-width: 0; font: inherit; font-size: 12px; color: var(--ink);
+  background: var(--glass-2); border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 7px 8px;
+}
+.plan-action-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+.plan-primary-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.plan-action-grid .wide-btn { padding: 7px 5px; font-size: 11.5px; }
+.wide-btn.destructive { color: var(--red); }
+.wide-btn.destructive:hover:not(:disabled) {
+  color: #ffd8d4; border-color: rgba(242, 118, 107, .42); background: rgba(242, 118, 107, .13);
+}
+.plan-tool-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+.plan-tool-grid button {
+  min-height: 42px; padding: 5px; font: inherit; font-size: 10.5px; line-height: 1.15;
+  cursor: pointer; color: var(--ink-dim); background: var(--glass-2);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+}
+.plan-tool-grid button:hover { color: var(--ink); background: var(--glass-3); }
+.plan-tool-grid button.active {
+  color: var(--accent); background: var(--accent-tint); border-color: var(--accent-line);
+}
+.plan-field { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 8px;
+  color: var(--ink-dim); font-size: 11.5px; }
+.plan-field input[type="range"] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); }
+.plan-field select, .plan-field input[type="text"] { grid-column: 1 / -1; }
+.plan-field input[type="text"]:focus { border-color: var(--accent-line); outline: none; }
+.plan-field input[type="text"]::placeholder { color: var(--ink-faint); }
+.plan-field input[type="number"] { width: 82px; }
+.plan-field[hidden] { display: none; }
+.plan-summary-row { display: flex; justify-content: space-between; gap: 10px; font-size: 11.5px; }
+.plan-summary-row span:first-child { color: var(--ink-dim); }
+.plan-summary-row strong { font-weight: 600; color: var(--ink); text-align: right; }
+
 .mini-search {
   flex: none; width: 120px; font: inherit; font-size: 11.5px; color: var(--ink);
   background: var(--glass-2); border: 1px solid var(--line); border-radius: var(--r-sm);

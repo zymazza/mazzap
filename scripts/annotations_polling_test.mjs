@@ -37,6 +37,19 @@ test('annotation content signature is stable and changes with content', () => {
   assert.match(api.annotationContentSignature(first), /^\d+:[0-9a-z]+$/);
 });
 
+test('plan directive signature distinguishes a live preview from its clear event', () => {
+  const api = loadAnnotationsTestApi();
+  const preview = { plan_id: 'plan_one', revision_id: 'rev_one', view: 'difference' };
+
+  assert.equal(api.planDirectiveSignature(null), 'none');
+  assert.equal(api.planDirectiveSignature(preview), api.planDirectiveSignature({ ...preview }));
+  assert.notEqual(api.planDirectiveSignature(preview), api.planDirectiveSignature(null));
+  assert.notEqual(
+    api.planDirectiveSignature(preview),
+    api.planDirectiveSignature({ ...preview, revision_id: 'rev_two' }),
+  );
+});
+
 test('coalesced async gate prevents overlapping refresh work', async () => {
   const api = loadAnnotationsTestApi();
   const calls = [];

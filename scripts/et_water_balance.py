@@ -153,6 +153,21 @@ def seasonal_kcb(yday):
 
 
 def canopy_cover_fraction(data_dir):
+    # A materialized Plan carries an authoritative effective canopy summary.
+    # Prefer it over the baseline LANDFIRE raster so tree removal/planting is
+    # actually represented in planned ET runs.
+    planned_meta = os.path.join(data_dir, "vegetation", "metadata.json")
+    try:
+        meta = json.load(open(planned_meta))
+    except (OSError, ValueError):
+        meta = {}
+    if (meta.get("planned_content_hash") or meta.get("planned_revision_id")) \
+            and meta.get("canopy_cover_pct") is not None:
+        try:
+            value = float(meta["canopy_cover_pct"]) / 100.0
+            return max(0.01, min(0.99, value)), "planned effective vegetation canopy"
+        except (TypeError, ValueError):
+            pass
     for rel in ("atlas/local/landfire_cc_2024.grid.json", "atlas/local/landfire_evc_2024.grid.json"):
         path = os.path.join(data_dir, rel)
         try:

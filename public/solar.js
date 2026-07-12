@@ -92,6 +92,11 @@
       }
     }
 
+    function activeDataUrl(relativePath) {
+      const root = window.__twin?.plan?.assetRoot?.() || '/data';
+      return `${String(root).replace(/\/$/, '')}/${relativePath.replace(/^\//, '')}`;
+    }
+
     function solarLayers() {
       return ((api.catalog?.() || {}).layers || []).filter((l) => l.group === 'solar');
     }
@@ -205,12 +210,19 @@
     }
 
     async function analyzeSite(point) {
-      const res = await fetch('/api/solar/site', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(selectedParams(point)),
-      });
-      const data = await res.json();
+      const params = selectedParams(point);
+      const plan = global.__twin?.plan;
+      let data;
+      if (plan?.activeRevisionId?.()) {
+        data = await plan.runSimulation('solar_site', params);
+      } else {
+        const res = await fetch('/api/solar/site', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(params),
+        });
+        data = await res.json();
+      }
       if (!data || typeof data !== 'object') throw new Error('Solar site returned an empty result.');
       if (data.error) throw new Error(data.error);
       state.lastSite = data;
@@ -314,17 +326,25 @@
       els.run.disabled = true;
       setStatus('Analyzing solar resource...');
       try {
-        const res = await fetch('/api/solar/analyze', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(selectedParams()),
-        });
-        const data = await res.json();
+        const params = selectedParams();
+        const plan = global.__twin?.plan;
+        let data;
+        if (plan?.activeRevisionId?.()) {
+          data = await plan.runSimulation('solar', params);
+        } else {
+          const res = await fetch('/api/solar/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(params),
+          });
+          data = await res.json();
+        }
         if (!data || typeof data !== 'object') throw new Error('Solar analysis returned an empty result.');
         if (data.error) throw new Error(data.error);
         await api.refresh?.(data.layers || []);
         renderToggles();
-        state.summary = await quietFetch('/data/solar/solar-summary.json');
+        const root = plan?.assetRoot?.() || '/data';
+        state.summary = await quietFetch(`${root}/solar/solar-summary.json`);
         renderSummary(state.summary);
         const valid = data.valid_points || 0;
         const installable = data.installable_points ?? valid;
@@ -434,17 +454,18 @@
       renderSummary(state.summary);
     });
 
-    async function boot() {
+    async function reloadPlanContext() {
       renderToggles();
-      state.summary = await quietFetch('/data/solar/solar-summary.json');
+      state.summary = await quietFetch(activeDataUrl('solar/solar-summary.json'));
       renderSummary(state.summary);
     }
-    boot();
+    reloadPlanContext();
 
     return {
       isPicking: () => state.picking,
       pickAtScreen,
       interpretAt,
+      reloadPlanContext,
       _runAnalyze: runAnalyze,
     };
   }

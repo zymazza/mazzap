@@ -54,6 +54,20 @@
     return canopy;
   }
 
+  function buildCanopyFromHeightGrid(grid, heightGrid) {
+    const canopy = new Float32Array(grid.width * grid.height);
+    const xStep = (grid.maxX - grid.minX) / Math.max(1, grid.width - 1);
+    const yStep = (grid.maxY - grid.minY) / Math.max(1, grid.height - 1);
+    for (let row = 0; row < grid.height; row += 1) {
+      const y = grid.maxY - row * yStep;
+      for (let col = 0; col < grid.width; col += 1) {
+        const x = grid.minX + col * xStep;
+        canopy[row * grid.width + col] = Number(nearestGridValue(heightGrid, x, y)) || 0;
+      }
+    }
+    return canopy;
+  }
+
   function flattenGround(grid) {
     const out = new Float32Array(grid.width * grid.height);
     for (let i = 0; i < out.length; i += 1) {
@@ -385,16 +399,23 @@
   }
 
   async function loadStack(viewer) {
-    const apron = await fetchJson('/data/terrain/grid.apron.json').catch(() => null);
-    const parcel = await fetchJson('/data/terrain/grid.json').catch(() => null);
+    const planRoot = global.__twin?.plan?.assetRoot?.();
+    const root = planRoot || '/data';
+    const apron = await fetchJson(`${root}/terrain/grid.apron.json`).catch(() => null);
+    const parcel = await fetchJson(`${root}/terrain/grid.json`).catch(() => null);
     const grid = apron ? mergeLocalGrids(apron, parcel) : (parcel || viewer?.terrainGrid);
     let canopy = new Float32Array(grid.width * grid.height);
     try {
-      const [evh, vat] = await Promise.all([
-        fetchJson('/data/atlas/local/landfire_evh_2024.grid.json'),
-        fetchJson('/data/atlas/vat/landfire_evh_2024.json'),
-      ]);
-      canopy = buildCanopy(grid, evh, vat);
+      if (planRoot) {
+        const planned = await fetchJson(`${planRoot}/vegetation/canopy_height.grid.json`);
+        canopy = buildCanopyFromHeightGrid(grid, planned);
+      } else {
+        const [evh, vat] = await Promise.all([
+          fetchJson('/data/atlas/local/landfire_evh_2024.grid.json'),
+          fetchJson('/data/atlas/vat/landfire_evh_2024.json'),
+        ]);
+        canopy = buildCanopy(grid, evh, vat);
+      }
     } catch (err) {
       console.warn('viewshed canopy unavailable; using bare-earth blockers', err);
     }
@@ -722,6 +743,15 @@
         return latest?.horizonDeg ? core.horizonAt(latest.horizonDeg, azimuthDeg) : null;
       },
       activeResult: () => latest,
+      async reloadPlanContext() {
+        if (worker) worker.terminate();
+        worker = null;
+        stackPromise = null;
+        stackPayload = null;
+        latest = null;
+        requestPurpose.clear();
+        if (observer) await runSweep();
+      },
       povCullEnabled,
       _runSweep: runSweep,
       _runPovCull: runPovCull,

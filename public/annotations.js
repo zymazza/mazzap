@@ -21,6 +21,11 @@
     return `${text.length}:${(hash >>> 0).toString(36)}`;
   }
 
+  function planDirectiveSignature(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return 'none';
+    return JSON.stringify(value);
+  }
+
   function createCoalescedAsyncGate(run) {
     let active = null;
     let pendingArgs = null;
@@ -149,7 +154,7 @@
     const lineMat = new THREE.LineBasicMaterial({ color: ORANGE });
 
     const clearBtn = document.getElementById('chat-clear-drawings');
-    const state = { count: 0, stamp: null };
+    const state = { count: 0, stamp: null, planDirectiveStamp: 'unread' };
     const disposables = [];
 
     function groundY(x, yNorth) {
@@ -246,6 +251,7 @@
       let layerViews = [];
       let skyViews = null;
       let viewTime;
+      let planView = null;
       let stamp = 'absent';
       try {
         const fetched = await fetchAnnotationDoc();
@@ -256,9 +262,13 @@
         layerViews = doc.layer_views || [];
         skyViews = Array.isArray(doc.sky_views) ? doc.sky_views : null;
         viewTime = Object.prototype.hasOwnProperty.call(doc, 'view_time') ? doc.view_time : undefined;
+        planView = doc.plan_view && typeof doc.plan_view === 'object' ? doc.plan_view : null;
       } catch (_err) { /* unreadable = unchanged; keep what's shown */ return; }
       if (stamp === state.stamp) return;
       state.stamp = stamp;
+      const nextPlanDirectiveStamp = planDirectiveSignature(planView);
+      const planDirectiveChanged = nextPlanDirectiveStamp !== state.planDirectiveStamp;
+      state.planDirectiveStamp = nextPlanDirectiveStamp;
       rebuild(annotations);
       // app.js owns the atlas drape, so hand it the layer-view overrides the
       // MCP server set (set_layer_visibility / filter_layer / reset_layer_views).
@@ -269,6 +279,13 @@
       if (!initial) {
         global.__twin?.applyLayerViews?.(layerViews);
         global.__twin?.astronomy?.applySkyDirectives?.(skyViews, viewTime);
+        if (planDirectiveChanged) {
+          try {
+            await global.__twin?.plan?.applyDirective?.(planView);
+          } catch (error) {
+            console.warn('plan visualization directive failed:', error);
+          }
+        }
       }
     }
     const refresh = createCoalescedAsyncGate(refreshImpl);
@@ -323,6 +340,7 @@
     create,
     _test: {
       annotationContentSignature,
+      planDirectiveSignature,
       createCoalescedAsyncGate,
       createPollingLifecycle,
     },

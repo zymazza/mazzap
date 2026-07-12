@@ -121,6 +121,20 @@ def canopy_from_evh_grid(target_grid: dict[str, Any], evh_grid: dict[str, Any], 
     return canopy
 
 
+def canopy_from_height_grid(target_grid: dict[str, Any], height_grid: dict[str, Any]) -> np.ndarray:
+    """Resample a Plan materializer's explicit canopy-height grid."""
+    width, height = int(target_grid["width"]), int(target_grid["height"])
+    xs_step, ys_step = _grid_steps(target_grid)
+    cols = np.arange(width, dtype=np.float32)
+    rows = np.arange(height, dtype=np.float32)
+    xs = float(target_grid["minX"]) + cols[None, :] * xs_step
+    ys = float(target_grid["maxY"]) - rows[:, None] * ys_step
+    values = _nearest_grid_values(
+        height_grid, np.broadcast_to(xs, (height, width)),
+        np.broadcast_to(ys, (height, width)))
+    return np.maximum(0.0, np.nan_to_num(values, nan=0.0)).astype(np.float32)
+
+
 @dataclass
 class Ring:
     name: str
@@ -286,17 +300,25 @@ class RingStack:
             with open(parcel_path) as fh:
                 grid = merge_local_grids(grid, json.load(fh))
         canopy = None
+        planned_canopy_path = os.path.join(
+            data_dir, "vegetation", "canopy_height.grid.json")
         evh_path = os.path.join(data_dir, "atlas", "local", "landfire_evh_2024.grid.json")
         vat_path = os.path.join(data_dir, "atlas", "vat", "landfire_evh_2024.json")
-        if os.path.exists(evh_path) and os.path.exists(vat_path):
+        canopy_source = None
+        if os.path.exists(planned_canopy_path):
+            with open(planned_canopy_path) as fh:
+                canopy = canopy_from_height_grid(grid, json.load(fh))
+            canopy_source = planned_canopy_path
+        elif os.path.exists(evh_path) and os.path.exists(vat_path):
             with open(evh_path) as fh:
                 evh = json.load(fh)
             with open(vat_path) as fh:
                 vat = json.load(fh)
             canopy = canopy_from_evh_grid(grid, evh, vat)
+            canopy_source = evh_path
         ring = Ring.from_grid("A", grid, canopy=canopy, source={
             "ground": os.path.relpath(terrain_path, data_dir),
-            "canopy": os.path.relpath(evh_path, data_dir) if canopy is not None else None,
+            "canopy": os.path.relpath(canopy_source, data_dir) if canopy_source else None,
             "canopy_available": canopy is not None,
         })
         return cls([ring], manifest={"version": 1, "rings": [{"id": "A"}]})
@@ -306,6 +328,8 @@ class RingStack:
         with open(manifest_path) as fh:
             manifest = json.load(fh)
         base = os.path.dirname(os.path.dirname(os.path.dirname(manifest_path)))
+        planned_canopy_path = os.path.join(
+            base, "vegetation", "canopy_height.grid.json")
         rings: list[Ring] = []
         for item in manifest.get("rings", []):
             rid = item.get("id") or item.get("name")
@@ -324,7 +348,10 @@ class RingStack:
                     with open(parcel_abs) as fh:
                         grid = merge_local_grids(grid, json.load(fh))
                 canopy = None
-                if item.get("canopy_grid") and item.get("canopy_vat"):
+                if os.path.exists(planned_canopy_path):
+                    with open(planned_canopy_path) as fh:
+                        canopy = canopy_from_height_grid(grid, json.load(fh))
+                elif item.get("canopy_grid") and item.get("canopy_vat"):
                     canopy_grid_abs = os.path.join(base, item["canopy_grid"])
                     canopy_vat_abs = os.path.join(base, item["canopy_vat"])
                     if os.path.exists(canopy_grid_abs) and os.path.exists(canopy_vat_abs):

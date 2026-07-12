@@ -3,7 +3,8 @@
 `scripts/mcp_server.py` exposes the twin store (`data/twin.gpkg`), the live
 telemetry side store (`data/live/telemetry.sqlite`), and the local astronomy
 engine to LLM agents over MCP (stdio). The durable twin store is **read-only**
-except for explicit scenario, live-export, drawing, and layer-view tools.
+except for explicit scenario, Plan, and live-export tools; drawing/layer/sky/Plan
+visualization directives are ephemeral files rather than store mutations.
 The one viewer-facing writable surface is the map-drawing trio
 (`draw_polygon` / `draw_point` / `clear_drawings`) plus the layer-view trio
 (`set_layer_visibility` / `filter_layer` / `reset_layer_views`) plus the
@@ -95,6 +96,14 @@ python3 scripts/twin_query_test.py
 | `summarize_region(region)` | "What's happening inside this shape?" — the headline call |
 | `aggregate_entities(kind, metric, group_by?, where?, region?)` | Counts, mean height, crown area, splits |
 | `canopy_change(region?, member?)` | "When did canopy density change here?" — per-run history |
+| `list_plans()` / `get_plan(...)` / `planning_catalog()` | Discover saved alternatives, ancestry, edits, regional species/stages and feature defaults |
+| `create_plan(...)` / `branch_plan(...)` / `save_plan_version(...)` | Non-destructive Plan lifecycle and named immutable checkpoints |
+| `propose_plan_edits(...)` | Validate and visualize an unapplied generic land-change proposal |
+| `propose_vegetation_clearance(...)` | Resolve a mapped feature ID plus buffer to a reviewable tree/shrub-removal proposal |
+| `propose_swale(...)` / `propose_orchard(...)` / `propose_garden(...)` | Semantic, reviewable Plan proposals for common land-design features |
+| `apply_plan_proposal(proposal_id, confirmed)` | Apply only a user-reviewed proposal; refuses without explicit confirmation |
+| `visualize_plan(...)` / `clear_plan_visualization()` | Drive the live 3D Plan/Difference view without changing land |
+| `run_plan_simulation(...)` | Run hydrology, fire, ET, solar or viewshed against an immutable Plan head |
 | `viewshed_from(point, agl_m?, max_km?, refraction?, surface?, demonstrate?)` | Visible area/horizon stats from a point; optionally writes a viewshed drape |
 | `can_see(from_point, to_point, from_agl_m?, to_agl_m?, refraction?, surface?, freq_mhz?)` | Intervisibility, controlling obstruction, clearance deficit, and canopy/ground blocker |
 | `horizon_at(point, agl_m?, date?, surface?)` | 360° terrain/canopy horizon, sun blocked windows, and geostationary arc check |

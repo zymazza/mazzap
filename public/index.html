@@ -32,6 +32,10 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5 5-2z"/></svg>
       <span>Explore</span>
     </button>
+    <button class="rail-btn" data-mode="plan" title="Plan — shape terrain and vegetation">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 6.5l5-2 7 2 5-2v13l-5 2-7-2-5 2zM8.5 4.5v13M15.5 6.5v4"/><path d="M12.8 17.2l.6-3 5.7-5.7 2.1 2.1-5.7 5.7-2.7.9zM18.2 9.4l2.1 2.1"/></svg>
+      <span>Plan</span>
+    </button>
     <button class="rail-btn" data-mode="simulation" title="Simulation — wildfire, hydrology &amp; ET">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6M10 3v6l-4.6 8A1.6 1.6 0 006.8 19.5h10.4a1.6 1.6 0 001.4-2.5L14 9V3"/><path d="M8.4 15h7.2"/></svg>
       <span>Simulation</span>
@@ -146,6 +150,78 @@
             <button data-vt="evergreen">Evergreen</button>
             <button data-vt="deciduous">Deciduous</button>
           </div>
+        </div>
+      </section>
+
+      <!-- ---------- PLAN ---------- -->
+      <section class="pane" data-pane="plan" id="plan-panel">
+        <div class="group">
+          <div class="group-label-row">
+            <p class="group-label">Plan</p>
+            <span id="plan-save-state" class="plan-save-state">ready</span>
+          </div>
+          <select id="plan-select" class="plan-select" aria-label="Active plan">
+            <option value="">Baseline — no plan</option>
+          </select>
+          <label class="plan-field" id="plan-revision-field" hidden>Version
+            <select id="plan-revision" aria-label="Plan version"></select>
+          </label>
+          <div class="plan-action-grid plan-primary-actions">
+            <button type="button" id="plan-new" class="wide-btn">New</button>
+            <button type="button" id="plan-branch" class="wide-btn" disabled>Branch</button>
+            <button type="button" id="plan-save-version" class="wide-btn" disabled>Save version</button>
+            <button type="button" id="plan-discard" class="wide-btn destructive" disabled>Discard</button>
+          </div>
+          <p id="plan-status" class="sim-status">Create or select a plan to begin.</p>
+        </div>
+
+        <div class="group" id="plan-view-group" hidden>
+          <p class="group-label">View</p>
+          <div class="seg" id="plan-view-mode">
+            <button type="button" data-plan-view="baseline">Baseline</button>
+            <button type="button" data-plan-view="planned" class="active">Planned</button>
+            <button type="button" data-plan-view="difference">Difference</button>
+          </div>
+        </div>
+
+        <div class="group" id="plan-tools-group" hidden>
+          <p class="group-label">Brushes</p>
+          <div class="plan-tool-grid" id="plan-tools">
+            <button type="button" data-plan-tool="navigate" class="active">Navigate</button>
+            <button type="button" data-plan-tool="remove">Remove plants</button>
+            <button type="button" data-plan-tool="tree">Add tree</button>
+            <button type="button" data-plan-tool="shrub">Add bush</button>
+            <button type="button" data-plan-tool="cut">Depression</button>
+            <button type="button" data-plan-tool="fill">Mound</button>
+          </div>
+          <label class="plan-field">Brush radius <span id="plan-radius-value">6 m</span>
+            <input id="plan-radius" type="range" min="1" max="60" step="1" value="6" />
+          </label>
+          <label class="plan-field" id="plan-earth-field">Earth height/depth
+            <input id="plan-earth" type="number" min="0.05" max="10" step="0.05" value="0.35" /> m
+          </label>
+          <label class="plan-field" id="plan-spacing-field">Plant spacing
+            <input id="plan-spacing" type="number" min="0.5" max="50" step="0.5" value="6" /> m
+          </label>
+          <label class="plan-field" id="plan-species-field">Species
+            <input id="plan-species" type="text" list="plan-species-options" maxlength="160"
+              autocomplete="off" placeholder="Search or type any species" />
+            <datalist id="plan-species-options"></datalist>
+          </label>
+          <label class="plan-field" id="plan-stage-field">Modeled stage
+            <select id="plan-stage"></select>
+          </label>
+          <div class="plan-action-grid">
+            <button type="button" id="plan-undo" class="wide-btn" disabled>Undo</button>
+            <button type="button" id="plan-redo" class="wide-btn" disabled>Redo</button>
+          </div>
+          <p class="hint">Paint directly on the land; changes preview live and autosave as immutable revisions. Earth keeps building while held or repainted, and you can keep brushing while it saves. Hold <kbd>Ctrl/⌘</kbd> while dragging to navigate with any brush. Leaving Plan stops the brush. <kbd>Esc</kbd> cancels; <kbd>Ctrl/⌘ Z</kbd> undoes.</p>
+        </div>
+
+        <div class="group" id="plan-summary-group" hidden>
+          <p class="group-label">Change summary</p>
+          <div id="plan-summary" class="sim-results"></div>
+          <p id="plan-resolution-note" class="hint"></p>
         </div>
       </section>
 
@@ -661,6 +737,7 @@
   <script src="/viewshed.js"></script>
   <script src="/sky.js"></script>
   <script src="/astronomy.js"></script>
+  <script src="/plan.js"></script>
   <!-- boot (shared) -->
   <script src="/app.js"></script>
   <!-- viewer chrome -->

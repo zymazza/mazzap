@@ -110,6 +110,11 @@
       }
     }
 
+    function activeDataUrl(relativePath) {
+      const root = global.__twin?.plan?.assetRoot?.() || '/data';
+      return `${String(root).replace(/\/$/, '')}/${relativePath.replace(/^\//, '')}`;
+    }
+
     function presetLabel(id) {
       if (id === CUSTOM_WEATHER_ID) return 'Custom weather';
       const values = isRecord(state.presetValues[id]) ? state.presetValues[id] : {};
@@ -504,17 +509,25 @@
       syncControls();
       els.status.textContent = 'Simulating fire scenario...';
       try {
-        const res = await fetch('/api/fire-simulate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(buildParams()),
-        });
-        const data = await res.json();
+        const params = buildParams();
+        const plan = global.__twin?.plan;
+        let data;
+        if (plan?.activeRevisionId?.()) {
+          data = await plan.runSimulation('fire', params);
+        } else {
+          const res = await fetch('/api/fire-simulate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(params),
+          });
+          data = await res.json();
+        }
         if (!data || typeof data !== 'object') throw new Error('Scenario returned an empty result.');
         if (data.error) throw new Error(data.error);
+        await api.refresh(data.layers || []);
+        if (plan?.activeRevisionId?.()) await reloadPlanContext();
         renderResult(data);
         els.status.textContent = '';
-        await api.refresh(data.layers || []);
         renderToggles();
         startAnimationOnce();
       } catch (err) {
@@ -911,12 +924,14 @@
 
     /* ------------------------------------------------------------ boot ---- */
 
-    async function boot() {
+    async function reloadPlanContext() {
+      stopAnimation();
+      global.__twin?.fireReveal?.clear?.();
       const [presets, summary, last, buildings] = await Promise.all([
         fetchOptionalJson('/api/fire-presets'),
-        quietFetch('/data/fire/summary.json'),
-        fetchOptionalJson('/data/fire/last-fire-scenario.json'),
-        quietFetch('/data/buildings/models/manifest.json'),
+        quietFetch(activeDataUrl('fire/summary.json')),
+        fetchOptionalJson(activeDataUrl('fire/last-fire-scenario.json')),
+        quietFetch(activeDataUrl('buildings/models/manifest.json')),
       ]);
       if (isRecord(presets?.data?.presets)) {
         state.presetValues = presets.data.presets;
@@ -925,6 +940,11 @@
         els.status.textContent = `Fire weather presets could not be loaded: ${presets.error}`;
       }
       state.summary = summary;
+      state.lastResult = null;
+      state.scenarioActive = false;
+      els.results.replaceChildren();
+      els.scenarioGroup.hidden = true;
+      els.status.textContent = '';
       state.buildings = buildingPlacements(buildings);
       renderPresets();
       if (last?.error) {
@@ -954,7 +974,7 @@
     renderToggles();
     renderPresets();
     syncControls();
-    boot().catch((err) => {
+    reloadPlanContext().catch((err) => {
       els.status.textContent = `Fire panel could not finish loading: ${err?.message || err}`;
       renderToggles();
       syncControls();
@@ -967,6 +987,7 @@
       setEnabled: api.setEnabled,
       refresh: api.refresh,
       renderToggles,
+      reloadPlanContext,
       interpretAt,
       pickIgnition,
       _renderResult: renderResult,

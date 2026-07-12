@@ -147,6 +147,37 @@ def load_fuelscape(data_dir, grid=None, fuel_source="landfire", return_provenanc
         "cbh_m": layers["landfire_cbh_2024"] / 10.0,
         "cbd_kg_m3": layers["landfire_cbd_2024"] / 100.0,
     }
+    planned_canopy_path = os.path.join(
+        data_dir, "vegetation", "canopy_height.grid.json")
+    planned_meta_path = os.path.join(data_dir, "vegetation", "metadata.json")
+    planned_meta = {}
+    try:
+        planned_meta = json.load(open(planned_meta_path))
+    except (OSError, ValueError):
+        pass
+    planned_land_id = (planned_meta.get("planned_content_hash")
+                       or planned_meta.get("planned_revision_id"))
+    if fuel_source == "computed" and planned_land_id \
+            and os.path.exists(planned_canopy_path):
+        planned_height, planned_grid = _grid_values(planned_canopy_path)
+        height = _upsample_nearest(planned_height, planned_grid, grid)
+        present = np.isfinite(height) & (height > 0.1)
+        # Crown footprints were rasterized explicitly by the plan materializer.
+        # At this analysis resolution occupancy is the defensible cover signal;
+        # CBH/CBD remain screening defaults because a plan does not invent a
+        # measured vertical fuel profile for newly planted trees.
+        canopy = {
+            "cc_pct": np.where(np.isfinite(height), np.where(present, 100.0, 0.0), np.nan),
+            "ch_m": np.where(present, height, 0.0),
+            "cbh_m": np.where(present, np.maximum(0.5, height * 0.35), 0.0),
+            "cbd_kg_m3": np.where(present & (height >= 2.0), 0.08, 0.0),
+        }
+        provenance["planned_land_artifact"] = planned_land_id
+        provenance["note"] = (
+            provenance.get("note", "")
+            + " Effective Plan crown footprints/heights replace baseline LANDFIRE canopy; "
+              "planned CBH/CBD are screening defaults, not measurements."
+        ).strip()
     if return_provenance:
         return fbfm, canopy, provenance
     return fbfm, canopy

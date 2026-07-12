@@ -47,7 +47,7 @@ DATA_DIR = os.path.abspath(os.environ.get('TWIN_DATA_DIR') or os.path.join(PROJE
 STORE_PATH = os.path.join(DATA_DIR, "twin.gpkg")
 JOURNAL_DIR = os.path.join(DATA_DIR, "journal")
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SRS_ID = -1  # GeoPackage predefined "Undefined Cartesian SRS": scene-local meters
 
 # Canonical attribute order for vegetation instances (read API + exports).
@@ -109,8 +109,60 @@ CREATE TABLE IF NOT EXISTS layers (
     status TEXT,
     content_sha1 TEXT
 );
+CREATE TABLE IF NOT EXISTS plan_bases (
+    base_id TEXT PRIMARY KEY,
+    fingerprint TEXT NOT NULL,
+    manifest TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS plans (
+    plan_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    head_revision_id TEXT,
+    forked_from_revision_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    archived_at TEXT
+);
+CREATE TABLE IF NOT EXISTS plan_revisions (
+    revision_id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL,
+    parent_revision_id TEXT,
+    base_id TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    message TEXT,
+    checkpoint_name TEXT,
+    author TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS plan_edits (
+    revision_id TEXT NOT NULL,
+    edit_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    geometry TEXT,
+    params TEXT NOT NULL,
+    label TEXT,
+    PRIMARY KEY (revision_id, edit_id)
+);
+CREATE TABLE IF NOT EXISTS plan_simulation_runs (
+    plan_run_id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL,
+    revision_id TEXT NOT NULL,
+    simulator TEXT NOT NULL,
+    status TEXT NOT NULL,
+    parameters TEXT NOT NULL,
+    result TEXT,
+    artifact_path TEXT,
+    input_hash TEXT,
+    created_at TEXT NOT NULL,
+    finished_at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_obs_entity_attr ON observations(entity_id, attr, obs_id);
 CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind);
+CREATE INDEX IF NOT EXISTS idx_plan_revisions_plan ON plan_revisions(plan_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_plan_edits_revision ON plan_edits(revision_id, ordinal);
+CREATE INDEX IF NOT EXISTS idx_plan_runs_revision ON plan_simulation_runs(revision_id, created_at);
 """
 
 
@@ -233,6 +285,14 @@ class Store:
     def ensure_schema(self):
         cur = self.conn.cursor()
         cur.executescript(PLAIN_TABLES)
+        # Schema metadata describes the materialized index, not a historical
+        # observation.  Upgrade it in place whenever newer code opens an older
+        # store; the journal replay path applies the same floor below.
+        cur.execute(
+            "INSERT INTO meta (key, value) VALUES ('schema_version', ?)"
+            " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (encode_value(SCHEMA_VERSION),),
+        )
         # GDAL writes srs_id -1/0/4326 into gpkg_spatial_ref_sys by default,
         # but make sure -1 (Undefined Cartesian) exists before we point layers at it.
         cur.execute(
@@ -688,6 +748,252 @@ class Store:
         self.conn.commit()
         self._log(op="layer", layer_id=layer_id, fields=fields)
 
+    # --------------------------------------------------------------- plans
+
+    def register_plan_base(self, base_id, fingerprint, manifest, created_at=None):
+        """Register one immutable, content-addressed planning baseline.
+
+        The potentially large snapshot files live under data/plans/bases and
+        are addressed by hashes in ``manifest``.  The journal records their
+        identity and provenance, following the same file-plus-hash convention
+        used for rasters and model binaries elsewhere in the twin.
+        """
+        at = created_at or utcnow()
+        encoded_manifest = encode_value(manifest)
+        row = self.conn.execute(
+            "SELECT fingerprint, manifest FROM plan_bases WHERE base_id = ?",
+            (base_id,),
+        ).fetchone()
+        if row is not None:
+            if row != (fingerprint, encoded_manifest):
+                raise ValueError(f"plan base id collision: {base_id}")
+            return False
+        self.conn.execute(
+            "INSERT INTO plan_bases (base_id, fingerprint, manifest, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (base_id, fingerprint, encoded_manifest, at),
+        )
+        self.conn.commit()
+        self._log(op="plan_base", base_id=base_id, fingerprint=fingerprint,
+                  manifest=manifest, created_at=at)
+        return True
+
+    def insert_plan(self, plan_id, name, head_revision_id=None,
+                    forked_from_revision_id=None, created_at=None):
+        at = created_at or utcnow()
+        self.conn.execute(
+            "INSERT INTO plans"
+            " (plan_id, name, head_revision_id, forked_from_revision_id,"
+            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (plan_id, name, head_revision_id, forked_from_revision_id, at, at),
+        )
+        self.conn.commit()
+        self._log(op="plan_create", plan_id=plan_id, name=name,
+                  head_revision_id=head_revision_id,
+                  forked_from_revision_id=forked_from_revision_id,
+                  created_at=at)
+
+    def update_plan(self, plan_id, *, name=None, archived_at=None,
+                    set_archived=False, updated_at=None):
+        row = self.conn.execute(
+            "SELECT name, archived_at FROM plans WHERE plan_id = ?", (plan_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(plan_id)
+        next_name = row[0] if name is None else str(name)
+        next_archived = archived_at if set_archived else row[1]
+        at = updated_at or utcnow()
+        if (next_name, next_archived) == row:
+            return False
+        self.conn.execute(
+            "UPDATE plans SET name = ?, archived_at = ?, updated_at = ?"
+            " WHERE plan_id = ?",
+            (next_name, next_archived, at, plan_id),
+        )
+        self.conn.commit()
+        self._log(op="plan_update", plan_id=plan_id, name=next_name,
+                  archived_at=next_archived, updated_at=at)
+        return True
+
+    def insert_plan_revision(self, revision_id, plan_id, parent_revision_id,
+                             base_id, content_hash, edits, message=None,
+                             checkpoint_name=None, author=None, created_at=None):
+        """Insert an immutable revision carrying a complete edit snapshot."""
+        at = created_at or utcnow()
+        self.conn.execute(
+            "INSERT INTO plan_revisions"
+            " (revision_id, plan_id, parent_revision_id, base_id, content_hash,"
+            " message, checkpoint_name, author, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (revision_id, plan_id, parent_revision_id, base_id, content_hash,
+             message, checkpoint_name, author, at),
+        )
+        normalized = []
+        for ordinal, edit in enumerate(edits):
+            item = {
+                "edit_id": str(edit["edit_id"]),
+                "kind": str(edit["kind"]),
+                "geometry": edit.get("geometry"),
+                "params": edit.get("params") or {},
+                "label": edit.get("label"),
+                "ordinal": int(edit.get("ordinal", ordinal)),
+            }
+            normalized.append(item)
+            self.conn.execute(
+                "INSERT INTO plan_edits"
+                " (revision_id, edit_id, ordinal, kind, geometry, params, label)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (revision_id, item["edit_id"], item["ordinal"], item["kind"],
+                 encode_value(item["geometry"]), encode_value(item["params"]),
+                 item["label"]),
+            )
+        self.conn.commit()
+        self._log(op="plan_revision", revision_id=revision_id, plan_id=plan_id,
+                  parent_revision_id=parent_revision_id, base_id=base_id,
+                  content_hash=content_hash, edits=normalized, message=message,
+                  checkpoint_name=checkpoint_name, author=author, created_at=at)
+
+    def update_plan_head(self, plan_id, revision_id, expected_revision_id=None,
+                         updated_at=None):
+        """Compare-and-swap a plan head.  Returns False on a stale writer."""
+        at = updated_at or utcnow()
+        if expected_revision_id is None:
+            cur = self.conn.execute(
+                "UPDATE plans SET head_revision_id = ?, updated_at = ?"
+                " WHERE plan_id = ? AND head_revision_id IS NULL",
+                (revision_id, at, plan_id),
+            )
+        else:
+            cur = self.conn.execute(
+                "UPDATE plans SET head_revision_id = ?, updated_at = ?"
+                " WHERE plan_id = ? AND head_revision_id = ?",
+                (revision_id, at, plan_id, expected_revision_id),
+            )
+        if not cur.rowcount:
+            self.conn.rollback()
+            return False
+        self.conn.commit()
+        self._log(op="plan_head", plan_id=plan_id, revision_id=revision_id,
+                  expected_revision_id=expected_revision_id, updated_at=at)
+        return True
+
+    def upsert_plan_simulation_run(self, plan_run_id, plan_id, revision_id,
+                                   simulator, status, parameters, result=None,
+                                   artifact_path=None, input_hash=None,
+                                   created_at=None, finished_at=None):
+        at = created_at or utcnow()
+        self.conn.execute(
+            "INSERT INTO plan_simulation_runs"
+            " (plan_run_id, plan_id, revision_id, simulator, status, parameters,"
+            " result, artifact_path, input_hash, created_at, finished_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(plan_run_id) DO UPDATE SET"
+            " status = excluded.status, result = excluded.result,"
+            " artifact_path = excluded.artifact_path,"
+            " input_hash = excluded.input_hash, finished_at = excluded.finished_at",
+            (plan_run_id, plan_id, revision_id, simulator, status,
+             encode_value(parameters or {}),
+             None if result is None else encode_value(result), artifact_path,
+             input_hash, at, finished_at),
+        )
+        self.conn.commit()
+        self._log(op="plan_simulation", plan_run_id=plan_run_id,
+                  plan_id=plan_id, revision_id=revision_id,
+                  simulator=simulator, status=status,
+                  parameters=parameters or {}, result=result,
+                  artifact_path=artifact_path, input_hash=input_hash,
+                  created_at=at, finished_at=finished_at)
+
+    def plan_rows(self, include_archived=False):
+        sql = (
+            "SELECT plan_id, name, head_revision_id, forked_from_revision_id,"
+            " created_at, updated_at, archived_at FROM plans"
+        )
+        if not include_archived:
+            sql += " WHERE archived_at IS NULL"
+        sql += " ORDER BY updated_at DESC, plan_id"
+        return [
+            {"plan_id": r[0], "name": r[1], "head_revision_id": r[2],
+             "forked_from_revision_id": r[3], "created_at": r[4],
+             "updated_at": r[5], "archived_at": r[6]}
+            for r in self.conn.execute(sql)
+        ]
+
+    def plan_revision(self, revision_id):
+        row = self.conn.execute(
+            "SELECT revision_id, plan_id, parent_revision_id, base_id,"
+            " content_hash, message, checkpoint_name, author, created_at"
+            " FROM plan_revisions WHERE revision_id = ?", (revision_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        edits = [
+            {"edit_id": r[0], "ordinal": r[1], "kind": r[2],
+             "geometry": decode_value(r[3]), "params": decode_value(r[4]),
+             "label": r[5]}
+            for r in self.conn.execute(
+                "SELECT edit_id, ordinal, kind, geometry, params, label"
+                " FROM plan_edits WHERE revision_id = ?"
+                " ORDER BY ordinal, edit_id", (revision_id,))
+        ]
+        return {
+            "revision_id": row[0], "plan_id": row[1],
+            "parent_revision_id": row[2], "base_id": row[3],
+            "content_hash": row[4], "message": row[5],
+            "checkpoint_name": row[6], "author": row[7],
+            "created_at": row[8], "edits": edits,
+        }
+
+    def plan_history(self, head_revision_id):
+        """Return one plan head's immutable ancestry, newest first.
+
+        A branch intentionally starts at a revision created by its source plan,
+        so filtering revisions by ``plan_id`` loses the fork point.  Walking
+        parent links also gives callers a single reachability check: a revision
+        is addressable through a plan only when it appears in this chain.
+        """
+        history = []
+        seen = set()
+        revision_id = head_revision_id
+        while revision_id:
+            if revision_id in seen:
+                raise ValueError("cycle in plan revision graph")
+            seen.add(revision_id)
+            row = self.conn.execute(
+                "SELECT revision_id, plan_id, parent_revision_id, content_hash,"
+                " message, checkpoint_name, author, created_at"
+                " FROM plan_revisions WHERE revision_id = ?", (revision_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"missing plan revision in ancestry: {revision_id}")
+            history.append({
+                "revision_id": row[0], "created_by_plan_id": row[1],
+                "parent_revision_id": row[2], "content_hash": row[3],
+                "message": row[4], "checkpoint_name": row[5],
+                "author": row[6], "created_at": row[7],
+            })
+            revision_id = row[2]
+        return history
+
+    def plan_simulation_rows(self, plan_id, limit=50):
+        rows = self.conn.execute(
+            "SELECT plan_run_id, revision_id, simulator, status, parameters,"
+            " artifact_path, input_hash, created_at, finished_at, result IS NOT NULL"
+            " FROM plan_simulation_runs WHERE plan_id = ?"
+            " ORDER BY created_at DESC, plan_run_id DESC LIMIT ?",
+            (plan_id, max(1, min(500, int(limit)))),
+        )
+        return [
+            {
+                "plan_run_id": row[0], "revision_id": row[1],
+                "simulator": row[2], "status": row[3],
+                "parameters": decode_value(row[4]), "artifact_path": row[5],
+                "input_hash": row[6], "created_at": row[7],
+                "finished_at": row[8], "result_available": bool(row[9]),
+            }
+            for row in rows
+        ]
+
     # -------------------------------------------------------------- read API
 
     def instances(self, kind, layer, member_attr, attr_order, include_id=True):
@@ -730,10 +1036,16 @@ class Store:
                 " notes = COALESCE(?, notes) WHERE run_id = ?",
                 (op["finished_at"], op.get("notes"), op["run_id"]))
         elif kind == "meta":
+            value = op["value"]
+            if op["key"] == "schema_version":
+                try:
+                    value = encode_value(max(SCHEMA_VERSION, int(decode_value(value))))
+                except (TypeError, ValueError):
+                    value = encode_value(SCHEMA_VERSION)
             self.conn.execute(
                 "INSERT INTO meta (key, value) VALUES (?, ?)"
                 " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (op["key"], op["value"]))
+                (op["key"], value))
         elif kind == "entity":
             self.conn.execute(
                 "INSERT INTO entities (entity_id, kind, created_run_id, created_at)"
@@ -773,5 +1085,40 @@ class Store:
                                       op.get("columns", "properties TEXT"))
         elif kind == "layer":
             self.upsert_layer(op["layer_id"], **op["fields"])
+        elif kind == "plan_base":
+            self.register_plan_base(
+                op["base_id"], op["fingerprint"], op["manifest"],
+                created_at=op["created_at"])
+        elif kind == "plan_create":
+            self.insert_plan(
+                op["plan_id"], op["name"],
+                head_revision_id=op.get("head_revision_id"),
+                forked_from_revision_id=op.get("forked_from_revision_id"),
+                created_at=op["created_at"])
+        elif kind == "plan_update":
+            self.update_plan(
+                op["plan_id"], name=op.get("name"),
+                archived_at=op.get("archived_at"), set_archived=True,
+                updated_at=op["updated_at"])
+        elif kind == "plan_revision":
+            self.insert_plan_revision(
+                op["revision_id"], op["plan_id"],
+                op.get("parent_revision_id"), op["base_id"],
+                op["content_hash"], op.get("edits") or [],
+                message=op.get("message"),
+                checkpoint_name=op.get("checkpoint_name"),
+                author=op.get("author"), created_at=op["created_at"])
+        elif kind == "plan_head":
+            self.conn.execute(
+                "UPDATE plans SET head_revision_id = ?, updated_at = ?"
+                " WHERE plan_id = ?",
+                (op["revision_id"], op["updated_at"], op["plan_id"]))
+        elif kind == "plan_simulation":
+            self.upsert_plan_simulation_run(
+                op["plan_run_id"], op["plan_id"], op["revision_id"],
+                op["simulator"], op["status"], op.get("parameters") or {},
+                result=op.get("result"), artifact_path=op.get("artifact_path"),
+                input_hash=op.get("input_hash"),
+                created_at=op["created_at"], finished_at=op.get("finished_at"))
         else:
             raise ValueError(f"unknown journal op: {kind}")

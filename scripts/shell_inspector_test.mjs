@@ -65,9 +65,16 @@ function loadShell() {
     dispatchEvent(event) { docListeners[event.type]?.(event); },
   };
 
+  const window = {};
   vm.runInNewContext(source, {
     document,
-    window: {},
+    window,
+    CustomEvent: class {
+      constructor(type, options = {}) {
+        this.type = type;
+        this.detail = options.detail;
+      }
+    },
     setInterval: () => 1,
     clearInterval: () => {},
     MutationObserver: class {
@@ -77,7 +84,7 @@ function loadShell() {
     },
   });
 
-  return { document, elements };
+  return { document, elements, window };
 }
 
 test('inspector opens only from explicit inspect events and remains dismissible', () => {
@@ -90,4 +97,20 @@ test('inspector opens only from explicit inspect events and remains dismissible'
 
   elements.get('inspector-close').dispatch('click');
   assert.equal(inspector.hidden, true);
+});
+
+test('shell announces pane exits so feature tools can stop intercepting terrain', () => {
+  const { document, window } = loadShell();
+  const transitions = [];
+  document.addEventListener('veil:panechange', (event) => transitions.push(event.detail));
+
+  window.VEILShell.showPane('plan');
+  window.VEILShell.showPane('simulation');
+  window.VEILShell.closeFlyout();
+
+  assert.equal(JSON.stringify(transitions), JSON.stringify([
+    { mode: 'plan', previousMode: 'layers', open: true },
+    { mode: 'simulation', previousMode: 'plan', open: true },
+    { mode: null, previousMode: 'simulation', open: false },
+  ]));
 });

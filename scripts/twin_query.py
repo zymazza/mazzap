@@ -281,6 +281,30 @@ def bboxes_intersect(a, b):
     return not (a[2] < b[0] or a[0] > b[2] or a[3] < b[1] or a[1] > b[3])
 
 
+def line_geometry_intersects_region(geometry, region):
+    """Test a line against a Region's exact point predicate, not its centroid."""
+    bbox = geometry_bbox(geometry)
+    if bbox is None or not bboxes_intersect(bbox, region.bounds):
+        return False
+    width = max(1e-6, region.bounds[2] - region.bounds[0])
+    height = max(1e-6, region.bounds[3] - region.bounds[1])
+    sample_step = max(0.25, min(10.0, min(width, height) / 64.0))
+    for path in line_paths(geometry):
+        if any(region.contains(float(point[0]), float(point[1])) for point in path):
+            return True
+        for start, end in zip(path, path[1:]):
+            ax, ay = float(start[0]), float(start[1])
+            bx, by = float(end[0]), float(end[1])
+            distance = math.hypot(bx - ax, by - ay)
+            samples = min(20_000, max(1, int(math.ceil(distance / sample_step))))
+            if any(region.contains(
+                    ax + (bx - ax) * index / samples,
+                    ay + (by - ay) * index / samples)
+                    for index in range(1, samples)):
+                return True
+    return False
+
+
 def geometry_distance_m(a, b):
     """True planar distance in scene-local meters between two GeoJSON geometries.
 
@@ -595,6 +619,7 @@ def _load_view_doc():
     views = doc.get("layer_views")
     sky_views = doc.get("sky_views")
     view_time = doc.get("view_time")
+    plan_view = doc.get("plan_view")
     return {
         "version": 1,
         "updated_at": doc.get("updated_at") or _utc_now(),
@@ -602,6 +627,7 @@ def _load_view_doc():
         "layer_views": views if isinstance(views, list) else [],
         "sky_views": sky_views if isinstance(sky_views, list) else [],
         "view_time": view_time if isinstance(view_time, dict) else None,
+        "plan_view": plan_view if isinstance(plan_view, dict) else None,
     }
 
 
@@ -613,6 +639,7 @@ def _save_view_doc(doc):
         "layer_views": doc.get("layer_views") if isinstance(doc.get("layer_views"), list) else [],
         "sky_views": doc.get("sky_views") if isinstance(doc.get("sky_views"), list) else [],
         "view_time": doc.get("view_time") if isinstance(doc.get("view_time"), dict) else None,
+        "plan_view": doc.get("plan_view") if isinstance(doc.get("plan_view"), dict) else None,
     }
     tmp = ANNOTATIONS_PATH + ".tmp"
     with open(tmp, "w") as fh:
@@ -1419,11 +1446,15 @@ class TwinQuery:
                 if distance_m > near_radius:
                     continue
             elif reg is not None:
-                bx0, by0, bx1, by1 = reg.bounds
-                if not (bx0 <= x <= bx1 and by0 <= y <= by1):
-                    continue
-                if not reg.contains(x, y):
-                    continue
+                if candidate_geometry.get("type") in {"LineString", "MultiLineString"}:
+                    if not line_geometry_intersects_region(candidate_geometry, reg):
+                        continue
+                else:
+                    bx0, by0, bx1, by1 = reg.bounds
+                    if not (bx0 <= x <= bx1 and by0 <= y <= by1):
+                        continue
+                    if not reg.contains(x, y):
+                        continue
             if filters:
                 attrs = latest.get(eid, {})
                 ok = True
@@ -4929,6 +4960,282 @@ class TwinQuery:
         return {"cleared": len(views),
                 "note": "all agent layer overrides removed; the user's manual "
                         "layer toggles are back in control"}
+
+    # -------------------------------------------------------------- Plan / GAIA
+
+    def _plan_engine(self):
+        import plan_engine
+        return plan_engine.PlanEngine(os.path.dirname(os.path.abspath(self._store_path)))
+
+    @staticmethod
+    def _run_plan_call(callable_):
+        import plan_engine
+        try:
+            return callable_()
+        except plan_engine.PlanError as exc:
+            detail = dict(exc.payload)
+            message = detail.pop("message", str(exc))
+            code = detail.pop("error", "plan_error")
+            raise TwinQueryError(message, code=code, **detail) from exc
+
+    def _scene_coordinate_list(self, points, *, minimum, label):
+        if not isinstance(points, list) or len(points) < minimum:
+            raise TwinQueryError(f"{label} needs at least {minimum} points")
+        if all(isinstance(point, dict) for point in points):
+            return [[round(x, 3), round(y, 3)]
+                    for x, y in (resolve_point(point, self.georef) for point in points)]
+        if not all(isinstance(point, (list, tuple)) and len(point) >= 2 for point in points):
+            raise TwinQueryError(
+                f"{label} points must all be point objects or [x,y]/[lon,lat] pairs")
+        try:
+            pairs = [(float(point[0]), float(point[1])) for point in points]
+        except (TypeError, ValueError) as exc:
+            raise TwinQueryError(f"{label} coordinates must be numbers") from exc
+        if _looks_geographic(pairs, self.georef):
+            pairs = [self.georef.to_scene(lon, lat) for lon, lat in pairs]
+        return [[round(x, 3), round(y, 3)] for x, y in pairs]
+
+    def list_plans(self, include_archived=False):
+        """List saved, branchable land plans and their current revisions."""
+        return self._run_plan_call(
+            lambda: self._plan_engine().list_plans(bool(include_archived)))
+
+    def get_plan(self, plan_id, revision_id=None, materialize=False):
+        """Inspect a plan, one reachable revision, its ancestry, edits and diff."""
+        return self._run_plan_call(lambda: self._plan_engine().get_plan(
+            plan_id, revision_id=revision_id, materialize=bool(materialize)))
+
+    def planning_catalog(self):
+        """Species/stage dimensions and swale/orchard/garden defaults."""
+        import plan_catalog
+        return plan_catalog.catalog(os.path.dirname(os.path.abspath(self._store_path)))
+
+    def create_plan(self, name, author="GAIA"):
+        """Create a new empty plan pinned to the current baseline twin."""
+        return self._run_plan_call(
+            lambda: self._plan_engine().create_plan(name, author=author))
+
+    def branch_plan(self, source_plan_id, name, revision_id=None, author="GAIA"):
+        """Create a new plan branch from a reachable immutable revision."""
+        return self._run_plan_call(lambda: self._plan_engine().branch(
+            source_plan_id, name, revision_id=revision_id, author=author))
+
+    def save_plan_version(self, plan_id, expected_revision_id, name, author="GAIA"):
+        """Create a named immutable checkpoint without changing the land."""
+        return self._run_plan_call(lambda: self._plan_engine().checkpoint(
+            plan_id, expected_revision_id, name, author=author))
+
+    def propose_plan_edits(self, plan_id, edits, expected_revision_id=None,
+                           replace=False, label=None, demonstrate=True,
+                           author="GAIA"):
+        """Validate edits and create a non-applied proposal for user review."""
+        proposal = self._run_plan_call(lambda: self._plan_engine().propose(
+            plan_id, edits, expected_revision_id=expected_revision_id,
+            replace=bool(replace), label=label, author=author))
+        if demonstrate:
+            proposal["visualization"] = self.visualize_plan(
+                plan_id, proposal_id=proposal["proposal_id"], view="difference")
+        proposal["next_step"] = (
+            "Show the preview and ask the user to confirm. Only then call "
+            "apply_plan_proposal with confirmed=true.")
+        return proposal
+
+    def propose_vegetation_clearance(
+            self, plan_id, target_entity_id, buffer_m=10.0, kinds=None,
+            expected_revision_id=None, label=None, demonstrate=True,
+            author="GAIA"):
+        """Propose clearing effective vegetation around one mapped feature."""
+        target_kind, geometry = self._entity_geometry_or_point(target_entity_id)
+        if target_kind in {"tree", "shrub", "live_device"}:
+            raise TwinQueryError(
+                "vegetation clearance target must be a mapped land feature",
+                target_entity_id=target_entity_id, target_kind=target_kind)
+        try:
+            buffer_m = float(buffer_m)
+        except (TypeError, ValueError) as exc:
+            raise TwinQueryError("buffer_m must be a positive number") from exc
+        if not math.isfinite(buffer_m) or buffer_m <= 0:
+            raise TwinQueryError("buffer_m must be a positive number",
+                                 buffer_m=buffer_m)
+        requested_kinds = ["tree"] if kinds is None else kinds
+        if not isinstance(requested_kinds, (list, tuple)):
+            raise TwinQueryError("kinds must be an array containing tree and/or shrub")
+        requested_kinds = sorted({str(kind) for kind in requested_kinds
+                                  if str(kind) in {"tree", "shrub"}})
+        if not requested_kinds:
+            raise TwinQueryError("kinds must contain tree and/or shrub")
+        clean_label = (str(label).strip()[:200] if label
+                       else f"Vegetation clearance near {target_kind}")
+        proposal = self.propose_plan_edits(
+            plan_id, [{
+                "kind": "vegetation_remove",
+                "geometry": geometry,
+                "params": {
+                    "buffer_m": min(500.0, buffer_m),
+                    "kinds": requested_kinds,
+                    "entity_ids": [],
+                    "target_entity_id": str(target_entity_id),
+                },
+                "label": clean_label,
+            }], expected_revision_id=expected_revision_id,
+            label=clean_label, demonstrate=demonstrate, author=author)
+        proposal["clearance_target"] = {
+            "entity_id": str(target_entity_id), "kind": target_kind,
+            "buffer_m": min(500.0, buffer_m),
+            "vegetation_kinds": requested_kinds,
+        }
+        return proposal
+
+    def propose_swale(self, plan_id, centerline, width_m=6.0, depth_m=0.35,
+                      expected_revision_id=None, label="Swale",
+                      demonstrate=True):
+        """Propose a broad terrain depression along a scene/geographic line."""
+        points = self._scene_coordinate_list(
+            centerline, minimum=2, label="swale centerline")
+        try:
+            width = max(0.2, min(1000.0, float(width_m)))
+            depth = max(0.0, min(30.0, float(depth_m)))
+        except (TypeError, ValueError) as exc:
+            raise TwinQueryError("swale width_m and depth_m must be numbers") from exc
+        edit = {
+            "kind": "swale",
+            "geometry": {"type": "LineString", "coordinates": points},
+            "params": {"width_m": width, "radius_m": width / 2.0,
+                       "depth_m": depth, "falloff": "smoothstep"},
+            "label": label,
+        }
+        return self.propose_plan_edits(
+            plan_id, [edit], expected_revision_id=expected_revision_id,
+            label=label, demonstrate=demonstrate)
+
+    def _planning_species(self, species, stage=None, habit="tree"):
+        catalog = self.planning_catalog()
+        needle = str(species or "").strip().lower()
+        rows = [item for item in catalog.get("species", [])
+                if item.get("habit") == habit]
+        if needle:
+            row = next((item for item in rows
+                        if str(item.get("id", "")).lower() == needle
+                        or str(item.get("common_name", "")).lower() == needle), None)
+        else:
+            row = next((item for item in rows if "orchard" in (item.get("tags") or [])),
+                       rows[0] if rows else None)
+        if row is None:
+            raise TwinQueryError("unknown planning species", species=species,
+                                 valid_species=[item.get("id") for item in catalog.get("species", [])])
+        if row.get("habit") != habit:
+            raise TwinQueryError(f"{row.get('common_name')} is not cataloged as {habit}")
+        stage_id = stage or row.get("default_stage")
+        dimensions = (row.get("stages") or {}).get(stage_id)
+        if not isinstance(dimensions, dict):
+            raise TwinQueryError("unknown species stage", stage=stage_id,
+                                 valid_stages=sorted((row.get("stages") or {}).keys()))
+        return row, stage_id, dimensions
+
+    def propose_orchard(self, plan_id, polygon, species=None,
+                        spacing_m=None, stage=None, expected_revision_id=None,
+                        label=None, demonstrate=True):
+        """Propose deterministic tree placement throughout an orchard polygon."""
+        ring = self._scene_coordinate_list(polygon, minimum=3, label="orchard polygon")
+        if ring[0] != ring[-1]:
+            ring.append(ring[0])
+        row, stage_id, dimensions = self._planning_species(species, stage, "tree")
+        spacing = row.get("default_spacing_m", 6.0) if spacing_m is None else spacing_m
+        edit = {
+            "kind": "orchard",
+            "geometry": {"type": "Polygon", "coordinates": [ring]},
+            "params": {
+                "habit": "tree", "species": row["common_name"],
+                "type": row.get("type", "deciduous"),
+                "height": dimensions.get("height", 5),
+                "radius": dimensions.get("radius", 2.5),
+                "spacing_m": spacing, "stage": stage_id,
+                "asset_key": row.get("asset_key"),
+            },
+            "label": label or f"{row['common_name']} orchard",
+        }
+        return self.propose_plan_edits(
+            plan_id, [edit], expected_revision_id=expected_revision_id,
+            label=edit["label"], demonstrate=demonstrate)
+
+    def propose_garden(self, plan_id, polygon, height_m=0.25,
+                       expected_revision_id=None, label="Garden",
+                       demonstrate=True):
+        """Propose a filled/raised garden footprint; crop yield is not modeled."""
+        ring = self._scene_coordinate_list(polygon, minimum=3, label="garden polygon")
+        if ring[0] != ring[-1]:
+            ring.append(ring[0])
+        edit = {
+            "kind": "garden",
+            "geometry": {"type": "Polygon", "coordinates": [ring]},
+            "params": {"height_m": height_m, "edge_falloff_m": 1.0},
+            "label": label,
+        }
+        return self.propose_plan_edits(
+            plan_id, [edit], expected_revision_id=expected_revision_id,
+            label=label, demonstrate=demonstrate)
+
+    def apply_plan_proposal(self, proposal_id, confirmed=False, author="GAIA"):
+        """Apply a reviewed proposal as a new immutable revision."""
+        result = self._run_plan_call(lambda: self._plan_engine().apply_proposal(
+            proposal_id, confirmed=confirmed, author=author))
+        result["visualization"] = self.visualize_plan(
+            result["plan"]["plan_id"],
+            revision_id=result["revision"]["revision_id"], view="difference")
+        return result
+
+    def visualize_plan(self, plan_id, revision_id=None, proposal_id=None,
+                       view="difference"):
+        """Open the live viewer's Plan pane at a revision or proposal preview."""
+        if view not in {"baseline", "planned", "difference"}:
+            raise TwinQueryError("plan view must be baseline, planned, or difference")
+        engine = self._plan_engine()
+        proposal = None
+        if proposal_id:
+            proposal = self._run_plan_call(lambda: engine.get_proposal(proposal_id))
+            if proposal.get("plan_id") != plan_id:
+                raise TwinQueryError("proposal belongs to a different plan",
+                                     proposal_id=proposal_id, plan_id=plan_id)
+            if revision_id and revision_id != proposal.get("expected_revision_id"):
+                raise TwinQueryError("proposal preview must use its expected base revision",
+                                     proposal_id=proposal_id,
+                                     expected_revision_id=proposal.get("expected_revision_id"))
+            revision_id = proposal.get("expected_revision_id")
+        selected = self._run_plan_call(
+            lambda: engine.get_plan(plan_id, revision_id=revision_id))
+        directive = {
+            "plan_id": plan_id,
+            "revision_id": selected["revision"]["revision_id"],
+            "proposal_id": proposal_id,
+            "preview_edits": proposal.get("proposed_edits", []) if proposal else [],
+            "label": proposal.get("label") if proposal else selected["plan"]["name"],
+            "view": "difference" if proposal else view,
+            "created_at": _utc_now(),
+        }
+        doc = _load_view_doc()
+        doc["plan_view"] = directive
+        _save_view_doc(doc)
+        return {
+            "plan_id": plan_id,
+            "revision_id": directive["revision_id"],
+            "proposal_id": proposal_id,
+            "view": directive["view"],
+            "note": "The live 3D viewer is opening Plan and showing this land/proposal.",
+        }
+
+    def clear_plan_visualization(self):
+        """Clear GAIA's Plan-pane directive without changing any saved plan."""
+        doc = _load_view_doc()
+        had_directive = bool(doc.get("plan_view"))
+        doc["plan_view"] = None
+        _save_view_doc(doc)
+        return {"cleared": had_directive}
+
+    def run_plan_simulation(self, plan_id, revision_id, simulator,
+                            parameters=None):
+        """Run a supported simulator against one plan's current immutable land."""
+        return self._run_plan_call(lambda: self._plan_engine().run_simulation(
+            plan_id, revision_id, simulator, parameters or {}))
 
 
 # ----------------------------------------------------------- CLI for demos

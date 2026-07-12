@@ -88,6 +88,14 @@ optional **regional pack**, never hardcoded in the engine.
   render live tracker positions, replay recorded days with realtime/speed
   controls and tracker POV, then append selected samples into the curated twin
   store. See [docs/live-inputs.md](docs/live-inputs.md).
+- **Plan** — a smooth, interactive 3D workspace with live terrain/vegetation
+  feedback for tree/shrub removal, free-text species-aware planting, and
+  depressions/mounds. Hold Ctrl/Command to navigate without leaving a brush;
+  G.A.I.A. composes swales, orchards, and gardens from the same primitives.
+  Plans autosave as immutable revisions, support named versions and branches,
+  can be safely discarded, and rerun hydrology, wildfire, ET, solar, and
+  viewshed against the effective land. G.A.I.A. can draft and visualize proposals
+  before an explicitly confirmed apply. See [docs/plan.md](docs/plan.md).
 
 ## Simulation
 
@@ -682,7 +690,7 @@ VEIL from data; nothing in the engine names a CRS, a layer, or a species.
 ```
 server.js                 zero-dependency static server (+ /api/chat, /api/* )
 public/
-  index.html  app.js  chat.js        UI, boot, click-to-identify, chat panel
+  index.html  app.js  chat.js  plan.js   UI, boot, chat, land planning
   viewer/  scene.js terrain.js vegetation.js overlays.js buildings3d.js
            georef.js                 scene-local meters <-> lon/lat (proj4js)
   vendor/  three.min.js  OrbitControls.js  proj4.js
@@ -693,7 +701,9 @@ scripts/                  the region-agnostic engine
   analyze_vegetation.py  veg_detect.py   capability-gated vegetation
   build_viewer_layers.py              generic atlas localization + styling
   twin_store.py  migrate_to_store.py  rebuild_store.py   the twin store
-  mcp_server.py  twin_query.py        read-only query tools for the chat/agent
+  plan_engine.py  plan_cli.py         revisions, materialization, simulations
+  mcp_server.py  twin_query.py        query + map-drawing tools for the chat/agent
+  live/                               live telemetry bridges + side store
 packs/<name>/             optional regional content pack
   pack.json  vegetation.py  layers.py   knowledge + styling hooks
   *.py                                  its own source-acquisition scripts

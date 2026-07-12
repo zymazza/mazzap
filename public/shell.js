@@ -19,6 +19,7 @@
   const TITLES = {
     layers: 'Layers',
     explore: 'Explore',
+    plan: 'Plan',
     simulation: 'Simulation',
     astronomy: 'Astronomy',
     survey: 'Field surveys',
@@ -27,7 +28,14 @@
 
   let activeMode = null;
 
+  function announcePaneChange(mode, previousMode) {
+    document.dispatchEvent(new CustomEvent('veil:panechange', {
+      detail: { mode, previousMode, open: mode != null },
+    }));
+  }
+
   function showPane(mode) {
+    const previousMode = activeMode;
     panes.forEach((p) => p.classList.toggle('active', p.dataset.pane === mode));
     flyoutTitle.textContent = TITLES[mode] || mode;
     flyout.hidden = false;
@@ -35,14 +43,17 @@
     activeMode = mode;
     applySimViews();
     syncRail();
+    announcePaneChange(mode, previousMode);
   }
 
   function closeFlyout() {
+    const previousMode = activeMode;
     flyout.hidden = true;
     document.body.classList.remove('flyout-open');
     activeMode = null;
     applySimViews();
     syncRail();
+    announcePaneChange(null, previousMode);
   }
 
   /* -------- simulation sub-tabs (Wildfire / Hydrology) --------
@@ -69,6 +80,10 @@
     document.body.classList.toggle('chat-open', open);
     syncRail();
   }
+
+  // Viewer directives (including GAIA Plan visualization) use the same pane
+  // transition as a rail click, keeping one source of truth for shell state.
+  window.VEILShell = { showPane, closeFlyout, toggleChat };
 
   function syncRail() {
     rail.querySelectorAll('.rail-btn').forEach((b) => {

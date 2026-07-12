@@ -251,6 +251,11 @@
       }
     }
 
+    function activeDataUrl(relativePath) {
+      const root = global.__twin?.plan?.assetRoot?.() || '/data';
+      return `${String(root).replace(/\/$/, '')}/${relativePath.replace(/^\//, '')}`;
+    }
+
     /* ----------------------------------------------- layer toggle sections */
 
     function toggleRow(layer) {
@@ -401,19 +406,27 @@
       els.status.textContent = state.mode === 'rain'
         ? 'Simulating the storm…' : 'Simulating snowmelt…';
       try {
-        const res = await fetch('/api/simulate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(buildParams()),
-        });
-        const data = await res.json();
+        const params = buildParams();
+        const plan = global.__twin?.plan;
+        let data;
+        if (plan?.activeRevisionId?.()) {
+          data = await plan.runSimulation('hydrology', params);
+        } else {
+          const res = await fetch('/api/simulate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(params),
+          });
+          data = await res.json();
+        }
         if (!data || typeof data !== 'object') throw new Error('Scenario returned an empty result.');
         if (data.error) throw new Error(data.error);
+        await api.refresh(data.default_visible_layers || data.layers || []);
+        if (plan?.activeRevisionId?.()) await reloadPlanContext();
         const view = renderResult(data);
         els.status.textContent = view.missingFields.length
           ? 'Scenario result is incomplete; showing available values.'
           : '';
-        await api.refresh(data.default_visible_layers || data.layers || []);
         renderToggles();
       } catch (err) {
         els.status.textContent = 'Scenario failed: ' + (err?.message || err);
@@ -597,16 +610,20 @@
 
     /* ------------------------------------------------------------ boot ---- */
 
-    async function boot() {
+    async function reloadPlanContext() {
       const [clim, summary, last, soilFeats, soilTab] = await Promise.all([
-        quietFetch('/data/climate/forcing-summary.json'),
-        quietFetch('/data/hydrology/summary.json'),
-        fetchOptionalJson('/data/hydrology/last-scenario.json'),
-        quietFetch('/data/soils/features.geojson'),
-        quietFetch('/data/soils/tabular.json'),
+        quietFetch(activeDataUrl('climate/forcing-summary.json')),
+        quietFetch(activeDataUrl('hydrology/summary.json')),
+        fetchOptionalJson(activeDataUrl('hydrology/last-scenario.json')),
+        quietFetch(activeDataUrl('soils/features.geojson')),
+        quietFetch(activeDataUrl('soils/tabular.json')),
       ]);
       state.climatology = clim;
       state.summary = summary;
+      state.lastResult = null;
+      els.results.replaceChildren();
+      els.scenarioGroup.hidden = true;
+      els.status.textContent = '';
       state.soils = { features: soilFeats?.features || [], tabular: soilTab?.map_units || {} };
       renderPresets();
       if (last?.error) {
@@ -626,11 +643,12 @@
     }
 
     renderToggles();
-    boot().catch((err) => {
+    reloadPlanContext().catch((err) => {
       els.status.textContent = `Simulation panel could not finish loading: ${err?.message || err}`;
       renderToggles();
     });
-    return { state, renderToggles, interpretAt, _renderResult: renderResult };
+    return { state, renderToggles, interpretAt, reloadPlanContext,
+      _renderResult: renderResult };
   }
 
   global.VEILSimulation = {

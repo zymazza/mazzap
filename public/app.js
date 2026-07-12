@@ -41,6 +41,10 @@
     layerLoads: new Map(),    // id -> in-flight ensureLayerData promise
     layerErrors: new Map(),   // id -> visible load failure message
     fireReveal: { time: null, duration: null },
+    planContext: null,        // selected plan/revision, even while baseline view is shown
+    planAssetRoot: null,      // /data/plans/revisions/<immutable revision id>
+    planBaselineAssets: null, // immutable browser copy used by Baseline/undo views
+    planVerticalDatum: null,  // keep every plan in the baseline scene's world-y frame
   };
   const fireGridKeys = new WeakMap();
   let fireGridKeySerial = 1;
@@ -118,6 +122,13 @@
     });
   }
 
+  function dataAssetUrl(path, root = '/data') {
+    const raw = String(path || '').trim();
+    if (!raw) return raw;
+    if (raw.startsWith('/')) return raw;
+    return `${String(root || '/data').replace(/\/$/, '')}/${raw.replace(/^\/+/, '')}`;
+  }
+
   function resolveAstronomySite(scene, viewer) {
     const origin = Array.isArray(scene?.origin_utm) ? scene.origin_utm : [0, 0];
     let lon = null;
@@ -143,12 +154,13 @@
     if (layer.type === 'raster') {
       if (!layer.image) throw new Error('Raster layer has no image asset.');
       if (!layer.grid) throw new Error('Raster layer has no identify grid.');
-      const image = await loadImageFn('/data/' + layer.image);
-      const grid = await fetchJsonFn('/data/' + layer.grid);
+      const root = layer.__asset_root || '/data';
+      const image = await loadImageFn(dataAssetUrl(layer.image, root));
+      const grid = await fetchJsonFn(dataAssetUrl(layer.grid, root));
       return { image, grid };
     }
     if (!layer.file) throw new Error('Vector layer has no feature file.');
-    return fetchJsonFn('/data/' + layer.file);
+    return fetchJsonFn(dataAssetUrl(layer.file, layer.__asset_root || '/data'));
   }
 
   function layerLoadFailureMessage(layer, err) {
@@ -193,6 +205,7 @@
     } catch (err) {
       return fail('Failed to build the 3D scene: ' + (err?.message || err));
     }
+    state.planVerticalDatum = Number(viewer.terrainGrid?.minElevation) || 0;
     viewer.setVegetationDensity('trees', 1);
     viewer.setVegetationDensity('shrubs', 1);
     await viewer.setTerrainRenderMode('ortho');
@@ -244,6 +257,12 @@
     window.__twin.annotations = window.VEILAnnotations?.create(viewer, scene);
     window.__twin.chat = window.VEILChat?.create(viewer, scene);
     window.__twin.survey = window.VEILSurvey?.create(refreshSurveyLayers);
+    window.__twin.plan = window.VEILPlan?.create({
+      viewer,
+      scene,
+      applyRevision: applyPlanRevision,
+      updateRevisionContext: updatePlanRevisionContext,
+    });
     window.__twin.simulation = window.VEILSimulation?.create({
       catalog: () => state.simulation,
       isEnabled: (id) => !!state.enabled.get(id),
@@ -339,6 +358,127 @@
     return state.atlas;
   }
 
+  /* ---------------- branchable Plan land context ------------------------ */
+
+  async function ensurePlanBaselineAssets() {
+    if (state.planBaselineAssets) return state.planBaselineAssets;
+    const vegetation = state.scene?.vegetation || {};
+    const [grid, trees, shrubs] = await Promise.all([
+      fetchJson(state.scene?.terrain?.grid_url || '/data/terrain/grid.json'),
+      fetchJson(vegetation.tree_instances_url || '/data/vegetation/tree_instances.json').catch(() => []),
+      fetchJson(vegetation.shrub_points_url || '/data/vegetation/shrub_points.json').catch(() => []),
+    ]);
+    state.planBaselineAssets = { grid, trees, shrubs };
+    return state.planBaselineAssets;
+  }
+
+  async function replaceViewerLand(actualGrid, trees, shrubs) {
+    const viewer = state.viewer;
+    if (!viewer || !actualGrid) return;
+    const activeMode = viewer.activeTerrainMode || 'ortho';
+    const runtimeGrid = {
+      ...actualGrid,
+      // World y has to remain in the baseline scene frame: buildings, vector
+      // overlays, apron terrain and georef were all booted against this datum.
+      // The materialized JSON itself keeps the frozen contract's true min.
+      minElevation: state.planVerticalDatum,
+      __materializedMinElevation: actualGrid.minElevation,
+    };
+    const oldMesh = viewer.terrainMesh;
+    const oldBase = viewer.terrainBaseMesh;
+    const oldElevation = viewer.elevationMaterial;
+    const oldGeometry = oldMesh?.geometry;
+    viewer.disposeTerrainDrapeOverlay?.();
+    viewer.disposeActiveTerrainMaterial?.();
+    if (oldMesh) viewer.scene.remove(oldMesh);
+    if (oldBase) viewer.scene.remove(oldBase);
+
+    const built = window.VEILTerrain.buildTerrainMesh(runtimeGrid);
+    const base = window.VEILTerrain.buildTerrainBaseMesh?.(runtimeGrid) || null;
+    viewer.terrainGrid = runtimeGrid;
+    viewer.terrainMesh = built.mesh;
+    viewer.terrainBaseMesh = base;
+    viewer.elevationMaterial = built.elevationMaterial;
+    if (base) viewer.scene.add(base);
+    viewer.scene.add(built.mesh);
+    if (state.drape?.mesh) state.drape.mesh.geometry = built.geometry;
+    viewer.updateGridHelper?.(runtimeGrid);
+    viewer.configureSunShadowCamera?.();
+    viewer.setTerrainShadowFlags?.(viewer.photometricMode);
+
+    viewer.vegetationData = { treeInstances: trees || [], shrubPoints: shrubs || [] };
+    viewer.vegetationRenderer?.load?.({
+      treeInstances: trees || [], shrubPoints: shrubs || [], grid: runtimeGrid,
+    });
+    viewer.invalidateShadowMap?.('plan-land');
+    await viewer.setTerrainRenderMode(activeMode);
+
+    if (oldGeometry && oldGeometry !== built.geometry) oldGeometry.dispose();
+    if (oldBase) {
+      oldBase.geometry?.dispose?.();
+      oldBase.material?.dispose?.();
+    }
+    if (oldElevation && oldElevation !== built.elevationMaterial) oldElevation.dispose?.();
+  }
+
+  function updatePlanRevisionContext(planPayload) {
+    const materialized = planPayload?.materialized || null;
+    state.planContext = planPayload || null;
+    state.planAssetRoot = materialized?.asset_root || null;
+  }
+
+  async function applyPlanRevision(planPayload, viewMode = 'planned') {
+    const baseline = await ensurePlanBaselineAssets();
+    const materialized = planPayload?.materialized || null;
+    updatePlanRevisionContext(planPayload);
+
+    let shown = baseline;
+    let effective = baseline;
+    if (materialized) {
+      const [grid, trees, shrubs] = await Promise.all([
+        fetchJson(materialized.terrain_grid_url),
+        fetchJson(materialized.tree_instances_url),
+        fetchJson(materialized.shrub_points_url),
+      ]);
+      effective = { grid, trees, shrubs };
+      if (viewMode !== 'baseline') shown = effective;
+    }
+    await replaceViewerLand(shown.grid, shown.trees, shown.shrubs);
+
+    // A revision runtime contains its own mutable simulation catalogs. Clear only
+    // process-layer payloads; atlas/survey data remain the baseline evidence.
+    [...(state.simulation?.layers || []), ...(state.wildfire?.layers || [])]
+      .forEach((layer) => state.layerData.delete(layer.id));
+    state.simulation = await loadSimulationCatalog();
+    state.wildfire = await loadWildfireCatalog();
+    await ensureEnabledLayerData(state.simulation.layers.concat(state.wildfire.layers));
+    redrawDrape();
+    renderKey();
+    window.__twin?.simulation?.renderToggles?.();
+    window.__twin?.wildfire?.renderToggles?.();
+    await window.__twin?.viewshed?.reloadPlanContext?.();
+    await Promise.all([
+      window.__twin?.simulation?.reloadPlanContext?.(),
+      window.__twin?.wildfire?.reloadPlanContext?.(),
+      window.__twin?.et?.reloadPlanContext?.(),
+      window.__twin?.solar?.reloadPlanContext?.(),
+    ].filter(Boolean).map((promise) => Promise.resolve(promise).catch((error) => {
+      console.warn('plan simulation context refresh failed:', error);
+    })));
+
+    return {
+      grid: shown.grid,
+      trees: shown.trees,
+      shrubs: shown.shrubs,
+      effectiveGrid: effective.grid,
+      effectiveTrees: effective.trees,
+      effectiveShrubs: effective.shrubs,
+      baselineGrid: baseline.grid,
+      baselineTrees: baseline.trees,
+      baselineShrubs: baseline.shrubs,
+    };
+  }
+
   /* ------------- simulation layers (Simulation window — hydrology + ET) --- */
 
   async function loadSimulationCatalog() {
@@ -346,19 +486,21 @@
     // (analyze_hydrology.py / hydro_scenario.py) and the ET/water-balance layers
     // (et_water_balance.py). Each catalog is optional and independently absent
     // until its pipeline has run.
-    const fetchLayers = async (url) => {
+    const root = state.planAssetRoot || '/data';
+    const fetchLayers = async (rel) => {
       try {
-        return (await fetchJson(url)).layers || [];
+        return ((await fetchJson(dataAssetUrl(rel, root))).layers || [])
+          .map((layer) => ({ ...layer, __asset_root: root }));
       } catch (_e) {
         return [];
       }
     };
     const [hydro, et, etScenario, viewshed, solar] = await Promise.all([
-      fetchLayers('/data/hydrology/simulation-layers.json'),
-      fetchLayers('/data/et/et-layers.json'),
-      fetchLayers('/data/et/et-scenario-layers.json'),
-      fetchLayers('/data/viewshed/viewshed-layers.json'),
-      fetchLayers('/data/solar/solar-layers.json'),
+      fetchLayers('hydrology/simulation-layers.json'),
+      fetchLayers('et/et-layers.json'),
+      fetchLayers('et/et-scenario-layers.json'),
+      fetchLayers('viewshed/viewshed-layers.json'),
+      fetchLayers('solar/solar-layers.json'),
     ]);
     return { layers: [...hydro, ...et, ...etScenario, ...viewshed, ...solar] };
   }
@@ -388,7 +530,10 @@
 
   async function loadWildfireCatalog() {
     try {
-      return await fetchJson('/data/fire/fire-layers.json');
+      const root = state.planAssetRoot || '/data';
+      const catalog = await fetchJson(dataAssetUrl('fire/fire-layers.json', root));
+      catalog.layers = (catalog.layers || []).map((layer) => ({ ...layer, __asset_root: root }));
+      return catalog;
     } catch (_e) {
       return { layers: [] }; // analyze_fuels.py hasn't been run yet
     }
@@ -1729,8 +1874,9 @@
         const localX = Number(x);
         const localY = Number(yNorth);
         if (!Number.isFinite(localX) || !Number.isFinite(localY)) return null;
+        const activeGrid = viewer.terrainGrid || grid;
         const terrainY = window.VEILTerrain?.sampleTerrainHeightAtLocal
-          ? window.VEILTerrain.sampleTerrainHeightAtLocal(grid, localX, localY)
+          ? window.VEILTerrain.sampleTerrainHeightAtLocal(activeGrid, localX, localY)
           : 0;
         const point = new THREE.Vector3(localX, terrainY, -localY);
         return selectTerrainPoint(point, options);
@@ -1750,6 +1896,7 @@
       // clicks belong to it (chat.js), not the GPS readout; same for the POV
       // explorer's drop-in click / locked first-person session. Fire ignition
       // uses this same raycast but consumes the click before readout/identify.
+      if (window.__twin?.plan?.isEditing?.()) return;
       if (window.__twin?.chat?.state?.mode) return;
       if (window.__twin?.viewshed?.isPicking?.()) {
         if (moved < 5) window.__twin.viewshed.pickAtScreen?.(e.clientX, e.clientY);

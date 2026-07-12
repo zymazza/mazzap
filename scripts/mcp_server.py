@@ -2,12 +2,10 @@
 """MCP server over a VEIL digital-twin store — stdio transport.
 
 This is the agent-facing surface of the twin: every tool is a thin wrapper
-around scripts/twin_query.py (where all logic lives and is tested). The
-store is read-only; the only writes are the draw_polygon / draw_point /
-clear_drawings tools, which maintain data/annotations.json — ephemeral
-orange drawings the 3D viewer polls and renders so an agent can point at
-places on the map instead of reciting coordinates. Drawings never touch
-the store or the journal.
+around scripts/twin_query.py (where all logic lives and is tested). Most
+queries are read-only. Scenario tools journal their runs; Plan tools create
+immutable, branchable revisions; viewer-directive tools maintain ephemeral
+visualization state in data/annotations.json.
 
 Run it:
     python3 scripts/mcp_server.py
@@ -56,16 +54,18 @@ mcp = FastMCP(
         "storm scenarios), an evapotranspiration/water-balance model, a wildfire "
         "fuels/scenario model (fuel model, ROS, crown potential, arrival/flame/"
         "intensity scenario drapes), a local astronomy/sky model (sun, moon, "
-        "planets, stars, eclipses, viewer clock and sky highlights), a solar "
+        "planets, stars, eclipses, viewer clock and sky highlights), a viewshed/"
+        "horizon model, a solar "
         "panel siting model (terrain/canopy horizon shading, Daymet cloud "
-        "normals, fixed-panel angle/yield recommendations), and any "
-        "field-survey uploads. The store is "
-        "read-only; run_scenario, run_fire_scenario, the draw_* tools, the "
+        "normals, fixed-panel angle/yield recommendations), field-survey uploads, "
+        "and branchable Plan land alternatives. Most queries are read-only; "
+        "run_scenario, run_fire_scenario, the draw_* tools, the "
         "layer-view tools "
         "(set_layer_visibility / filter_layer / reset_layer_views), and the "
         "sky directive tools (set_view_time / highlight_sky / clear_sky_highlights "
-        "/ next_sky_event with demonstrate=true) are the only "
-        "writers; the viewer-directive tools write only data/annotations.json, "
+        "/ next_sky_event with demonstrate=true), plus the Plan lifecycle, apply, "
+        "and simulation tools are intentional writers; viewer directives write "
+        "only data/annotations.json, "
         "never the store. run_fire_scenario is a store-WRITING scenario/fire pipeline "
         "run, the same run the viewer's Fire pane launches. "
         "Use describe_place for lightweight location/coordinate context; use "
@@ -81,6 +81,18 @@ mcp = FastMCP(
         "find_entities, aggregate_entities, summarize_region, or recommend_sites. "
         "For solar-panel planning use solar_at, solar_profile, compare_solar_sites, "
         "or recommend_solar_sites; show recommended sites with demonstrate=true. "
+        "For land changes use list_plans/planning_catalog first. Draft changes "
+        "with propose_plan_edits or the semantic propose_vegetation_clearance/"
+        "propose_swale/propose_orchard/propose_garden tools; those validate and "
+        "visualize but DO NOT change the "
+        "plan. For vegetation_remove, pass concrete entity_ids or scene-local "
+        "geometry plus buffer_m and kinds; the proposal resolves that spatial "
+        "selection to effective vegetation and rejects zero matches. Verify the "
+        "preview entities_removed count is nonzero before asking the user to "
+        "review the 3D difference, then call "
+        "apply_plan_proposal(confirmed=true). Never skip that review step. Branch "
+        "with branch_plan when preserving an alternative, and use "
+        "run_plan_simulation so outcomes use the planned terrain and vegetation. "
         "For water questions use hydrology_at / hydrology_summary, and run_scenario "
         "for 'what if it …' events. For fire questions use fire_at / fire_summary, "
         "and run_fire_scenario for ignition/weather scenarios; fire scenario layers "
@@ -157,7 +169,8 @@ def find_entities(kind: str, near: dict | None = None,
       always the full count. Each entity returns its position in both
       coordinate systems and all latest attrs with provenance
       (source/confidence/run_id/observed_at). Only alive (non-retired)
-      entities are returned."""
+      entities are returned. Stream/road region filters test the actual line
+      path, not merely its display centroid."""
     return _run(_query().find_entities, kind, near=near, within_m=within_m,
                 region=region, attr_filters=attr_filters, limit=limit)
 
@@ -822,6 +835,172 @@ def recommend_solar_sites(region: dict | None = None, objective: str = "annual_k
     return _run(_query().recommend_solar_sites, region=region, objective=objective,
                 count=count, surface=surface, system_kw=system_kw,
                 demonstrate=demonstrate)
+
+
+@mcp.tool()
+def list_plans(include_archived: bool = False) -> dict:
+    """List saved land plans, current immutable heads, edit counts, branches,
+    and named checkpoints. Use this before planning so you extend or branch the
+    right alternative instead of silently creating a duplicate."""
+    return _run(_query().list_plans, include_archived=include_archived)
+
+
+@mcp.tool()
+def get_plan(plan_id: str, revision_id: str | None = None,
+             materialize: bool = False) -> dict:
+    """Inspect a plan and one reachable revision: complete edit snapshot,
+    ancestry, current head, and optionally its materialized terrain/vegetation
+    diff. This does not change the plan."""
+    return _run(_query().get_plan, plan_id, revision_id=revision_id,
+                materialize=materialize)
+
+
+@mcp.tool()
+def planning_catalog() -> dict:
+    """Return this regional pack's tree/shrub species, growth-stage dimensions,
+    spacing defaults, and swale/orchard/garden caveats. Use catalog ids rather
+    than inventing species dimensions."""
+    return _run(_query().planning_catalog)
+
+
+@mcp.tool()
+def create_plan(name: str, author: str = "GAIA") -> dict:
+    """Create a new empty, non-destructive plan pinned to the current baseline.
+    This writes a journaled plan root but never alters baseline land."""
+    return _run(_query().create_plan, name, author=author)
+
+
+@mcp.tool()
+def branch_plan(source_plan_id: str, name: str,
+                revision_id: str | None = None, author: str = "GAIA") -> dict:
+    """Create a named alternative from a plan's head or an older reachable
+    revision. The source stays unchanged and future edits diverge safely."""
+    return _run(_query().branch_plan, source_plan_id, name,
+                revision_id=revision_id, author=author)
+
+
+@mcp.tool()
+def save_plan_version(plan_id: str, expected_revision_id: str,
+                      name: str, author: str = "GAIA") -> dict:
+    """Save a named immutable checkpoint at the current plan head. The expected
+    revision prevents overwriting work from another viewer or agent."""
+    return _run(_query().save_plan_version, plan_id, expected_revision_id,
+                name, author=author)
+
+
+@mcp.tool()
+def propose_plan_edits(plan_id: str, edits: list[dict],
+                       expected_revision_id: str | None = None,
+                       replace: bool = False, label: str | None = None,
+                       demonstrate: bool = True, author: str = "GAIA") -> dict:
+    """Validate arbitrary Plan edits and create a reviewable proposal without
+    changing the saved plan. Coordinates in generic edit GeoJSON are scene-local
+    meters. Default appends edits; replace=true proposes a complete replacement.
+    A vegetation_remove edit needs entity_ids, or geometry plus positive buffer_m
+    (distance_m is accepted as an alias) and tree/shrub kinds; spatial selections
+    are resolved to concrete effective entity IDs and zero matches are rejected.
+    demonstrate opens the live 3D Difference view. After showing the preview,
+    ask for confirmation and only then call apply_plan_proposal."""
+    return _run(_query().propose_plan_edits, plan_id, edits,
+                expected_revision_id=expected_revision_id, replace=replace,
+                label=label, demonstrate=demonstrate, author=author)
+
+
+@mcp.tool()
+def propose_vegetation_clearance(
+        plan_id: str, target_entity_id: str, buffer_m: float = 10.0,
+        kinds: list[str] | None = None,
+        expected_revision_id: str | None = None,
+        label: str | None = None, demonstrate: bool = True,
+        author: str = "GAIA") -> dict:
+    """Draft and visualize removal of effective trees/shrubs within buffer_m
+    of one mapped feature entity (normally a stream or road). Pass the entity ID
+    returned by find_entities; this tool obtains its full scene-local geometry
+    internally, so do not copy geometry or enumerate vegetation IDs. It rejects
+    zero matches and remains unapplied until the user confirms the preview."""
+    return _run(_query().propose_vegetation_clearance,
+                plan_id, target_entity_id, buffer_m=buffer_m, kinds=kinds,
+                expected_revision_id=expected_revision_id, label=label,
+                demonstrate=demonstrate, author=author)
+
+
+@mcp.tool()
+def propose_swale(plan_id: str, centerline: list, width_m: float = 6.0,
+                  depth_m: float = 0.35,
+                  expected_revision_id: str | None = None,
+                  label: str = "Swale", demonstrate: bool = True) -> dict:
+    """Draft and visualize a smooth swale depression along a centerline. Points
+    may each be {x,y}, {lat,lon}, [x,y], or [lon,lat]. This is terrain-screening
+    geometry, not drainage engineering; it remains unapplied until confirmed."""
+    return _run(_query().propose_swale, plan_id, centerline,
+                width_m=width_m, depth_m=depth_m,
+                expected_revision_id=expected_revision_id,
+                label=label, demonstrate=demonstrate)
+
+
+@mcp.tool()
+def propose_orchard(plan_id: str, polygon: list,
+                    species: str | None = None,
+                    spacing_m: float | None = None, stage: str | None = None,
+                    expected_revision_id: str | None = None,
+                    label: str | None = None, demonstrate: bool = True) -> dict:
+    """Draft a deterministic, spacing-respecting orchard inside a polygon and
+    show it in 3D. Species/stage come from planning_catalog. The proposal is
+    clipped to editable land and does not change the plan until confirmed."""
+    return _run(_query().propose_orchard, plan_id, polygon, species=species,
+                spacing_m=spacing_m, stage=stage,
+                expected_revision_id=expected_revision_id,
+                label=label, demonstrate=demonstrate)
+
+
+@mcp.tool()
+def propose_garden(plan_id: str, polygon: list, height_m: float = 0.25,
+                   expected_revision_id: str | None = None,
+                   label: str = "Garden", demonstrate: bool = True) -> dict:
+    """Draft and visualize a filled/raised garden footprint. Terrain change is
+    modeled; crop yield and irrigation are explicitly outside current scope.
+    The saved plan remains untouched until confirmed."""
+    return _run(_query().propose_garden, plan_id, polygon, height_m=height_m,
+                expected_revision_id=expected_revision_id,
+                label=label, demonstrate=demonstrate)
+
+
+@mcp.tool()
+def apply_plan_proposal(proposal_id: str, confirmed: bool = False,
+                        author: str = "GAIA") -> dict:
+    """Apply a proposal as a new immutable plan revision. Set confirmed=true
+    only after the user has reviewed/approved its 3D preview; otherwise the tool
+    returns confirmation_required. Stale plan heads fail safely with a conflict."""
+    return _run(_query().apply_plan_proposal, proposal_id,
+                confirmed=confirmed, author=author)
+
+
+@mcp.tool()
+def visualize_plan(plan_id: str, revision_id: str | None = None,
+                   proposal_id: str | None = None,
+                   view: str = "difference") -> dict:
+    """Open the live 3D Plan pane at a saved revision or an unapplied proposal.
+    view is baseline, planned, or difference. Presentation-only: no land or plan
+    revision is changed."""
+    return _run(_query().visualize_plan, plan_id, revision_id=revision_id,
+                proposal_id=proposal_id, view=view)
+
+
+@mcp.tool()
+def clear_plan_visualization() -> dict:
+    """Clear GAIA's live Plan visualization directive without deleting or
+    changing any saved plan, revision, proposal, or simulation result."""
+    return _run(_query().clear_plan_visualization)
+
+
+@mcp.tool()
+def run_plan_simulation(plan_id: str, revision_id: str, simulator: str,
+                        parameters: dict | None = None) -> dict:
+    """Run hydrology, fire, et, solar, solar_site, or viewshed against any
+    reachable immutable plan revision. The result is provenance-bound to
+    plan_id, revision_id, content hash, parameters, and a persistent run id."""
+    return _run(_query().run_plan_simulation, plan_id, revision_id, simulator,
+                parameters=parameters)
 
 
 if __name__ == "__main__":

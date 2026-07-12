@@ -155,6 +155,11 @@
       }
     }
 
+    function activeDataUrl(relativePath) {
+      const root = global.__twin?.plan?.assetRoot?.() || '/data';
+      return `${String(root).replace(/\/$/, '')}/${relativePath.replace(/^\//, '')}`;
+    }
+
     /* ------------- layer toggle (the "Annual actual ET" drape) ------------- */
 
     function toggleRow(layer) {
@@ -529,10 +534,25 @@
       els.scenarioRun.disabled = true;
       setScenarioStatus('Running ET scenario...');
       try {
+        const params = buildScenarioParams();
+        const plan = window.__twin?.plan;
+        if (plan?.activeRevisionId?.()) {
+          const data = await plan.runSimulation('et', params);
+          if (!data || typeof data !== 'object') throw new Error('ET scenario returned an empty result.');
+          if (data.error) throw new Error(data.error);
+          if (data.drape?.layer_id && api.refresh) {
+            await api.refresh([data.drape.layer_id]);
+            renderToggles();
+          }
+          await reloadPlanContext();
+          renderScenarioResult(data);
+          setScenarioStatus('', 'ok');
+          return;
+        }
         const res = await fetch('/api/et-scenario', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(buildScenarioParams()),
+          body: JSON.stringify(params),
         });
         // Parse defensively: a non-JSON body is almost always a stale server
         // missing this route (404) or a cross-origin rejection, so surface an
@@ -600,14 +620,16 @@
 
     /* ------------------------------------------------------------ boot ---- */
 
-    async function boot() {
+    async function reloadPlanContext() {
       const [et0, wb, lastScenario] = await Promise.all([
-        quietFetch('/data/et/et0-summary.json'),
-        quietFetch('/data/et/summary.json'),
-        fetchOptionalJson('/data/et/last-et-scenario.json'),
+        quietFetch(activeDataUrl('et/et0-summary.json')),
+        quietFetch(activeDataUrl('et/summary.json')),
+        fetchOptionalJson(activeDataUrl('et/last-et-scenario.json')),
       ]);
       state.et0 = et0;
       state.wb = wb;
+      state.lastScenario = null;
+      els.scenarioResults.replaceChildren();
 
       if (wb?.annual) {
         const aets = Object.values(wb.annual).map((r) => num(r?.aet_mm)).filter((x) => x != null);
@@ -642,10 +664,10 @@
 
     renderScenarioPresets();
     renderToggles();
-    boot().catch((err) => {
+    reloadPlanContext().catch((err) => {
       els.status.textContent = `Water & ET panel could not finish loading: ${err?.message || err}`;
     });
-    return { state, renderToggles, interpretAt };
+    return { state, renderToggles, interpretAt, reloadPlanContext };
   }
 
   global.VEILET = { create };
