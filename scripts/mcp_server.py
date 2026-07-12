@@ -90,7 +90,11 @@ mcp = FastMCP(
         "selection to effective vegetation and rejects zero matches. Verify the "
         "preview entities_removed count is nonzero before asking the user to "
         "review the 3D difference, then call "
-        "apply_plan_proposal(confirmed=true). Never skip that review step. Branch "
+        "apply_plan_proposal(confirmed=true). Never skip that review step. A "
+        "demonstration targets the user's already-open VEIL viewer: ask the user "
+        "to inspect it, and never launch Playwright, Chrome, CUA, or another "
+        "agent-owned browser merely to verify the preview. If no viewer is open, "
+        "ask the user to open one before approval. Branch "
         "with branch_plan when preserving an alternative, and use "
         "run_plan_simulation so outcomes use the planned terrain and vegetation. "
         "For water questions use hydrology_at / hydrology_summary, and run_scenario "
@@ -899,8 +903,9 @@ def propose_plan_edits(plan_id: str, edits: list[dict],
     A vegetation_remove edit needs entity_ids, or geometry plus positive buffer_m
     (distance_m is accepted as an alias) and tree/shrub kinds; spatial selections
     are resolved to concrete effective entity IDs and zero matches are rejected.
-    demonstrate opens the live 3D Difference view. After showing the preview,
-    ask for confirmation and only then call apply_plan_proposal."""
+    demonstrate signals the user's live 3D Difference view. Ask the user to
+    review it and only then call apply_plan_proposal; do not open a separate
+    agent browser to inspect the preview."""
     return _run(_query().propose_plan_edits, plan_id, edits,
                 expected_revision_id=expected_revision_id, replace=replace,
                 label=label, demonstrate=demonstrate, author=author)
@@ -979,9 +984,9 @@ def apply_plan_proposal(proposal_id: str, confirmed: bool = False,
 def visualize_plan(plan_id: str, revision_id: str | None = None,
                    proposal_id: str | None = None,
                    view: str = "difference") -> dict:
-    """Open the live 3D Plan pane at a saved revision or an unapplied proposal.
-    view is baseline, planned, or difference. Presentation-only: no land or plan
-    revision is changed."""
+    """Signal the user's live 3D Plan pane at a saved revision or an unapplied
+    proposal. view is baseline, planned, or difference. Presentation-only: no
+    land or plan revision is changed, and this never requires an agent browser."""
     return _run(_query().visualize_plan, plan_id, revision_id=revision_id,
                 proposal_id=proposal_id, view=view)
 

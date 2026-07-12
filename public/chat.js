@@ -11,6 +11,29 @@
   'use strict';
 
   const POINT_RADIUS_M = 100;
+  const PLAN_PROPOSAL_TOOLS = new Set([
+    'propose_plan_edits', 'propose_vegetation_clearance',
+    'propose_swale', 'propose_orchard', 'propose_garden',
+  ]);
+
+  function tracePayload(value) {
+    if (value && typeof value === 'object') return value;
+    try { return JSON.parse(String(value || '')); } catch (_err) { return null; }
+  }
+
+  function planActionsFromTrace(trace) {
+    const actions = [];
+    (Array.isArray(trace) ? trace : []).forEach((entry) => {
+      const result = tracePayload(entry?.result);
+      if (!result) return;
+      if (PLAN_PROPOSAL_TOOLS.has(entry.tool) && result.proposal_id) {
+        actions.push({ type: 'proposal', proposal: result });
+      } else if (entry.tool === 'apply_plan_proposal' && result.proposal?.proposal_id) {
+        actions.push({ type: 'applied', proposal: result.proposal, revision: result.revision || null });
+      }
+    });
+    return actions;
+  }
 
   function create(viewer, scene) {
     const { THREE } = global;
@@ -71,6 +94,7 @@
       scope: 'all',          // 'all' | 'region' | 'point'
       history: [],           // [{role, content}]
       busy: false,
+      proposalCards: new Map(),
     };
 
     function setBusy(busy) {
@@ -82,6 +106,9 @@
       els.input.title = state.busy
         ? 'G.A.I.A. is answering; wait for the reply before sending another message.'
         : '';
+      els.messages.querySelectorAll('[data-plan-proposal-approve]').forEach((button) => {
+        button.disabled = state.busy || button.dataset.proposalStatus !== 'proposed';
+      });
     }
 
     /* ---------------- 3D overlay: markers + terrain-following outline */
@@ -266,7 +293,9 @@
 
     /* ---------------- transcript */
 
-    const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const esc = (s) => String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
     // minimal markdown: bold + bullet lines + paragraphs
     function renderText(text) {
@@ -287,6 +316,89 @@
 
     function note(text) {
       bubble('note', esc(text));
+    }
+
+    function previewRows(proposal) {
+      const preview = proposal?.preview || {};
+      const vegetation = preview.vegetation || {};
+      const terrain = preview.terrain || {};
+      const rows = [];
+      const edits = Number(preview.edit_count);
+      const removed = Number(vegetation.entities_removed);
+      const trees = Number(vegetation.trees_added);
+      const shrubs = Number(vegetation.shrubs_added);
+      const cut = Number(terrain.estimated_cut_m3);
+      const fill = Number(terrain.estimated_fill_m3);
+      if (Number.isFinite(edits)) rows.push(`${edits.toLocaleString()} proposed edits`);
+      if (Number.isFinite(removed) && removed > 0) {
+        rows.push(`${removed.toLocaleString()} existing plants resolved for removal`);
+      }
+      if ((Number.isFinite(trees) && trees > 0) || (Number.isFinite(shrubs) && shrubs > 0)) {
+        rows.push(`+${(trees || 0).toLocaleString()} trees · +${(shrubs || 0).toLocaleString()} shrubs`);
+      }
+      if (Number.isFinite(cut) || Number.isFinite(fill)) {
+        rows.push(`${Math.round(cut || 0).toLocaleString()} m³ cut · ${Math.round(fill || 0).toLocaleString()} m³ fill`);
+      }
+      return rows;
+    }
+
+    function renderPlanProposal(proposal) {
+      if (!proposal?.proposal_id) return null;
+      const id = String(proposal.proposal_id);
+      const old = state.proposalCards.get(id);
+      if (old) old.remove();
+      const status = proposal.status === 'applied' ? 'applied' : 'proposed';
+      const label = proposal.label || 'GAIA plan proposal';
+      const rows = previewRows(proposal);
+      const card = bubble('bot plan-proposal', `
+        <div class="plan-proposal-head">
+          <span>G.A.I.A. plan proposal</span>
+          <span class="plan-proposal-status ${status}">${status === 'applied' ? 'applied' : 'preview · not applied'}</span>
+        </div>
+        <strong class="plan-proposal-title">${esc(label)}</strong>
+        <div class="plan-proposal-stats">${rows.map((row) => `<span>${esc(row)}</span>`).join('')}</div>
+        <div class="plan-proposal-note">The baseline remains untouched. Review the live difference in Plan before approving.</div>
+        <button type="button" class="plan-proposal-approve"
+          data-plan-proposal-approve="${esc(id)}" data-proposal-status="${status}">
+          ${status === 'applied' ? 'Approved · immutable revision' : 'Approve as new revision'}
+        </button>`);
+      state.proposalCards.set(id, card);
+      const button = card.querySelector('[data-plan-proposal-approve]');
+      button.disabled = status !== 'proposed' || state.busy;
+      button.addEventListener('click', () => {
+        if (state.busy || button.dataset.proposalStatus !== 'proposed') return;
+        button.disabled = true;
+        sendMessage(`Apply ${id}`, { displayText: `Approve “${label}”` });
+      });
+      return card;
+    }
+
+    function markPlanProposalApplied(proposal, revision = null) {
+      const id = String(proposal?.proposal_id || proposal || '');
+      const card = state.proposalCards.get(id);
+      if (!card) return null;
+      const status = card.querySelector('.plan-proposal-status');
+      const button = card.querySelector('[data-plan-proposal-approve]');
+      status.textContent = 'applied';
+      status.className = 'plan-proposal-status applied';
+      button.textContent = 'Approved · immutable revision';
+      button.dataset.proposalStatus = 'applied';
+      button.disabled = true;
+      const revisionId = revision?.revision_id || proposal?.applied_revision_id;
+      if (revisionId) {
+        const detail = document.createElement('div');
+        detail.className = 'plan-proposal-revision';
+        detail.textContent = `Immutable revision ${revisionId}`;
+        card.appendChild(detail);
+      }
+      return card;
+    }
+
+    function handlePlanTrace(trace) {
+      planActionsFromTrace(trace).forEach((action) => {
+        if (action.type === 'proposal') renderPlanProposal(action.proposal);
+        else markPlanProposalApplied(action.proposal, action.revision);
+      });
     }
 
     function traceLine(t) {
@@ -412,9 +524,9 @@
       return final;
     }
 
-    async function sendMessage(text) {
+    async function sendMessage(text, options = {}) {
       state.history.push({ role: 'user', content: text });
-      const userBubble = bubble('user', renderText(text));
+      const userBubble = bubble('user', renderText(options.displayText || text));
       const pending = bubble('bot pending', '<div class="veil-lift">lifting the VEIL</div>');
       setBusy(true);
       const rollbackFailedSend = (message) => {
@@ -452,6 +564,7 @@
       if (!data.streamed) (data.trace || []).forEach(traceLine);
       state.history.push({ role: 'assistant', content: data.reply });
       bubble('bot', renderText(data.reply || '(empty reply)'));
+      handlePlanTrace(data.trace);
       // the model may have drawn on the map mid-answer; show it now
       // instead of waiting for the annotations poll
       global.__twin?.annotations?.refresh();
@@ -515,8 +628,10 @@
       },
       _setMode(m) { state.mode = m; renderScope(); },
       _send: sendMessage,
+      _renderPlanProposal: renderPlanProposal,
+      _markPlanProposalApplied: markPlanProposalApplied,
     };
   }
 
-  global.VEILChat = { create };
+  global.VEILChat = { create, planActionsFromTrace };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -43,6 +43,15 @@ write('vegetation/tree_instances.json', [
 ]);
 write('vegetation/shrub_points.json', []);
 write('vegetation/metadata.json', { canopy_cover_pct: 12 });
+const bootPlanView = {
+  plan_id: 'plan_pending', revision_id: 'rev_pending',
+  proposal_id: 'proposal_pending', view: 'difference', preview_edits: [],
+};
+write('annotations.json', {
+  version: 1, annotations: [{ id: 'stale-point', type: 'point', x: 1, y: 1 }],
+  layer_views: [{ layer_id: 'stale-layer', visible: true }],
+  sky_views: [], view_time: null, plan_view: bootPlanView,
+});
 
 const server = spawn(process.execPath, ['server.js'], {
   cwd: ROOT,
@@ -81,6 +90,14 @@ async function waitForServer() {
 
 try {
   await waitForServer();
+  const clearResponse = await request('/api/annotations/clear', { method: 'POST' });
+  assert.equal(clearResponse.response.status, 200, JSON.stringify(clearResponse.body));
+  const clearedAnnotations = JSON.parse(fs.readFileSync(path.join(tmp, 'annotations.json'), 'utf8'));
+  assert.deepEqual(clearedAnnotations.annotations, []);
+  assert.deepEqual(clearedAnnotations.layer_views, []);
+  assert.deepEqual(clearedAnnotations.plan_view, bootPlanView,
+    'clearing drawings or opening a viewer must preserve the active Plan review');
+
   const createdResponse = await request('/api/plans', {
     method: 'POST', body: JSON.stringify({ name: 'API plan', author: 'test' }),
   });

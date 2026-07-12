@@ -137,6 +137,11 @@ Proposals are deliberately two-step:
    unless `confirmed=true`, then creates a normal immutable revision. A stale
    proposal fails with a plan conflict.
 
+The review surface is the user's already-open VEIL viewer. Agents must not open
+a second Playwright/Chromium/CUA viewer merely to inspect the directive; if no
+viewer is open, they ask the user to open one before approval. A viewer opened
+after the proposal consumes the existing `plan_view` on its initial read.
+
 `visualize_plan` and `clear_plan_visualization` are presentation-only.
 `run_plan_simulation` executes the same plan-aware engines as the viewer and can
 target any reachable immutable revision, including a saved historical version.

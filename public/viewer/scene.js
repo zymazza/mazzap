@@ -28,6 +28,13 @@
     shadowCameraMargin: 1.2,
     lightDistanceMeters: 2000,
   };
+  const RENDER_POLICY = {
+    hardwareActiveFps: 60,
+    hardwareIdleFps: 12,
+    softwareActiveFps: 8,
+    softwareIdleFps: 2,
+    activeTailMs: 900,
+  };
   const LAYER_JOB_TYPE_BY_ID = {
     buildings: 'buildings_fetch',
     hydrology: 'hydrology_fetch',
@@ -63,6 +70,37 @@
 
   function isAbortError(error) {
     return error?.name === 'AbortError';
+  }
+
+  function rendererDescription(renderer) {
+    try {
+      const gl = renderer?.getContext?.();
+      if (!gl) return '';
+      const debug = gl.getExtension?.('WEBGL_debug_renderer_info');
+      return String(debug
+        ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL)
+        : gl.getParameter(gl.RENDERER) || '');
+    } catch (_error) {
+      return '';
+    }
+  }
+
+  function isSoftwareRenderer(description) {
+    return /swiftshader|llvmpipe|softpipe|software rasterizer/i.test(String(description || ''));
+  }
+
+  function renderFrameIntervalMs({ software = false, active = false, hidden = false } = {}) {
+    if (hidden) return Number.POSITIVE_INFINITY;
+    const fps = software
+      ? (active ? RENDER_POLICY.softwareActiveFps : RENDER_POLICY.softwareIdleFps)
+      : (active ? RENDER_POLICY.hardwareActiveFps : RENDER_POLICY.hardwareIdleFps);
+    return 1000 / fps;
+  }
+
+  function renderFrameDue(now, lastFrameAt, intervalMs) {
+    if (!Number.isFinite(intervalMs)) return false;
+    if (lastFrameAt == null) return true;
+    return now - lastFrameAt + 0.01 >= intervalMs;
   }
 
   function linkAbortSignal(signal, controller) {
@@ -174,11 +212,20 @@
         VIEWER_CAMERA_DEFAULTS.position.z
       );
 
-      this.renderer = new THREE.WebGLRenderer({ antialias: true });
+      const headlessBrowser = /HeadlessChrome/i.test(global.navigator?.userAgent || '');
+      this.renderer = new THREE.WebGLRenderer({ antialias: !headlessBrowser });
       this.renderer.localClippingEnabled = true;
+      this.rendererDescription = rendererDescription(this.renderer);
+      this.softwareRenderer = isSoftwareRenderer(this.rendererDescription);
       this.renderer.setPixelRatio(
-        Math.min(window.devicePixelRatio || 1, VIEWER_CAMERA_DEFAULTS.maxDevicePixelRatio)
+        this.softwareRenderer
+          ? 1
+          : Math.min(window.devicePixelRatio || 1, VIEWER_CAMERA_DEFAULTS.maxDevicePixelRatio)
       );
+      if (this.softwareRenderer) {
+        console.warn(`VEIL: software WebGL renderer detected (${this.rendererDescription}); `
+          + 'using reduced resolution and frame rate.');
+      }
       this.rootEl.replaceChildren(this.renderer.domElement);
 
       this.controls = VEILCamera.create(this.camera, this.renderer.domElement);
@@ -268,6 +315,9 @@
       };
       this.loadToken = 0;
       this.animationFrame = null;
+      this.lastRenderedAt = null;
+      this.controlsActive = false;
+      this.lastInteractionAt = performance.now();
       this.frameCallbacks = new Set();
       this.activeFetchControllers = new Set();
       this.keyboardPanState = VEILCamera.createKeyboardPanState();
@@ -276,7 +326,23 @@
 
       this.animate = this.animate.bind(this);
       this.resize = this.resize.bind(this);
+      this.onVisibilityChange = this.onVisibilityChange.bind(this);
+      this.onControlsStart = () => {
+        this.controlsActive = true;
+        this.lastInteractionAt = performance.now();
+      };
+      this.onControlsChange = () => {
+        this.lastInteractionAt = performance.now();
+      };
+      this.onControlsEnd = () => {
+        this.controlsActive = false;
+        this.lastInteractionAt = performance.now();
+      };
       window.addEventListener('resize', this.resize);
+      document.addEventListener('visibilitychange', this.onVisibilityChange);
+      this.controls.addEventListener?.('start', this.onControlsStart);
+      this.controls.addEventListener?.('change', this.onControlsChange);
+      this.controls.addEventListener?.('end', this.onControlsEnd);
       this.resize();
       this.animate();
     }
@@ -1376,6 +1442,27 @@
       this.camera.aspect = width / height;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(width, height, false);
+      this.lastInteractionAt = performance.now();
+    }
+
+    onVisibilityChange() {
+      if (!document.hidden) {
+        const now = performance.now();
+        this.lastFrameTime = now;
+        this.lastRenderedAt = null;
+        this.lastInteractionAt = now;
+      }
+    }
+
+    hasKeyboardMovement() {
+      return Object.values(this.keyboardPanState || {}).some(Boolean);
+    }
+
+    isRenderActive(now) {
+      return Boolean(this.povController?.active)
+        || this.controlsActive
+        || this.hasKeyboardMovement()
+        || now - this.lastInteractionAt < RENDER_POLICY.activeTailMs;
     }
 
     setSkyPass(passOrNull) {
@@ -1417,7 +1504,16 @@
       }
       this.animationFrame = window.requestAnimationFrame(this.animate);
       const now = performance.now();
-      const deltaSeconds = Math.min(0.05, Math.max(0, (now - this.lastFrameTime) / 1000));
+      const intervalMs = renderFrameIntervalMs({
+        software: this.softwareRenderer,
+        active: this.isRenderActive(now),
+        hidden: document.hidden,
+      });
+      if (!renderFrameDue(now, this.lastRenderedAt, intervalMs)) return;
+      this.lastRenderedAt = now;
+      // Idle/software cadence is intentionally sparse; preserve wall-clock
+      // animation speed while still bounding a resume or debugger jump.
+      const deltaSeconds = Math.min(0.5, Math.max(0, (now - this.lastFrameTime) / 1000));
       this.lastFrameTime = now;
       // First-person explorer takes over the camera: drive movement directly and
       // skip the orbit controls / keyboard-pan (which would fight for the camera).
@@ -1470,6 +1566,10 @@
         this.animationFrame = null;
       }
       window.removeEventListener('resize', this.resize);
+      document.removeEventListener('visibilitychange', this.onVisibilityChange);
+      this.controls?.removeEventListener?.('start', this.onControlsStart);
+      this.controls?.removeEventListener?.('change', this.onControlsChange);
+      this.controls?.removeEventListener?.('end', this.onControlsEnd);
       this.frameCallbacks.clear();
       this.unbindKeyboardPan?.();
       this.unbindKeyboardPan = null;
@@ -1492,6 +1592,11 @@
   global.VEILViewer = {
     create(rootEl) {
       return new WorkspaceViewer(rootEl);
+    },
+    _test: {
+      isSoftwareRenderer,
+      renderFrameDue,
+      renderFrameIntervalMs,
     },
   };
 })(window);

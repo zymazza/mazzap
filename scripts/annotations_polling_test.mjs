@@ -50,6 +50,18 @@ test('plan directive signature distinguishes a live preview from its clear event
   );
 });
 
+test('an existing plan directive is applied on the first viewer read', async () => {
+  const api = loadAnnotationsTestApi();
+  const preview = { plan_id: 'plan_one', proposal_id: 'proposal_one', view: 'difference' };
+  const calls = [];
+  const planApi = { async applyDirective(value) { calls.push(value); } };
+
+  assert.equal(await api.applyPlanDirectiveIfChanged(planApi, preview, true), true);
+  assert.deepEqual(calls, [preview]);
+  assert.equal(await api.applyPlanDirectiveIfChanged(planApi, preview, false), false);
+  assert.deepEqual(calls, [preview]);
+});
+
 test('coalesced async gate prevents overlapping refresh work', async () => {
   const api = loadAnnotationsTestApi();
   const calls = [];

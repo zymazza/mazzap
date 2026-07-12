@@ -10,6 +10,7 @@ assert.equal(api.isPlanEditIntent('What soil types occur here?'), false);
 assert.equal(api.isPlanConfirmationIntent('make the changes'), true);
 assert.equal(api.isPlanConfirmationIntent('Yes, go ahead'), true);
 assert.equal(api.isPlanConfirmationIntent('apply it please'), true);
+assert.equal(api.isPlanConfirmationIntent('Apply proposal_fixture123'), true);
 assert.equal(api.isPlanConfirmationIntent("don't apply it yet"), false);
 assert.equal(api.isPlanConfirmationIntent('make the changes but keep the pines'), false);
 

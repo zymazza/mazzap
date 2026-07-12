@@ -468,6 +468,37 @@ body.chat-open .inspector { right: calc(28px + var(--chat-w)); }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: none; padding: 0 2px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
 }
+.chat-msg.plan-proposal {
+  align-self: stretch; max-width: none; padding: 11px;
+  background: linear-gradient(145deg, rgba(10, 28, 18, .96), rgba(17, 38, 25, .9));
+  border-color: var(--accent-line); box-shadow: inset 0 1px rgba(255, 255, 255, .035);
+}
+.plan-proposal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.plan-proposal-head > span:first-child {
+  color: var(--accent); font: 700 9.5px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .09em; text-transform: uppercase;
+}
+.plan-proposal-status {
+  flex: none; padding: 3px 6px; border: 1px solid var(--accent-line); border-radius: 999px;
+  color: var(--accent); font: 700 8.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .06em; text-transform: uppercase;
+}
+.plan-proposal-status.applied { color: #09130c; background: var(--accent); }
+.plan-proposal-title { display: block; margin-top: 9px; color: var(--ink); font-size: 13px; }
+.plan-proposal-stats { display: grid; gap: 2px; margin-top: 7px; color: var(--ink-dim); font-size: 10.5px; }
+.plan-proposal-stats span::before { content: '·'; margin-right: 6px; color: var(--accent); }
+.plan-proposal-note { margin-top: 7px; color: var(--ink-faint); font-size: 10px; line-height: 1.35; }
+.plan-proposal-approve {
+  width: 100%; margin-top: 9px; padding: 8px 10px; border: 1px solid var(--accent);
+  border-radius: 7px; color: #07120b; background: var(--accent);
+  font: 700 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .055em; text-transform: uppercase; cursor: pointer;
+}
+.plan-proposal-approve:hover:not(:disabled) { filter: brightness(1.08); }
+.plan-proposal-approve:disabled { cursor: default; opacity: .66; }
+.plan-proposal-revision {
+  margin-top: 7px; color: var(--accent); font: 600 9px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 .chat-li { display: block; padding-left: 8px; }
 .veil-lift { color: var(--accent); }
 .veil-lift-line { margin-top: 4px; font-size: 11px; line-height: 1.35; font-style: normal; color: var(--ink-dim); }

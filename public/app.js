@@ -254,15 +254,17 @@
     window.__twin.ensureLayerData = ensureLayerDataById;
     window.__twin.refreshAtlasLayers = refreshAtlasLayers;
     window.__twin.syncVaporField = syncVaporField;
-    window.__twin.annotations = window.VEILAnnotations?.create(viewer, scene);
-    window.__twin.chat = window.VEILChat?.create(viewer, scene);
-    window.__twin.survey = window.VEILSurvey?.create(refreshSurveyLayers);
+    // Plan must exist before annotations performs its initial read: an MCP
+    // proposal may have written plan_view before this browser was opened.
     window.__twin.plan = window.VEILPlan?.create({
       viewer,
       scene,
       applyRevision: applyPlanRevision,
       updateRevisionContext: updatePlanRevisionContext,
     });
+    window.__twin.annotations = window.VEILAnnotations?.create(viewer, scene);
+    window.__twin.chat = window.VEILChat?.create(viewer, scene);
+    window.__twin.survey = window.VEILSurvey?.create(refreshSurveyLayers);
     window.__twin.simulation = window.VEILSimulation?.create({
       catalog: () => state.simulation,
       isEnabled: (id) => !!state.enabled.get(id),

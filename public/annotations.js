@@ -26,6 +26,12 @@
     return JSON.stringify(value);
   }
 
+  async function applyPlanDirectiveIfChanged(planApi, planView, changed) {
+    if (!changed || typeof planApi?.applyDirective !== 'function') return false;
+    await planApi.applyDirective(planView);
+    return true;
+  }
+
   function createCoalescedAsyncGate(run) {
     let active = null;
     let pendingArgs = null;
@@ -279,13 +285,15 @@
       if (!initial) {
         global.__twin?.applyLayerViews?.(layerViews);
         global.__twin?.astronomy?.applySkyDirectives?.(skyViews, viewTime);
-        if (planDirectiveChanged) {
-          try {
-            await global.__twin?.plan?.applyDirective?.(planView);
-          } catch (error) {
-            console.warn('plan visualization directive failed:', error);
-          }
-        }
+      }
+      // Plan previews are different from the intentionally session-local atlas
+      // and sky directives above: a proposal may already exist before this
+      // viewer opens, and that viewer is the surface where the user must review
+      // it. Apply the first observed Plan directive as well as later changes.
+      try {
+        await applyPlanDirectiveIfChanged(global.__twin?.plan, planView, planDirectiveChanged);
+      } catch (error) {
+        console.warn('plan visualization directive failed:', error);
       }
     }
     const refresh = createCoalescedAsyncGate(refreshImpl);
@@ -341,6 +349,7 @@
     _test: {
       annotationContentSignature,
       planDirectiveSignature,
+      applyPlanDirectiveIfChanged,
       createCoalescedAsyncGate,
       createPollingLifecycle,
     },

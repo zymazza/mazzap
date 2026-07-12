@@ -513,6 +513,7 @@ function isPlanConfirmationIntent(text) {
   }
   value = value.replace(/[^a-z0-9_\s-]+/g, ' ').replace(/\s+/g, ' ').trim();
   value = value.replace(/^please\s+/, '').replace(/\s+please$/, '');
+  value = value.replace(/\bproposal_[a-z0-9]+\b/g, 'the proposal');
   return /^(?:yes\s+)?(?:yes|apply(?:\s+(?:it|this|that|the proposal|the changes))?|confirm(?:\s+(?:it|this|that|the proposal|the changes))?|confirm and apply|go ahead(?:\s+and\s+(?:apply(?:\s+it)?|make the changes))?|do it|make (?:the|these|those) changes|accept(?:\s+(?:it|this|that|the proposal))?|approve(?:\s+(?:it|this|that|the proposal))?|looks good(?:\s+apply it)?)$/.test(value);
 }
 
@@ -4815,20 +4816,24 @@ function saveBuildingPlacements(req, res) {
   });
 }
 
-// Empty out the LLM map drawings (data/annotations.json — written by the
-// MCP server's draw_polygon/draw_point tools, polled and rendered orange by
-// public/annotations.js). The viewer's "Clear drawings" button posts here;
-// writing an empty document (rather than unlinking) keeps the file's shape
-// stable for whichever MCP process writes next. Layer-view overrides in the
-// same file (set_layer_visibility/filter_layer) are cleared too, so the one
-// button also hides any atlas layers the agent revealed — the client's
-// follow-up poll applies the now-empty layer_views and resets the drape.
+// Empty out transient map/atlas/sky directives. Plan visualization has its own
+// explicit clear_plan_visualization lifecycle and must survive this endpoint:
+// opening another viewer or clicking "Clear drawings" must never erase the
+// proposal the user is being asked to review.
 function clearAnnotations(res, dataDir = DATA_DIR) {
   const annPath = path.join(dataDir, 'annotations.json');
   try {
+    let planView = null;
+    try {
+      const current = JSON.parse(fs.readFileSync(annPath, 'utf8'));
+      if (current?.plan_view && typeof current.plan_view === 'object'
+          && !Array.isArray(current.plan_view)) {
+        planView = current.plan_view;
+      }
+    } catch (_err) { /* missing/corrupt annotation state starts clean */ }
     fs.writeFileSync(annPath, JSON.stringify({
       version: 1, updated_at: new Date().toISOString(),
-      annotations: [], layer_views: [], sky_views: [], view_time: null, plan_view: null,
+      annotations: [], layer_views: [], sky_views: [], view_time: null, plan_view: planView,
     }, null, 1));
     send(res, 200, JSON.stringify({ ok: true }), { 'Content-Type': 'application/json' });
   } catch (err) {
