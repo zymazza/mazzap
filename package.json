@@ -53,7 +53,8 @@
     "test": "TWIN_DATA_DIR=tests/fixtures/mini-twin/data python3 scripts/twin_query_test.py",
     "test:demo": "TWIN_DATA_DIR=twins/demo/data python3 scripts/twin_query_test.py",
     "test:hydrology": "python3 scripts/hydro_scenario_test.py && node scripts/simulation_flow_units_test.mjs",
-    "test:plan": "python3 scripts/plan_engine_test.py && node scripts/plan_api_test.mjs && node --test scripts/annotations_polling_test.mjs scripts/viewer_render_policy_test.mjs && node scripts/plan_ui_state_test.mjs && node scripts/vegetation_plan_test.mjs && node scripts/chat_plan_routing_test.js"
+    "test:plan": "python3 scripts/plan_engine_test.py && node scripts/plan_api_test.mjs && node --test scripts/annotations_polling_test.mjs scripts/viewer_render_policy_test.mjs && node scripts/plan_ui_state_test.mjs && node scripts/vegetation_plan_test.mjs && node scripts/chat_plan_routing_test.js",
+    "test:nymphs": "node scripts/nymph_manager_ui_test.mjs && node scripts/flight_contract_test.mjs"
   },
   "author": "Zy Mazza",
   "license": "MIT"

@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veil.local/contracts/flight-mission-v1.schema.json",
+  "title": "VEIL canonical flight mission v1",
+  "description": "The authoritative store and API representation. WPML, CSV, viewer, and bridge payloads are derived from this model.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "drone_model", "takeoff", "defaults", "waypoints"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "drone_model": { "const": "mini4pro" },
+    "takeoff": { "$ref": "#/$defs/takeoff" },
+    "defaults": { "$ref": "#/$defs/defaults" },
+    "waypoints": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/waypoint" }
+    }
+  },
+  "$defs": {
+    "latitude": { "type": "number", "minimum": -90, "maximum": 90 },
+    "longitude": { "type": "number", "minimum": -180, "maximum": 180 },
+    "nonNegativeMeters": { "type": "number", "minimum": 0 },
+    "aglMode": { "type": "string", "enum": ["ground", "canopy"] },
+    "takeoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lat", "lon", "dem_m"],
+      "properties": {
+        "lat": { "$ref": "#/$defs/latitude" },
+        "lon": { "$ref": "#/$defs/longitude" },
+        "dem_m": { "type": "number" },
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "speed_mps",
+        "agl_mode",
+        "target_agl_m",
+        "clearance_canopy_m",
+        "clearance_ground_m"
+      ],
+      "properties": {
+        "speed_mps": { "type": "number", "exclusiveMinimum": 0, "maximum": 20 },
+        "agl_mode": { "$ref": "#/$defs/aglMode" },
+        "target_agl_m": { "$ref": "#/$defs/nonNegativeMeters" },
+        "clearance_canopy_m": { "$ref": "#/$defs/nonNegativeMeters" },
+        "clearance_ground_m": { "$ref": "#/$defs/nonNegativeMeters" }
+      }
+    },
+    "heading": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["follow_wayline", "fixed"] },
+        "deg": { "type": "number", "minimum": 0, "exclusiveMaximum": 360 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "fixed" } }, "required": ["mode"] },
+          "then": { "required": ["deg"] }
+        }
+      ]
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["photo", "start_record", "stop_record", "hover"]
+        },
+        "params": { "type": "object" }
+      }
+    },
+    "derived": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dem_m", "chm_m", "h_cmd_abs_m", "exec_height_rel_m", "clamped"],
+      "properties": {
+        "dem_m": { "type": "number" },
+        "chm_m": { "type": "number", "minimum": 0 },
+        "h_cmd_abs_m": { "type": "number" },
+        "exec_height_rel_m": { "type": "number" },
+        "clamped": { "type": "boolean" }
+      }
+    },
+    "waypoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "n",
+        "lat",
+        "lon",
+        "agl_mode",
+        "target_agl_m",
+        "heading",
+        "gimbal_pitch_deg",
+        "actions"
+      ],
+      "properties": {
+        "n": { "type": "integer", "minimum": 0 },
+        "lat": { "$ref": "#/$defs/latitude" },
+        "lon": { "$ref": "#/$defs/longitude" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "agl_mode": { "$ref": "#/$defs/aglMode" },
+        "target_agl_m": { "$ref": "#/$defs/nonNegativeMeters" },
+        "speed_mps": { "type": "number", "exclusiveMinimum": 0, "maximum": 20 },
+        "heading": { "$ref": "#/$defs/heading" },
+        "gimbal_pitch_deg": { "type": "number", "minimum": -90, "maximum": 60 },
+        "actions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/action" }
+        },
+        "derived": { "$ref": "#/$defs/derived" }
+      }
+    }
+  }
+}

@@ -313,6 +313,7 @@
       refresh: refreshSimulationLayers,
     });
     window.__twin.live = state.hosted?.hosted ? null : window.VEILLiveInputs?.create(viewer, scene);
+    window.__twin.nymphs = state.hosted?.hosted ? null : window.VEILNymphManager?.create({ viewer, scene });
     renderKey();
     loadSpeciesGrids();
   }
@@ -327,7 +328,7 @@
 
   function applyHostedChrome() {
     if (!state.hosted?.hosted) return;
-    document.querySelectorAll('[data-mode="telemetry"], [data-pane="telemetry"], [data-mode="survey"], [data-pane="survey"]')
+    document.querySelectorAll('[data-mode="telemetry"], [data-pane="telemetry"], [data-mode="nymphs"], [data-pane="nymphs"], [data-mode="survey"], [data-pane="survey"]')
       .forEach((el) => {
         el.hidden = true;
         el.style.display = 'none';
@@ -1764,6 +1765,14 @@
     return formatted;
   }
 
+  function nymphOwnsMapPick(nymphs) {
+    try {
+      return nymphs?.isDrafting?.() === true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
   /* ---------------- first-person POV explorer ---------------- */
 
   async function setupPOV(viewer, scene) {
@@ -1839,13 +1848,22 @@
 
     function selectTerrainPoint(point, options = {}) {
       const g = georef.worldToGeo(point.x, point.y, point.z);
-      placeMarker(point);
-      updatePickReadout(readout, g);
-      renderIdentify(point.x, -point.z, identifyHitRadiusMeters(viewer));
-      if (options.selectLive !== false) window.__twin?.live?.selectNear?.(point.x, -point.z);
+      const nymphDrafting = nymphOwnsMapPick(window.__twin?.nymphs);
+      // In RTS drafting, the click belongs to the flight route. Keep the normal
+      // coordinate marker/inspector from competing with the guided target overlay.
+      if (!nymphDrafting) {
+        placeMarker(point);
+        updatePickReadout(readout, g);
+        renderIdentify(point.x, -point.z, identifyHitRadiusMeters(viewer));
+        if (options.selectLive !== false) window.__twin?.live?.selectNear?.(point.x, -point.z);
+      }
       try {
         document.dispatchEvent(new CustomEvent('veil:map-pick', {
-          detail: { source: options.source || 'map', point: { x: point.x, y: -point.z }, geo: g },
+          detail: {
+            source: options.source || (nymphDrafting ? 'nymph-rts' : 'map'),
+            point: { x: point.x, y: -point.z },
+            geo: g,
+          },
         }));
       } catch (_err) { /* pick events are UI-only */ }
       return g;
@@ -1954,6 +1972,7 @@
         formatPickReadout,
         identifyHitRadiusMetersFromView,
         missingPickReadoutIds,
+        nymphOwnsMapPick,
         updatePickReadout,
       },
     };

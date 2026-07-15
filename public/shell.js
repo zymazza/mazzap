@@ -24,6 +24,7 @@
     astronomy: 'Astronomy',
     survey: 'Field surveys',
     telemetry: 'Live telemetry',
+    nymphs: 'Nymph Manager',
   };
 
   let activeMode = null;

@@ -1,0 +1,36 @@
+{
+  "id": "east-ridge-grid",
+  "name": "East ridge grid",
+  "drone_model": "mini4pro",
+  "takeoff": {
+    "lat": 43.6,
+    "lon": -74.1,
+    "dem_m": 512.3
+  },
+  "defaults": {
+    "speed_mps": 5.0,
+    "agl_mode": "canopy",
+    "target_agl_m": 25,
+    "clearance_canopy_m": 15,
+    "clearance_ground_m": 30
+  },
+  "waypoints": [
+    {
+      "n": 0,
+      "lat": 43.601,
+      "lon": -74.101,
+      "agl_mode": "canopy",
+      "target_agl_m": 25,
+      "heading": { "mode": "follow_wayline" },
+      "gimbal_pitch_deg": -90,
+      "actions": [{ "type": "photo" }],
+      "derived": {
+        "dem_m": 518.0,
+        "chm_m": 22.5,
+        "h_cmd_abs_m": 565.5,
+        "exec_height_rel_m": 53.2,
+        "clamped": false
+      }
+    }
+  ]
+}

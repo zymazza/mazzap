@@ -88,6 +88,14 @@ optional **regional pack**, never hardcoded in the engine.
   render live tracker positions, replay recorded days with realtime/speed
   controls and tracker POV, then append selected samples into the curated twin
   store. See [docs/live-inputs.md](docs/live-inputs.md).
+- **Nymph Manager** — a home for external devices, robots, and actuators. The
+  first primitive is the DJI Mini 4 Pro: the initial console exposes controller,
+  guarded virtual-stick, and RTS click workflows, a live-video seam, capability
+  and safety interlocks, plus unsent georeferenced RTS route drafting with a
+  scroll-controlled AGL ribbon. Aircraft commands remain locked until the
+  Android bridge and B1/B2 safety gates exist. See the durable
+  [flight-planning implementation plan](docs/flight-planning-implementation-plan-v1.5.md)
+  and [bridge contract](docs/bridge-contract.md).
 - **Plan** — a smooth, interactive 3D workspace with live terrain/vegetation
   feedback for tree/shrub removal, free-text species-aware planting, and
   depressions/mounds. Hold Ctrl/Command to navigate without leaving a brush;
@@ -749,6 +757,7 @@ VEIL from data; nothing in the engine names a CRS, a layer, or a species.
 server.js                 zero-dependency static server (+ /api/chat, /api/* )
 public/
   index.html  app.js  chat.js  plan.js   UI, boot, chat, land planning
+  nymph-manager.js                   external-device console + drone RTS drafts
   viewer/  scene.js terrain.js vegetation.js overlays.js buildings3d.js
            georef.js                 scene-local meters <-> lon/lat (proj4js)
   vendor/  three.min.js  OrbitControls.js  proj4.js

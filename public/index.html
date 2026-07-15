@@ -56,6 +56,14 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="2"/><path d="M7.5 7.5a6 6 0 000 9M16.5 7.5a6 6 0 010 9M4.7 4.7a10 10 0 000 14.6M19.3 4.7a10 10 0 010 14.6"/></svg>
       <span>Telemetry</span>
     </button>
+    <button class="rail-btn" data-mode="nymphs" title="Nymph Manager — external devices, robots &amp; actuators">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/>
+        <circle cx="5" cy="18" r="2.5"/><circle cx="19" cy="18" r="2.5"/>
+        <path d="M7 7.5l3 2M17 7.5l-3 2M7 16.5l3-2M17 16.5l-3-2M9 9h6v6H9z"/>
+      </svg>
+      <span>Nymphs</span>
+    </button>
 
     <div class="rail-spacer"></div>
 
@@ -593,6 +601,103 @@
         </div>
       </section>
 
+      <!-- ---------- NYMPH MANAGER ---------- -->
+      <section class="pane" data-pane="nymphs" id="nymph-manager-panel">
+        <div class="group">
+          <div class="group-label-row">
+            <p class="group-label">External primitive</p>
+            <span class="nymph-state-pill" id="nymph-aircraft-mode">IDLE</span>
+          </div>
+          <div class="nymph-device-card">
+            <div class="nymph-device-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="5" cy="18" r="2.5"/><circle cx="19" cy="18" r="2.5"/><path d="M7 7.5l3 2M17 7.5l-3 2M7 16.5l3-2M17 16.5l-3-2M9 9h6v6H9z"/></svg>
+            </div>
+            <div class="nymph-device-copy">
+              <strong>DJI Mini 4 Pro</strong>
+              <span>Drone · RC-N2 · Android bridge</span>
+            </div>
+            <span class="nymph-connection-dot" id="nymph-connection-dot" aria-hidden="true"></span>
+          </div>
+          <div class="nymph-link-grid" aria-label="Drone link status">
+            <div><span>Bridge</span><strong id="nymph-bridge-state">Offline</strong></div>
+            <div><span>Telemetry</span><strong id="nymph-telemetry-age">—</strong></div>
+            <div><span>Video</span><strong id="nymph-video-age">—</strong></div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="group-label-row">
+            <p class="group-label">Live camera</p>
+            <span class="nymph-video-badge" id="nymph-video-badge">NO SIGNAL</span>
+          </div>
+          <div class="nymph-video-stage" id="nymph-video-stage">
+            <video id="nymph-video" autoplay muted playsinline hidden></video>
+            <div class="nymph-video-empty" id="nymph-video-empty">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5h11v9h-11zM14.5 10l6-3v10l-6-3z"/></svg>
+              <strong>Awaiting drone stream</strong>
+              <span>Mode A RTMP or bridge passthrough</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="group">
+          <p class="group-label">Flight authority</p>
+          <div class="nymph-mode-grid" id="nymph-flight-modes" aria-label="Flight control workflow">
+            <button type="button" class="active" data-nymph-mode="controller" aria-pressed="true">
+              <strong>Controller</strong><span>RC-N2</span>
+            </button>
+            <button type="button" data-nymph-mode="virtual-stick" aria-pressed="false">
+              <strong>Virtual stick</strong><span>DIRECT</span>
+            </button>
+            <button type="button" data-nymph-mode="rts" aria-pressed="false">
+              <strong>RTS click</strong><span>GUIDED</span>
+            </button>
+          </div>
+          <p class="hint" id="nymph-mode-description">Fly on the physical controller while VEIL receives video, telemetry, and the live aircraft track.</p>
+        </div>
+
+        <div class="group nymph-guided-tools" id="nymph-guided-tools" hidden>
+          <div class="group-label-row">
+            <p class="group-label">Next guided leg</p>
+            <span class="nymph-draft-badge">DRAFT · NOT SENT</span>
+          </div>
+          <div class="nymph-altitude-control">
+            <div class="nymph-altitude-ribbon" id="nymph-altitude-ribbon" role="slider" tabindex="0"
+                 aria-label="Next waypoint altitude above selected surface"
+                 aria-valuemin="10" aria-valuemax="120" aria-valuenow="25">
+              <span class="nymph-ribbon-max">120</span>
+              <span class="nymph-ribbon-mid">65</span>
+              <span class="nymph-ribbon-min">10 m</span>
+              <span class="nymph-ribbon-fill"></span>
+              <span class="nymph-ribbon-marker"></span>
+            </div>
+            <div class="nymph-altitude-copy">
+              <span>Target AGL</span>
+              <strong id="nymph-target-altitude">25 m</strong>
+              <em id="nymph-target-altitude-ft">82 ft</em>
+              <small>Scroll over the twin between clicks. Shift-scroll changes 5 m.</small>
+            </div>
+          </div>
+          <div class="seg nymph-surface-select" id="nymph-surface-select" aria-label="AGL reference surface">
+            <button type="button" data-nymph-surface="ground">Ground</button>
+            <button type="button" class="active" data-nymph-surface="canopy">Canopy</button>
+          </div>
+          <p class="nymph-route-status" id="nymph-route-status">Choose RTS, then click terrain to draft the first target.</p>
+          <button type="button" class="wide-btn" id="nymph-clear-route" disabled>Clear draft route</button>
+        </div>
+
+        <div class="group">
+          <p class="group-label">Safety interlocks</p>
+          <ul class="nymph-interlocks" id="nymph-interlocks" aria-live="polite"></ul>
+          <button type="button" class="primary-btn" id="nymph-arm-controls" disabled>RC-N2 has authority</button>
+          <div class="nymph-flight-actions">
+            <button type="button" id="nymph-hold" disabled>Hold</button>
+            <button type="button" id="nymph-rth" disabled>RTH</button>
+          </div>
+          <p class="hint">VLOS, an accessible RC pause takeover, and rPIC authority remain required throughout an operation.</p>
+        </div>
+      </section>
+
     </div>
   </aside>
 
@@ -733,6 +838,7 @@
   <script src="/wildfire.js"></script>
   <script src="/solar.js"></script>
   <script src="/live-inputs.js"></script>
+  <script src="/nymph-manager.js"></script>
   <script src="/layer-upload.js"></script>
   <script src="/viewshed.js"></script>
   <script src="/sky.js"></script>

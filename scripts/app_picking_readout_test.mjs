@@ -118,3 +118,12 @@ test('identify hit radius falls back when view geometry is unavailable', () => {
     fovDegrees: 50,
   }), 8);
 });
+
+test('RTS Nymph drafting owns terrain picks without trusting a failing device hook', () => {
+  const api = loadAppTestApi();
+
+  assert.equal(api.nymphOwnsMapPick({ isDrafting: () => true }), true);
+  assert.equal(api.nymphOwnsMapPick({ isDrafting: () => false }), false);
+  assert.equal(api.nymphOwnsMapPick(null), false);
+  assert.equal(api.nymphOwnsMapPick({ isDrafting: () => { throw new Error('bridge state failed'); } }), false);
+});

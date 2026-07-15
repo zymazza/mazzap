@@ -680,6 +680,126 @@ details:not([open]) > .collapsible-body { display: none; }
 .live-access-token:hover { background: var(--glass-3); }
 .live-access-token:disabled { opacity: .5; cursor: default; }
 
+/* ===========================================================================
+   NYMPH MANAGER (external devices / first primitive: DJI Mini 4 Pro)
+   ========================================================================== */
+.nymph-state-pill, .nymph-video-badge, .nymph-draft-badge {
+  display: inline-flex; align-items: center; min-height: 19px; padding: 2px 7px;
+  border: 1px solid var(--line); border-radius: 999px;
+  color: var(--ink-faint); background: var(--glass-2);
+  font-size: 8.5px; font-weight: 700; letter-spacing: .09em; white-space: nowrap;
+}
+.nymph-state-pill.live { color: var(--cyan); border-color: rgba(94, 200, 224, .38); background: var(--cyan-tint); }
+.nymph-device-card {
+  display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; gap: 10px; align-items: center;
+  padding: 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--glass-2);
+}
+.nymph-device-icon {
+  display: grid; place-items: center; width: 38px; height: 38px; border-radius: 10px;
+  color: var(--cyan); background: var(--cyan-tint); border: 1px solid rgba(94, 200, 224, .22);
+}
+.nymph-device-icon svg {
+  width: 23px; height: 23px; fill: none; stroke: currentColor; stroke-width: 1.45;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.nymph-device-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.nymph-device-copy strong { overflow: hidden; color: var(--ink); font-size: 12.5px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+.nymph-device-copy span { overflow: hidden; color: var(--ink-faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.nymph-connection-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--ink-faint);
+  box-shadow: 0 0 0 3px rgba(111, 128, 118, .12);
+}
+.nymph-connection-dot.online { background: var(--cyan); box-shadow: 0 0 0 3px var(--cyan-tint), 0 0 12px rgba(94, 200, 224, .45); }
+.nymph-link-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+.nymph-link-grid div {
+  min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: 7px 8px;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--glass-2);
+}
+.nymph-link-grid span { color: var(--ink-faint); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
+.nymph-link-grid strong { overflow: hidden; color: var(--ink-dim); font-size: 10.5px; font-weight: 580; text-overflow: ellipsis; white-space: nowrap; }
+.nymph-link-grid strong.ok { color: var(--cyan); }
+.nymph-link-grid strong.warn { color: var(--amber); }
+
+.nymph-video-badge.signal { color: var(--cyan); border-color: rgba(94, 200, 224, .38); background: var(--cyan-tint); }
+.nymph-video-stage {
+  position: relative; overflow: hidden; aspect-ratio: 16 / 9; border: 1px solid var(--line);
+  border-radius: var(--r-md); background: linear-gradient(145deg, rgba(94, 200, 224, .05), rgba(5, 9, 7, .7));
+}
+.nymph-video-stage video { width: 100%; height: 100%; object-fit: cover; background: #050706; }
+.nymph-video-stage video[hidden] { display: none; }
+.nymph-video-empty {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  padding: 14px; text-align: center; color: var(--ink-faint);
+}
+.nymph-video-empty[hidden] { display: none; }
+.nymph-video-empty svg { width: 25px; height: 25px; margin-bottom: 2px; fill: none; stroke: currentColor; stroke-width: 1.4; }
+.nymph-video-empty strong { color: var(--ink-dim); font-size: 11.5px; font-weight: 580; }
+.nymph-video-empty span { font-size: 9.5px; }
+
+.nymph-mode-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+.nymph-mode-grid button {
+  min-width: 0; min-height: 56px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 3px;
+  padding: 7px 8px; cursor: pointer; text-align: left; color: var(--ink-dim); font: inherit;
+  background: var(--glass-2); border: 1px solid var(--line); border-radius: var(--r-sm);
+}
+.nymph-mode-grid button:hover { color: var(--ink); background: var(--glass-3); }
+.nymph-mode-grid button.active { color: var(--cyan); background: var(--cyan-tint); border-color: rgba(94, 200, 224, .38); }
+.nymph-mode-grid button strong { font-size: 10.5px; line-height: 1.15; font-weight: 620; }
+.nymph-mode-grid button span { color: var(--ink-faint); font-size: 8.5px; letter-spacing: .07em; }
+.nymph-mode-grid button.active span { color: rgba(144, 222, 239, .72); }
+
+.nymph-guided-tools[hidden] { display: none; }
+.nymph-draft-badge { color: var(--amber); border-color: rgba(242, 193, 78, .3); background: rgba(242, 193, 78, .08); }
+.nymph-altitude-control {
+  display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 12px; align-items: center;
+  padding: 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--glass-2);
+}
+.nymph-altitude-ribbon {
+  --altitude-percent: 13.64%;
+  position: relative; width: 70px; height: 118px; overflow: hidden; cursor: ns-resize;
+  border: 1px solid var(--line-strong); border-radius: 9px;
+  background: repeating-linear-gradient(to top, transparent 0 18px, rgba(255,255,255,.055) 18px 19px),
+              linear-gradient(to top, rgba(126,224,166,.08), rgba(94,200,224,.08));
+}
+.nymph-altitude-ribbon:focus-visible { outline-offset: 3px; }
+.nymph-ribbon-fill {
+  position: absolute; left: 0; right: 0; bottom: 0; height: var(--altitude-percent);
+  background: linear-gradient(to top, rgba(94,200,224,.28), rgba(94,200,224,.06));
+}
+.nymph-ribbon-marker {
+  position: absolute; left: 5px; right: 5px; bottom: var(--altitude-percent); height: 2px;
+  margin-bottom: -1px; border-radius: 2px; background: var(--cyan); box-shadow: 0 0 8px rgba(94,200,224,.8);
+}
+.nymph-ribbon-marker::after {
+  content: ""; position: absolute; right: -1px; top: -3px; width: 8px; height: 8px;
+  border-radius: 50%; background: var(--cyan);
+}
+.nymph-ribbon-max, .nymph-ribbon-mid, .nymph-ribbon-min {
+  position: absolute; z-index: 1; left: 6px; color: var(--ink-faint); font-size: 8px; font-variant-numeric: tabular-nums;
+}
+.nymph-ribbon-max { top: 4px; }
+.nymph-ribbon-mid { top: 50%; transform: translateY(-50%); }
+.nymph-ribbon-min { bottom: 4px; }
+.nymph-altitude-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.nymph-altitude-copy > span { color: var(--ink-faint); font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
+.nymph-altitude-copy strong { color: var(--cyan); font-size: 22px; font-weight: 580; font-variant-numeric: tabular-nums; letter-spacing: -.03em; }
+.nymph-altitude-copy em { color: var(--ink-dim); font-size: 11px; font-style: normal; font-variant-numeric: tabular-nums; }
+.nymph-altitude-copy small { margin-top: 5px; color: var(--ink-faint); font-size: 9.5px; line-height: 1.35; }
+.nymph-surface-select button.active { color: var(--cyan); background: var(--cyan-tint); }
+.nymph-route-status { margin: 0; color: var(--ink-dim); font-size: 11px; line-height: 1.4; }
+
+.nymph-interlocks { display: flex; flex-direction: column; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.nymph-interlocks li { display: grid; grid-template-columns: 9px 1fr; gap: 7px; align-items: start; color: var(--ink-dim); font-size: 10.5px; line-height: 1.35; }
+.nymph-interlocks li::before { content: ""; width: 6px; height: 6px; margin-top: 4px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 2px rgba(242,193,78,.10); }
+.nymph-interlocks li.ok::before { background: var(--accent); box-shadow: 0 0 0 2px var(--accent-tint); }
+.nymph-flight-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.nymph-flight-actions button {
+  min-width: 0; padding: 7px 9px; color: var(--ink); font: inherit; font-size: 11.5px; cursor: pointer;
+  background: var(--glass-2); border: 1px solid var(--line); border-radius: var(--r-sm);
+}
+.nymph-flight-actions button:disabled { opacity: .45; cursor: default; }
+.nymph-flight-actions #nymph-rth:not(:disabled) { color: var(--amber); border-color: rgba(242,193,78,.3); }
+
 /* telemetry replay scrubber (bottom) */
 #live-replay-bar {
   position: fixed; left: 50%; bottom: 86px; transform: translateX(-50%);
