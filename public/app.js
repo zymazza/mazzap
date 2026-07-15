@@ -313,7 +313,35 @@
       refresh: refreshSimulationLayers,
     });
     window.__twin.live = state.hosted?.hosted ? null : window.VEILLiveInputs?.create(viewer, scene);
-    window.__twin.nymphs = state.hosted?.hosted ? null : window.VEILNymphManager?.create({ viewer, scene });
+    const nymphBridge = state.hosted?.hosted ? null : window.VEILNymphBridgeClient?.create();
+    const nymphs = state.hosted?.hosted ? null : window.VEILNymphManager?.create({
+      viewer,
+      scene,
+      controlClient: nymphBridge,
+    });
+    let nymphVideoUrl = null;
+    nymphBridge?.setStatusSink((status) => {
+      if (!nymphs) return;
+      nymphs.updateBridge({
+        link: status?.link,
+        capabilities: status?.capabilities,
+        aircraftMode: status?.aircraftMode,
+        control: status?.control,
+        route: status?.route,
+        error: status?.error?.message || null,
+      });
+      if (status?.telemetry) nymphs.updateTelemetry(status.telemetry);
+      nymphs.updateVideo(status?.video || { connected: false });
+      const nextVideoUrl = status?.video?.connected && status.video.url
+        ? String(status.video.url) : null;
+      if (nextVideoUrl && nextVideoUrl !== nymphVideoUrl) {
+        nymphs.attachVideo(nextVideoUrl, status.video);
+      }
+      nymphVideoUrl = nextVideoUrl;
+    });
+    window.__twin.nymphBridge = nymphBridge;
+    window.__twin.nymphs = nymphs;
+    nymphBridge?.start();
     renderKey();
     loadSpeciesGrids();
   }

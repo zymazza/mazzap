@@ -15,6 +15,12 @@ const os = require('os');
 const path = require('path');
 const { URL } = require('url');
 const { spawn, spawnSync } = require('child_process');
+const {
+  COMMAND_CONFIRMATIONS: NYMPH_COMMAND_CONFIRMATIONS,
+  NymphBridgeError,
+  createNymphBridgeService,
+  publicBridgeError,
+} = require('./scripts/nymph_bridge_adapter');
 
 const ROOT = __dirname;
 // A twin's data dir. Defaults to ./data; set TWIN_DATA_DIR to serve an
@@ -23,6 +29,32 @@ const ROOT = __dirname;
 const DATA_DIR = path.resolve(ROOT, process.env.TWIN_DATA_DIR || 'data');
 const PORT = Number(process.env.PORT) || 4173;
 const HOST = process.env.HOST || '127.0.0.1';
+const NYMPH_BRIDGE = createNymphBridgeService();
+const NYMPH_ALLOW_LAN_CONTROL = process.env.VEIL_DJI_ALLOW_LAN_CONTROL === '1';
+const NYMPH_CONTROL_TOKEN = String(process.env.VEIL_DJI_CONTROL_TOKEN || '').trim();
+
+function normalizedNymphHostname(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return null;
+  if (text === '::1') return '[::1]';
+  try {
+    return new URL(`http://${text}`).hostname.toLowerCase();
+  } catch (_error) {
+    return null;
+  }
+}
+
+// Hardware routes are always Host-pinned, even when the rest of the local
+// viewer uses its permissive default. This closes the loopback DNS-rebinding
+// path where an attacker controls matching Origin and Host headers.
+const NYMPH_ALLOWED_HOSTS = new Set(
+  (process.env.VEIL_DJI_ALLOWED_HOSTS
+    || process.env.VEIL_ALLOWED_HOSTS
+    || 'localhost,127.0.0.1,[::1]')
+    .split(',')
+    .map(normalizedNymphHostname)
+    .filter(Boolean),
+);
 
 // Hosted mode keeps the local-first defaults intact, but lets one public Node
 // process issue anonymous session cookies and provision an isolated data dir for
@@ -4976,6 +5008,232 @@ function routePlanRequest(req, res, pathname, requestUrl) {
   return false;
 }
 
+// ---------------------------------------------------------- Nymph DJI bridge
+// Node never receives the Android bridge token. It talks only to the retained,
+// same-user mode-0600 Unix API owned by veil_dji_flight.py and returns an
+// explicit browser-safe projection.
+const NYMPH_MAX_BODY = 1024 * 1024;
+const NYMPH_ROUTE_CONFIRMATION = 'ACCEPT_CHECKED_ROUTE';
+const NYMPH_HTTP_COMMANDS = Object.freeze({
+  arm: 'arm',
+  start: 'route_start',
+  pause: 'route_pause',
+  resume: 'route_resume',
+  abort: 'route_abort',
+  neutral: 'neutral',
+  handoff: 'handoff',
+  land: 'land',
+});
+
+function sendNymphJson(res, status, value) {
+  return send(res, status, JSON.stringify(value), {
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-store',
+  });
+}
+
+function sendNymphError(res, error) {
+  const safe = publicBridgeError(error);
+  return sendNymphJson(res, safe.httpStatus || 503, {
+    ok: false,
+    error: safe.toPublic(),
+  });
+}
+
+function readNymphBody(req, res, callback) {
+  let chunks = [];
+  let bytes = 0;
+  let settled = false;
+  const fail = (status, code, message) => {
+    if (settled) return;
+    settled = true;
+    chunks = [];
+    sendNymphJson(res, status, {
+      ok: false,
+      error: { code, message },
+    });
+  };
+  const declaredBytes = Number(req.headers['content-length']);
+  if (Number.isFinite(declaredBytes) && declaredBytes > NYMPH_MAX_BODY) {
+    fail(413, 'request_too_large', 'The Nymph request body is too large.');
+    req.resume();
+    return;
+  }
+  req.on('data', (chunk) => {
+    if (settled) return;
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buffer.length;
+    if (bytes > NYMPH_MAX_BODY) {
+      fail(413, 'request_too_large', 'The Nymph request body is too large.');
+      return;
+    }
+    chunks.push(buffer);
+  });
+  req.on('error', () => {
+    fail(400, 'invalid_json', 'The Nymph request body was interrupted.');
+  });
+  req.on('end', () => {
+    if (settled) return;
+    let body;
+    try {
+      body = JSON.parse(Buffer.concat(chunks, bytes).toString('utf8') || '{}');
+    } catch (_error) {
+      fail(400, 'invalid_json', 'The Nymph request body is invalid JSON.');
+      return;
+    }
+    settled = true;
+    chunks = [];
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      sendNymphJson(res, 400, {
+        ok: false,
+        error: { code: 'invalid_request', message: 'The Nymph request must be an object.' },
+      });
+      return;
+    }
+    callback(body);
+  });
+}
+
+function nymphRequestHostAllowed(req) {
+  const hostname = normalizedNymphHostname(req?.headers?.host);
+  return hostname !== null && NYMPH_ALLOWED_HOSTS.has(hostname);
+}
+
+function requireLocalNymphControl(req) {
+  if (!nymphRequestHostAllowed(req)) {
+    throw new NymphBridgeError(
+      'control_host_not_allowed',
+      'DJI hardware routes require an explicitly allowed Host.',
+      { httpStatus: 403 },
+    );
+  }
+  if (isLoopbackLiveRequest(req)) return;
+  if (!NYMPH_ALLOW_LAN_CONTROL) {
+    throw new NymphBridgeError(
+      'remote_control_disabled',
+      'DJI control is restricted to the machine running VEIL.',
+      { httpStatus: 403 },
+    );
+  }
+  if (!NYMPH_CONTROL_TOKEN) {
+    throw new NymphBridgeError(
+      'remote_control_auth_unconfigured',
+      'LAN DJI control requires a server-owned operator token.',
+      { httpStatus: 503 },
+    );
+  }
+  const supplied = headerText(req.headers['x-veil-dji-control-token']).trim();
+  if (timingSafeTokenEqual(supplied, NYMPH_CONTROL_TOKEN)) return;
+  throw new NymphBridgeError(
+    'remote_control_unauthorized',
+    'A valid DJI operator token is required for LAN control.',
+    { httpStatus: 401 },
+  );
+}
+
+async function requireNymphExecutionPolicy(command) {
+  if (!['arm', 'route_start', 'route_resume'].includes(command)) return;
+  const missing = [];
+  if (!NYMPH_BRIDGE.envelopeReady) missing.push('checked terrain/geofence envelope');
+  if (!NYMPH_BRIDGE.rcTakeoverVerified) missing.push('firmware-qualified RC takeover');
+  if (missing.length) {
+    throw new NymphBridgeError(
+      'flight_policy_not_ready',
+      `Nymph execution is interlocked pending ${missing.join(' and ')}.`,
+      { httpStatus: 412 },
+    );
+  }
+  if (['route_start', 'route_resume'].includes(command)
+      && !NYMPH_BRIDGE.routeExecutionAttested) {
+    throw new NymphBridgeError(
+      'route_execution_unattested',
+      'The active route was not accepted from the server-attested document on this connection.',
+      { httpStatus: 412 },
+    );
+  }
+  const status = await NYMPH_BRIDGE.status();
+  if (status?.link?.controlChannelReady === true) return;
+  throw new NymphBridgeError(
+    'flight_control_channel_not_ready',
+    'Fresh aircraft, controller, and airlink telemetry is required before execution.',
+    { httpStatus: 412 },
+  );
+}
+
+function nymphResultStatus(result, invalidStatus = 409) {
+  if (result?.ok === true) return 200;
+  const classification = `${result?.state || ''} ${result?.error || ''}`;
+  if (/revision_conflict|\bconflict\b/i.test(classification)) return 409;
+  if (/invalid|parse|unsupported/i.test(classification)) return 422;
+  return invalidStatus;
+}
+
+function routeNymphDjiRequest(req, res, pathname) {
+  if (req.method === 'GET' && pathname === '/api/nymphs/dji/status') {
+    NYMPH_BRIDGE.status()
+      .then((result) => sendNymphJson(res, 200, result))
+      .catch((error) => sendNymphError(res, error));
+    return true;
+  }
+  if (req.method === 'GET' && pathname === '/api/nymphs/dji/route') {
+    NYMPH_BRIDGE.routeStatus()
+      .then((result) => sendNymphJson(res, nymphResultStatus(result), result))
+      .catch((error) => sendNymphError(res, error));
+    return true;
+  }
+  if (req.method === 'POST' && pathname === '/api/nymphs/dji/route-accept') {
+    readNymphBody(req, res, async (body) => {
+      try {
+        requireLocalNymphControl(req);
+        if (!NYMPH_BRIDGE.routeAttestationReady) {
+          throw new NymphBridgeError(
+            'route_attestation_unavailable',
+            'A server-owned SHA-256 attestation for the checked route is required.',
+            { httpStatus: 412 },
+          );
+        }
+        if (body.confirm !== NYMPH_ROUTE_CONFIRMATION) {
+          throw new NymphBridgeError(
+            'route_confirmation_required',
+            `confirm must exactly equal ${NYMPH_ROUTE_CONFIRMATION}.`,
+            { httpStatus: 400 },
+          );
+        }
+        const result = await NYMPH_BRIDGE.acceptRoute(body.document);
+        sendNymphJson(res, nymphResultStatus(result, 422), result);
+      } catch (error) {
+        sendNymphError(res, error);
+      }
+    });
+    return true;
+  }
+
+  const commandMatch = pathname.match(/^\/api\/nymphs\/dji\/(arm|start|pause|resume|abort|neutral|handoff|land)$/);
+  if (req.method === 'POST' && commandMatch) {
+    readNymphBody(req, res, async (body) => {
+      try {
+        requireLocalNymphControl(req);
+        const command = NYMPH_HTTP_COMMANDS[commandMatch[1]];
+        const expected = NYMPH_COMMAND_CONFIRMATIONS[command];
+        if (body.confirm !== expected) {
+          throw new NymphBridgeError(
+            'command_confirmation_required',
+            `confirm must exactly equal ${expected}.`,
+            { httpStatus: 400 },
+          );
+        }
+        await requireNymphExecutionPolicy(command);
+        const result = await NYMPH_BRIDGE.execute(command);
+        sendNymphJson(res, nymphResultStatus(result), result);
+      } catch (error) {
+        sendNymphError(res, error);
+      }
+    });
+    return true;
+  }
+  return false;
+}
+
 // CSRF / drive-by protection for state-changing routes. Browsers always attach
 // an Origin (and usually Referer) on cross-site state-changing fetch/form POSTs,
 // so requiring it to match Host blocks a page the operator merely visits from
@@ -5022,6 +5280,7 @@ function hostAllowed(hostHeader) {
 function hostedUnsupported(pathname) {
   if (!HOSTED_MODE) return false;
   return pathname.startsWith('/api/live/')
+    || pathname.startsWith('/api/nymphs/dji/')
     || pathname === '/api/building-placements'
     || pathname === '/api/survey-upload';
 }
@@ -5051,9 +5310,24 @@ const server = http.createServer((req, res) => {
     return send(res, 400, 'Bad request');
   }
 
+  const nymphRequest = pathname === '/api/nymphs/dji'
+    || pathname.startsWith('/api/nymphs/dji/');
+  if (nymphRequest && !nymphRequestHostAllowed(req)) {
+    return sendNymphJson(res, 403, {
+      ok: false,
+      error: {
+        code: 'control_host_not_allowed',
+        message: 'DJI hardware routes require an explicitly allowed Host.',
+      },
+    });
+  }
+
   const stateChangingPlanRequest = req.method !== 'GET' && req.method !== 'HEAD'
     && pathname.startsWith('/api/plans');
-  if ((req.method === 'POST' && CSRF_PROTECTED.has(pathname) || stateChangingPlanRequest)
+  const stateChangingNymphRequest = req.method !== 'GET' && req.method !== 'HEAD'
+    && pathname.startsWith('/api/nymphs/dji/');
+  if ((req.method === 'POST' && CSRF_PROTECTED.has(pathname)
+      || stateChangingPlanRequest || stateChangingNymphRequest)
       && !sameOriginOk(req)) {
     return send(res, 403, 'Forbidden: cross-origin request rejected');
   }
@@ -5062,6 +5336,17 @@ const server = http.createServer((req, res) => {
       ok: false,
       error: 'this local hardware/import route is disabled in hosted mode',
     }), { 'Content-Type': 'application/json' });
+  }
+
+  if (pathname === '/api/nymphs/dji/status'
+      || pathname === '/api/nymphs/dji/route'
+      || pathname.startsWith('/api/nymphs/dji/')) {
+    const routed = routeNymphDjiRequest(req, res, pathname);
+    if (routed !== false) return routed;
+    return sendNymphJson(res, 404, {
+      ok: false,
+      error: { code: 'not_found', message: 'Unknown Nymph DJI route.' },
+    });
   }
 
   if (pathname === '/api/plans' || pathname.startsWith('/api/plans/')) {
@@ -5271,6 +5556,7 @@ const server = http.createServer((req, res) => {
 server.requestTimeout = 20 * 60 * 1000;
 server.headersTimeout = 21 * 60 * 1000;
 server.keepAliveTimeout = 75 * 1000;
+server.on('close', () => NYMPH_BRIDGE.close());
 
 function autostartLiveGateways() {
   if (!LIVE_GATEWAY_AUTOSTART) return;

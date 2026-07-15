@@ -1,0 +1,73 @@
+plugins {
+    id "com.android.application"
+    id "org.jetbrains.kotlin.android"
+}
+
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.withInputStream { localProperties.load(it) }
+}
+def djiApiKey = localProperties.getProperty("dji.apiKey", "MISSING_DJI_API_KEY")
+
+android {
+    namespace "com.veil.dji"
+    compileSdk 35
+
+    defaultConfig {
+        // This exact ID is registered in the DJI Developer console.
+        applicationId "com.dji.sampleV5.aircraft"
+        minSdk 24
+        targetSdk 35
+        versionCode 1
+        versionName "0.1.0"
+        manifestPlaceholders = [DJI_API_KEY: djiApiKey]
+
+        ndk {
+            abiFilters "arm64-v8a"
+        }
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+        }
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    kotlinOptions {
+        jvmTarget = "1.8"
+        freeCompilerArgs += ["-Xjvm-default=all"]
+    }
+
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging true
+            pickFirsts += ["**/libc++_shared.so"]
+            keepDebugSymbols += [
+                "**/libconstants.so",
+                "**/libdji_innertools.so",
+                "**/libdjibase.so",
+                "**/libDJICSDKCommon.so",
+                "**/libDJIRegister.so",
+                "**/libdjisdk_jni.so",
+                "**/libvideo-framing.so"
+            ]
+        }
+    }
+}
+
+dependencies {
+    compileOnly "com.dji:dji-sdk-v5-aircraft-provided:5.18.0"
+    implementation "com.dji:dji-sdk-v5-aircraft:5.18.0"
+    implementation "androidx.core:core-ktx:1.13.1"
+    testImplementation "junit:junit:4.13.2"
+    // Android supplies org.json at runtime; this provides the real implementation to JVM tests.
+    testImplementation "org.json:json:20240303"
+}

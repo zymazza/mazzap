@@ -1,9 +1,86 @@
-# VEIL ↔ Android drone bridge contract
+# VEIL flight bridge contracts
 
 **Contract:** `veil-drone-bridge/1.0`
-**Status:** frozen integration seam; VEIL endpoints are not implemented yet
+**Status:** the retained Mini 4 Pro path in §0 is implemented; the WPML/WebSocket
+contract in §§1–12 remains a frozen future seam
 **Aircraft target:** DJI Mini 4 Pro + RC-N2
 **Authority:** VEIL plans and guards; the Android APK executes and fails safe
+
+## 0. Implemented Mini 4 Pro path
+
+The current Mini 4 Pro implementation deliberately has three separate trust
+and transport seams:
+
+```text
+browser ↔ same-origin VEIL HTTP ↔ private Unix NDJSON ↔ retained Mac flight process
+                                                              ↔ authenticated Android HTTP/UDP/NDJSON
+                                                              ↔ RC-N2 USB accessory
+```
+
+The browser never receives the Android bridge token or Unix-socket path. Node
+never receives the Android bridge token. The retained Python process is the only
+component that talks to the authenticated Android transports; give that process
+`VEIL_DJI_TOKEN` through its environment, not an argument or repository file.
+
+Node keeps one connection to the same-user, mode-0600 Unix socket exposed by
+`veil_dji_flight.py`. The connection uses newline-delimited JSON and requires a
+`veil.flight-repl.v1` handshake. It is retained because disconnecting it is a
+control event: the flight process neutralizes translation and pauses a running
+route. Reconnection never automatically replays, re-arms, resumes, or retries a
+physical mutation.
+
+The same-origin Nymph facade is:
+
+```text
+GET  /api/nymphs/dji/status
+GET  /api/nymphs/dji/route
+POST /api/nymphs/dji/route-accept
+POST /api/nymphs/dji/arm
+POST /api/nymphs/dji/start
+POST /api/nymphs/dji/pause
+POST /api/nymphs/dji/resume
+POST /api/nymphs/dji/abort
+POST /api/nymphs/dji/neutral
+POST /api/nymphs/dji/handoff
+POST /api/nymphs/dji/land
+```
+
+Every mutation is an allowlisted command with an exact confirmation literal,
+same-origin protection, a bounded request body, a hardware-specific Host
+allowlist, and a browser-safe response projection. Mutations are loopback-only
+by default. LAN control additionally requires `VEIL_DJI_ALLOW_LAN_CONTROL=1`,
+an allowed host in `VEIL_DJI_ALLOWED_HOSTS`, and a separately provisioned
+`VEIL_DJI_CONTROL_TOKEN`; this is not the Android bridge token. Arm, route
+start, and route resume also require server-owned
+`VEIL_DJI_ENVELOPE_READY=1` and `VEIL_DJI_RC_TAKEOVER_VERIFIED=1`
+qualification flags plus fresh aircraft/RC/air-link state. A timeout has an
+unknown outcome: the adapter drops the Unix connection to invoke neutral/pause
+and does not retry.
+
+The implemented route format is `veil.route-revision.v1`: complete,
+compare-and-set navigation revisions executed by the retained Mac process using
+Virtual Stick. It supports immediate or waypoint-boundary mid-flight
+replacement. It is not a DJI Fly library edit, an aircraft-resident mission, or
+WPML. Nymph click-to-route items remain `checked:false` and `sent:false`; the UI
+does not convert or submit those drafts. Route acceptance takes a complete
+serialized route document. It remains disabled until a server-owned checked
+terrain/geofence envelope is configured and the document bytes match
+`VEIL_DJI_CHECKED_ROUTE_SHA256` exactly.
+
+Status polling exposes only an explicit telemetry allowlist: connection state,
+freshness, flight state/mode, position, relative altitude, yaw, NED velocity,
+GNSS quality, battery percentage, authority owner, and air-link quality. It
+does not expose bridge credentials, local paths, device identifiers, raw daemon
+details, or arbitrary Android fields.
+
+Raw HEVC video remains a separate direct Android-to-Mac path and is decoded by
+the native VideoToolbox viewer. The Nymph status facade does not currently
+publish a browser video URL. Camera/gimbal commands are available through the
+authenticated bridge tools but are not represented as route actions.
+
+The remainder of this document freezes the proposed native-mission/WebSocket
+seam for future work. It must not be read as a description of the implemented
+Mini 4 Pro route path.
 
 This contract keeps the bridge thin. The APK owns the MSDK session, aircraft-side
 heartbeat, and immediate failsafes. VEIL owns mission truth, surface-aware

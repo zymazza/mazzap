@@ -87,7 +87,7 @@ test('virtual stick arms only with bridge, control, fresh telemetry, envelope, t
       envelopeReady: true,
       rcTakeoverVerified: true,
     },
-    capabilities: { virtualStick: true, nativeMissions: false },
+    capabilities: { virtualStick: true, nativeMissions: false, browserDirectControl: true },
     telemetry: { received_at: now - 100 },
   };
 
@@ -96,6 +96,7 @@ test('virtual stick arms only with bridge, control, fresh telemetry, envelope, t
   assert.equal(api.canArm({ ...ready, telemetry: { received_at: now - 1600 } }, 'virtual-stick', now), false);
   assert.equal(api.canArm({ ...ready, link: { ...ready.link, envelopeReady: false } }, 'virtual-stick', now), false);
   assert.equal(api.canArm({ ...ready, capabilities: { virtualStick: false } }, 'virtual-stick', now), false);
+  assert.equal(api.canArm({ ...ready, capabilities: { virtualStick: true } }, 'virtual-stick', now), false);
 });
 
 test('RTS prefers native GUIDED-N and falls back to GUIDED-VS only when capability gates allow it', () => {
@@ -120,11 +121,25 @@ test('Nymph Manager appears directly after telemetry and loads before the app bo
   const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
   const telemetry = html.indexOf('data-mode="telemetry"');
   const nymphs = html.indexOf('data-mode="nymphs"');
+  const bridgeScript = html.indexOf('<script src="/nymph-bridge-client.js"></script>');
   const nymphScript = html.indexOf('<script src="/nymph-manager.js"></script>');
   const appScript = html.indexOf('<script src="/app.js"></script>');
 
   assert.ok(telemetry >= 0);
   assert.ok(nymphs > telemetry);
-  assert.ok(nymphScript > nymphs);
+  assert.ok(bridgeScript > nymphs);
+  assert.ok(nymphScript > bridgeScript);
   assert.ok(appScript > nymphScript);
+});
+
+test('app boot injects the same-origin bridge while unchecked RTS drafts stay local', () => {
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const manager = fs.readFileSync(new URL('../public/nymph-manager.js', import.meta.url), 'utf8');
+
+  assert.match(app, /VEILNymphBridgeClient\?\.create\(\)/);
+  assert.match(app, /controlClient:\s*nymphBridge/);
+  assert.match(app, /nymphBridge\?\.setStatusSink/);
+  assert.match(app, /nymphBridge\?\.start\(\)/);
+  assert.match(manager, /checked:\s*false,\s*sent:\s*false/);
+  assert.doesNotMatch(manager, /acceptRoute\s*\(/);
 });

@@ -623,19 +623,20 @@
             <div><span>Telemetry</span><strong id="nymph-telemetry-age">—</strong></div>
             <div><span>Video</span><strong id="nymph-video-age">—</strong></div>
           </div>
+          <p class="hint" id="nymph-execution-status">No accepted route.</p>
         </div>
 
         <div class="group">
           <div class="group-label-row">
-            <p class="group-label">Live camera</p>
+            <p class="group-label">Camera (native Mac viewer)</p>
             <span class="nymph-video-badge" id="nymph-video-badge">NO SIGNAL</span>
           </div>
           <div class="nymph-video-stage" id="nymph-video-stage">
             <video id="nymph-video" autoplay muted playsinline hidden></video>
             <div class="nymph-video-empty" id="nymph-video-empty">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5h11v9h-11zM14.5 10l6-3v10l-6-3z"/></svg>
-              <strong>Awaiting drone stream</strong>
-              <span>Mode A RTMP or bridge passthrough</span>
+              <strong>Browser preview unavailable</strong>
+              <span>Use the native VideoToolbox viewer for the raw HEVC feed.</span>
             </div>
           </div>
         </div>
@@ -692,7 +693,7 @@
           <button type="button" class="primary-btn" id="nymph-arm-controls" disabled>RC-N2 has authority</button>
           <div class="nymph-flight-actions">
             <button type="button" id="nymph-hold" disabled>Hold</button>
-            <button type="button" id="nymph-rth" disabled>RTH</button>
+            <button type="button" id="nymph-handoff" disabled>RC handoff</button>
           </div>
           <p class="hint">VLOS, an accessible RC pause takeover, and rPIC authority remain required throughout an operation.</p>
         </div>
@@ -838,6 +839,7 @@
   <script src="/wildfire.js"></script>
   <script src="/solar.js"></script>
   <script src="/live-inputs.js"></script>
+  <script src="/nymph-bridge-client.js"></script>
   <script src="/nymph-manager.js"></script>
   <script src="/layer-upload.js"></script>
   <script src="/viewshed.js"></script>

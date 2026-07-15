@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+TOOLS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PACKAGE_DIR="$TOOLS_DIR/macos-video"
+
+# Incremental after the first invocation. Building before aircraft power-on
+# avoids putting compiler startup on the live video path.
+swift build -c release --package-path "$PACKAGE_DIR" >&2
+exec "$PACKAGE_DIR/.build/release/veil-dji-video" "$@"

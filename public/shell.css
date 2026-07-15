@@ -798,7 +798,7 @@ details:not([open]) > .collapsible-body { display: none; }
   background: var(--glass-2); border: 1px solid var(--line); border-radius: var(--r-sm);
 }
 .nymph-flight-actions button:disabled { opacity: .45; cursor: default; }
-.nymph-flight-actions #nymph-rth:not(:disabled) { color: var(--amber); border-color: rgba(242,193,78,.3); }
+.nymph-flight-actions #nymph-handoff:not(:disabled) { color: var(--amber); border-color: rgba(242,193,78,.3); }
 
 /* telemetry replay scrubber (bottom) */
 #live-replay-bar {

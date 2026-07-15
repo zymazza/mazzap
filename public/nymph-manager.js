@@ -1,8 +1,7 @@
 /* VEIL Nymph Manager: shared UI for external devices, robots, and actuators.
-   The first nymph is a DJI Mini 4 Pro. This module intentionally stops at the
-   bridge seam: it can draft RTS targets and visualize their target altitudes,
-   but it never emits an aircraft command unless a future control client is
-   explicitly injected and every reported interlock is satisfied. */
+   The first nymph is a DJI Mini 4 Pro. A same-origin control client may be
+   injected for explicit, acknowledged commands. RTS clicks remain unchecked
+   drafts and are never sent to the aircraft by this module. */
 (function nymphManagerModule(global) {
   'use strict';
 
@@ -15,7 +14,7 @@
     'virtual-stick': Object.freeze({
       label: 'Virtual stick',
       aircraftMode: 'DIRECT',
-      description: 'Pilot with a browser gamepad or on-screen stick. VEIL guards every setpoint before the bridge can apply it.',
+      description: 'Direct setpoints require the retained Mac flight API. This browser facade does not emit a joystick stream.',
     }),
     rts: Object.freeze({
       label: 'RTS click',
@@ -105,12 +104,15 @@
     ];
 
     if (selectedMode === 'virtual-stick') {
+      const directControl = state?.capabilities?.browserDirectControl === true;
       items.push({
         key: 'capability',
-        ok: state?.capabilities?.virtualStick === true,
-        text: state?.capabilities?.virtualStick === true
-          ? 'Virtual-stick capability is available.'
-          : 'Virtual-stick capability has not passed B2.',
+        ok: state?.capabilities?.virtualStick === true && directControl,
+        text: state?.capabilities?.virtualStick !== true
+          ? 'Virtual-stick capability has not passed B2.'
+          : directControl
+            ? 'A continuous direct-control source is available.'
+            : 'The browser facade has no continuous setpoint source; use the retained Mac API.',
       });
     } else if (selectedMode === 'rts') {
       const capability = guidedCapability(state);
@@ -176,6 +178,7 @@
       bridgeState: document.getElementById('nymph-bridge-state'),
       telemetryAge: document.getElementById('nymph-telemetry-age'),
       videoAge: document.getElementById('nymph-video-age'),
+      executionStatus: document.getElementById('nymph-execution-status'),
       videoBadge: document.getElementById('nymph-video-badge'),
       video: document.getElementById('nymph-video'),
       videoEmpty: document.getElementById('nymph-video-empty'),
@@ -191,7 +194,7 @@
       interlocks: document.getElementById('nymph-interlocks'),
       arm: document.getElementById('nymph-arm-controls'),
       hold: document.getElementById('nymph-hold'),
-      rth: document.getElementById('nymph-rth'),
+      handoff: document.getElementById('nymph-handoff'),
     };
 
     const state = {
@@ -200,6 +203,8 @@
       activePane: false,
       controlsArmed: false,
       commandPending: false,
+      control: { armed: false, state: 'offline', authorityOwner: null, authorityMode: null },
+      executionRoute: null,
       nextAltitudeM: 25,
       surface: 'canopy',
       route: [],
@@ -209,7 +214,7 @@
         envelopeReady: false,
         rcTakeoverVerified: false,
       },
-      capabilities: { nativeMissions: false, virtualStick: false },
+      capabilities: { nativeMissions: false, virtualStick: false, browserDirectControl: false },
       telemetry: null,
       video: { connected: false, received_at: null, latency_ms: null, source: null },
       lastError: null,
@@ -314,6 +319,25 @@
         setClass(els.videoBadge, 'signal', state.video.connected);
       }
       if (els.videoEmpty) els.videoEmpty.hidden = state.video.connected && !els.video?.hidden;
+      if (els.executionStatus) {
+        const route = state.executionRoute;
+        if (state.lastError) {
+          els.executionStatus.textContent = `Bridge: ${state.lastError}`;
+        } else if (!route) {
+          els.executionStatus.textContent = 'No accepted route.';
+        } else {
+          const activeRevision = route.activeRevision ?? route.activePlan?.revision;
+          const pendingRevision = route.pendingRevision ?? route.pendingPlan?.revision;
+          const targetIndex = route.targetWaypointIndex;
+          const details = [
+            route.phase ? `Route ${route.phase}` : 'Route accepted',
+            Number.isInteger(activeRevision) ? `revision ${activeRevision}` : null,
+            Number.isInteger(pendingRevision) ? `pending ${pendingRevision}` : null,
+            Number.isInteger(targetIndex) ? `target ${targetIndex + 1}` : null,
+          ].filter(Boolean);
+          els.executionStatus.textContent = `${details.join(' · ')}.`;
+        }
+      }
     }
 
     function renderModes() {
@@ -363,15 +387,27 @@
       const hasArmClient = typeof controlClient?.arm === 'function';
       const armable = canArm(state, state.selectedMode, nowMs) && hasArmClient;
       if (els.arm) {
-        els.arm.disabled = !armable || state.commandPending;
-        if (state.selectedMode === 'controller') els.arm.textContent = 'RC-N2 has authority';
+        els.arm.disabled = state.controlsArmed || !armable || state.commandPending;
+        if (state.controlsArmed) els.arm.textContent = `${state.aircraftMode || 'Flight controls'} armed`;
+        else if (state.selectedMode === 'controller') els.arm.textContent = 'RC-N2 has authority';
         else if (!canArm(state, state.selectedMode, nowMs)) els.arm.textContent = 'Controls interlocked';
         else if (!hasArmClient) els.arm.textContent = 'Control client not installed';
         else els.arm.textContent = `Arm ${requestedAircraftMode(state.selectedMode, state)}`;
       }
-      // These remain display-only until their discrete command/ack path lands.
-      if (els.hold) els.hold.disabled = true;
-      if (els.rth) els.rth.disabled = true;
+      const phase = state.executionRoute?.phase;
+      const hasHoldClient = phase === 'paused'
+        ? typeof controlClient?.resumeRoute === 'function'
+        : typeof controlClient?.pauseRoute === 'function';
+      const holdAllowed = phase === 'running'
+        || (phase === 'paused' && canArm(state, state.selectedMode, nowMs));
+      if (els.hold) {
+        els.hold.disabled = !hasHoldClient || !holdAllowed || state.commandPending;
+        els.hold.textContent = phase === 'paused' ? 'Resume route' : 'Hold';
+      }
+      if (els.handoff) {
+        els.handoff.disabled = typeof controlClient?.handoff !== 'function'
+          || !state.controlsArmed || state.commandPending;
+      }
     }
 
     function render(nowMs = Date.now()) {
@@ -388,7 +424,6 @@
     function selectMode(mode) {
       if (!MODES[mode]) return false;
       state.selectedMode = mode;
-      state.controlsArmed = false;
       state.lastError = null;
       render();
       return true;
@@ -438,8 +473,19 @@
         });
       state.link = { ...state.link, ...linkUpdate };
       if (update.capabilities) state.capabilities = { ...state.capabilities, ...update.capabilities };
+      if (update.control && typeof update.control === 'object') {
+        state.control = { ...state.control, ...update.control };
+        state.controlsArmed = update.control.armed === true;
+      }
+      if (Object.prototype.hasOwnProperty.call(update, 'route')) {
+        state.executionRoute = update.route && typeof update.route === 'object'
+          ? { ...update.route } : null;
+      }
+      if (state.link.bridgeConnected !== true) state.controlsArmed = false;
       if (update.aircraftMode || update.mode) state.aircraftMode = update.aircraftMode || update.mode;
-      if (update.error) state.lastError = String(update.error);
+      if (Object.prototype.hasOwnProperty.call(update, 'error')) {
+        state.lastError = update.error ? String(update.error) : null;
+      }
       render();
       return cloneState(state);
     }
@@ -489,12 +535,55 @@
         const requestedMode = requestedAircraftMode(state.selectedMode, state);
         const result = await controlClient.arm({ mode: requestedMode });
         if (!result?.applied) throw new Error(result?.error || 'bridge did not acknowledge arm request');
-        state.controlsArmed = true;
-        state.aircraftMode = requestedMode;
         return true;
       } catch (error) {
         state.lastError = error?.message || String(error);
         state.controlsArmed = false;
+        return false;
+      } finally {
+        state.commandPending = false;
+        render();
+      }
+    }
+
+    async function holdOrResumeRoute() {
+      if (state.commandPending) return false;
+      const phase = state.executionRoute?.phase;
+      const command = phase === 'running'
+        ? controlClient?.pauseRoute
+        : phase === 'paused' && canArm(state) ? controlClient?.resumeRoute : null;
+      if (typeof command !== 'function') return false;
+      state.commandPending = true;
+      renderInterlocks();
+      try {
+        const result = await command.call(controlClient);
+        if (!result?.applied && result?.ok !== true) {
+          throw new Error(result?.error || 'bridge did not acknowledge route command');
+        }
+        return true;
+      } catch (error) {
+        state.lastError = error?.message || String(error);
+        return false;
+      } finally {
+        state.commandPending = false;
+        render();
+      }
+    }
+
+    async function handoffControls() {
+      if (!state.controlsArmed || state.commandPending || typeof controlClient?.handoff !== 'function') {
+        return false;
+      }
+      state.commandPending = true;
+      renderInterlocks();
+      try {
+        const result = await controlClient.handoff();
+        if (!result?.applied && result?.ok !== true) {
+          throw new Error(result?.error || 'bridge did not confirm RC handoff');
+        }
+        return true;
+      } catch (error) {
+        state.lastError = error?.message || String(error);
         return false;
       } finally {
         state.commandPending = false;
@@ -557,6 +646,8 @@
     els.altitudeRibbon?.addEventListener('keydown', onRibbonKey);
     els.clearRoute?.addEventListener('click', clearRoute);
     els.arm?.addEventListener('click', armControls);
+    els.hold?.addEventListener('click', holdOrResumeRoute);
+    els.handoff?.addEventListener('click', handoffControls);
     canvas?.addEventListener('wheel', onCanvasWheel, { passive: false, capture: true });
     document.addEventListener('veil:map-pick', onMapPick);
     document.addEventListener('veil:panechange', onPaneChange);
@@ -587,6 +678,8 @@
         els.altitudeRibbon?.removeEventListener('keydown', onRibbonKey);
         els.clearRoute?.removeEventListener('click', clearRoute);
         els.arm?.removeEventListener('click', armControls);
+        els.hold?.removeEventListener('click', holdOrResumeRoute);
+        els.handoff?.removeEventListener('click', handoffControls);
         canvas?.removeEventListener('wheel', onCanvasWheel, true);
         document.removeEventListener('veil:map-pick', onMapPick);
         document.removeEventListener('veil:panechange', onPaneChange);

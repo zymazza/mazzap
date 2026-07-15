@@ -89,11 +89,14 @@ optional **regional pack**, never hardcoded in the engine.
   controls and tracker POV, then append selected samples into the curated twin
   store. See [docs/live-inputs.md](docs/live-inputs.md).
 - **Nymph Manager** — a home for external devices, robots, and actuators. The
-  first primitive is the DJI Mini 4 Pro: the initial console exposes controller,
-  guarded virtual-stick, and RTS click workflows, a live-video seam, capability
-  and safety interlocks, plus unsent georeferenced RTS route drafting with a
-  scroll-controlled AGL ribbon. Aircraft commands remain locked until the
-  Android bridge and B1/B2 safety gates exist. See the durable
+  first integration is the DJI Mini 4 Pro: a retained Mac flight process talks
+  to the RC-N2 through the Android bridge, while a private Unix adapter exposes
+  sanitized telemetry and explicit acknowledged controls to the browser. The
+  console provides controller, guarded virtual-stick, and RTS click workflows,
+  capability/interlock state, arm and route hold/resume controls, and unsent
+  georeferenced RTS drafting with a scroll-controlled AGL ribbon. Raw HEVC video
+  stays on the direct Android-to-Mac native-decoder path. See the
+  [implemented bridge overview](docs/dji-mini4-bridge.md), durable
   [flight-planning implementation plan](docs/flight-planning-implementation-plan-v1.5.md)
   and [bridge contract](docs/bridge-contract.md).
 - **Plan** — a smooth, interactive 3D workspace with live terrain/vegetation
@@ -757,11 +760,12 @@ VEIL from data; nothing in the engine names a CRS, a layer, or a species.
 server.js                 zero-dependency static server (+ /api/chat, /api/* )
 public/
   index.html  app.js  chat.js  plan.js   UI, boot, chat, land planning
-  nymph-manager.js                   external-device console + drone RTS drafts
+  nymph-manager.js nymph-bridge-client.js   device console + local DJI facade
   viewer/  scene.js terrain.js vegetation.js overlays.js buildings3d.js
            georef.js                 scene-local meters <-> lon/lat (proj4js)
   vendor/  three.min.js  OrbitControls.js  proj4.js
 scripts/                  the region-agnostic engine
+  nymph_bridge_adapter.js             private Unix DJI adapter for Nymph Manager
   twin_georef.py  twin_pack.py        read georef.json / load the active pack
   ingest_dem.py  ingest_imagery.py    genesis: DEM + imagery -> a twin
   add_layer.py                        import any geospatial file as a layer
